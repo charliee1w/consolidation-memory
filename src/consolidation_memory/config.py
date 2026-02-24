@@ -11,6 +11,7 @@ All module-level attributes are populated at import time. Existing
 Tests can patch these attributes normally with unittest.mock.patch.
 """
 
+import logging as _logging
 import os
 import sys
 from pathlib import Path
@@ -204,8 +205,6 @@ def _validate_config() -> None:
 
 
 _validate_config()
-
-import logging as _logging
 
 _config_logger = _logging.getLogger(__name__)
 _config_path = _find_config_path()

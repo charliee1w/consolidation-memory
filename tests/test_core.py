@@ -5,6 +5,7 @@ No external embedding server required — embedding backend is mocked.
 """
 
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -325,6 +326,9 @@ class TestReloadSignal:
         vs = VectorStore()
 
         FAISS_RELOAD_SIGNAL.write_text(str(time.time() - 200), encoding="utf-8")
+        # Backdate file mtime so it's older than _last_load_time
+        old_time = time.time() - 200
+        os.utime(FAISS_RELOAD_SIGNAL, (old_time, old_time))
         vs._last_load_time = time.time()
 
         reloaded = vs.reload_if_stale()

@@ -1,10 +1,8 @@
 # consolidation-memory
 
-Persistent semantic memory for AI conversations. Works with any LLM.
+Local-first persistent memory for AI agents. Store facts, solutions, and preferences as episodes — then a local LLM automatically clusters and distills them into structured knowledge documents. Your AI remembers what it learned, not just what you said.
 
-Episodes are stored with vector embeddings, then periodically clustered and distilled into knowledge documents by a local LLM. The result is a growing, self-organizing knowledge base that persists across sessions.
-
-Three interfaces: **Python API** (any LLM framework), **MCP** (Claude Desktop/Code/Cursor), **REST API** (language-agnostic HTTP).
+Works with **any LLM** (LM Studio, Ollama, OpenAI) and **any interface** — MCP (Claude Desktop/Code/Cursor), Python API, REST API, or OpenAI function calling.
 
 ## Quick Start
 

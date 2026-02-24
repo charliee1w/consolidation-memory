@@ -1,0 +1,477 @@
+"""Pure Python client for consolidation-memory.
+
+Provides MemoryClient — the single source of truth for all memory operations.
+MCP server and REST API are thin wrappers over this class.
+
+Usage::
+
+    from consolidation_memory import MemoryClient
+
+    with MemoryClient() as mem:
+        mem.store("learned X about Y", content_type="fact", tags=["python"])
+        results = mem.recall("how does Y work")
+        print(results.episodes)
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import threading
+from datetime import datetime, timezone
+
+from consolidation_memory import __version__
+from consolidation_memory.types import (
+    StoreResult,
+    RecallResult,
+    ForgetResult,
+    StatusResult,
+    ExportResult,
+    CorrectResult,
+)
+
+logger = logging.getLogger("consolidation_memory")
+
+
+class MemoryClient:
+    """Persistent semantic memory client.
+
+    Owns the vector store, database lifecycle, and optional background
+    consolidation thread.  All public methods are synchronous and thread-safe.
+
+    Args:
+        auto_consolidate: Start background consolidation thread. Default True
+            (respects ``CONSOLIDATION_AUTO_RUN`` config).
+    """
+
+    def __init__(self, auto_consolidate: bool = True) -> None:
+        from consolidation_memory.config import (
+            DATA_DIR,
+            KNOWLEDGE_DIR,
+            CONSOLIDATION_LOG_DIR,
+            LOG_DIR,
+            BACKUP_DIR,
+            CONSOLIDATION_AUTO_RUN,
+        )
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.vector_store import VectorStore
+
+        # Ensure directories
+        for d in [DATA_DIR, KNOWLEDGE_DIR, CONSOLIDATION_LOG_DIR, LOG_DIR, BACKUP_DIR]:
+            d.mkdir(parents=True, exist_ok=True)
+
+        ensure_schema()
+        self._vector_store = VectorStore()
+        self._check_embedding_backend()
+
+        # Consolidation threading
+        self._consolidation_lock = threading.Lock()
+        self._consolidation_stop = threading.Event()
+        self._consolidation_thread: threading.Thread | None = None
+
+        if auto_consolidate and CONSOLIDATION_AUTO_RUN:
+            self._start_consolidation_thread()
+
+        logger.info(
+            "MemoryClient initialized (vectors=%d, version=%s)",
+            self._vector_store.size,
+            __version__,
+        )
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────
+
+    def close(self) -> None:
+        """Stop background threads. Call when done."""
+        self._consolidation_stop.set()
+        if self._consolidation_thread is not None:
+            self._consolidation_thread.join(timeout=5)
+            self._consolidation_thread = None
+
+    def __enter__(self) -> MemoryClient:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def store(
+        self,
+        content: str,
+        content_type: str = "exchange",
+        tags: list[str] | None = None,
+        surprise: float = 0.5,
+    ) -> StoreResult:
+        """Store a memory episode.
+
+        Args:
+            content: Text content to store.
+            content_type: One of 'exchange', 'fact', 'solution', 'preference'.
+            tags: Optional topic tags.
+            surprise: Novelty score 0.0–1.0.
+
+        Returns:
+            StoreResult with status 'stored' or 'duplicate_detected'.
+        """
+        from consolidation_memory.database import insert_episode, get_episode, soft_delete_episode
+        from consolidation_memory.backends import encode_documents
+        from consolidation_memory.config import DEDUP_SIMILARITY_THRESHOLD, DEDUP_ENABLED
+
+        self._vector_store.reload_if_stale()
+        embedding = encode_documents([content])
+
+        # Dedup check
+        if DEDUP_ENABLED and self._vector_store.size > 0:
+            matches = self._vector_store.search(embedding[0], k=1)
+            if matches:
+                best_id, best_sim = matches[0]
+                if best_sim >= DEDUP_SIMILARITY_THRESHOLD:
+                    existing = get_episode(best_id)
+                    if existing is not None:
+                        logger.info(
+                            "Duplicate detected (sim=%.4f >= %.2f): existing=%s",
+                            best_sim, DEDUP_SIMILARITY_THRESHOLD, best_id,
+                        )
+                        return StoreResult(
+                            status="duplicate_detected",
+                            existing_id=best_id,
+                            similarity=round(best_sim, 4),
+                            message="Content too similar to existing episode. Not stored.",
+                        )
+
+        # Validate content_type
+        valid_types = {"exchange", "fact", "solution", "preference"}
+        if content_type not in valid_types:
+            content_type = "exchange"
+            logger.warning("Invalid content_type %r, defaulting to 'exchange'", content_type)
+
+        episode_id = insert_episode(
+            content=content,
+            content_type=content_type,
+            tags=tags,
+            surprise_score=max(0.0, min(1.0, surprise)),
+        )
+
+        try:
+            self._vector_store.add(episode_id, embedding[0])
+        except Exception as e:
+            # Rollback: remove the DB record if FAISS add fails to prevent orphans
+            soft_delete_episode(episode_id)
+            logger.error("FAISS add failed for %s, rolled back DB insert: %s", episode_id, e)
+            raise
+
+        logger.info(
+            "Stored episode %s (type=%s, surprise=%.2f, tags=%s)",
+            episode_id, content_type, surprise, tags,
+        )
+        return StoreResult(
+            status="stored",
+            id=episode_id,
+            content_type=content_type,
+            tags=tags or [],
+        )
+
+    def recall(
+        self,
+        query: str,
+        n_results: int = 10,
+        include_knowledge: bool = True,
+    ) -> RecallResult:
+        """Retrieve relevant memories by semantic similarity.
+
+        Args:
+            query: Natural language description of what to recall.
+            n_results: Maximum episode results (1–50).
+            include_knowledge: Include consolidated knowledge documents.
+
+        Returns:
+            RecallResult with episodes and knowledge lists.
+        """
+        from consolidation_memory.context_assembler import recall
+        from consolidation_memory.database import get_stats
+
+        self._vector_store.reload_if_stale()
+
+        result = recall(
+            query=query,
+            n_results=n_results,
+            include_knowledge=include_knowledge,
+            vector_store=self._vector_store,
+        )
+
+        stats = get_stats()
+
+        logger.info(
+            "Recall query='%s' returned %d episodes, %d knowledge entries",
+            query[:80], len(result["episodes"]), len(result["knowledge"]),
+        )
+
+        return RecallResult(
+            episodes=result["episodes"],
+            knowledge=result["knowledge"],
+            total_episodes=stats["episodic_buffer"]["total"],
+            total_knowledge_topics=stats["knowledge_base"]["total_topics"],
+        )
+
+    def status(self) -> StatusResult:
+        """Get memory system statistics.
+
+        Returns:
+            StatusResult with counts, backend info, and last consolidation.
+        """
+        from consolidation_memory.database import get_stats, get_last_consolidation_run
+        from consolidation_memory.config import EMBEDDING_MODEL_NAME, EMBEDDING_BACKEND, DB_PATH
+
+        stats = get_stats()
+        last_run = get_last_consolidation_run()
+
+        db_size_mb = 0.0
+        if DB_PATH.exists():
+            db_size_mb = round(DB_PATH.stat().st_size / (1024 * 1024), 2)
+
+        return StatusResult(
+            episodic_buffer=stats["episodic_buffer"],
+            knowledge_base=stats["knowledge_base"],
+            last_consolidation=last_run,
+            embedding_backend=EMBEDDING_BACKEND,
+            embedding_model=EMBEDDING_MODEL_NAME,
+            faiss_index_size=self._vector_store.size,
+            faiss_tombstones=self._vector_store.tombstone_count,
+            db_size_mb=db_size_mb,
+            version=__version__,
+        )
+
+    def forget(self, episode_id: str) -> ForgetResult:
+        """Soft-delete an episode.
+
+        Args:
+            episode_id: UUID of the episode to forget.
+
+        Returns:
+            ForgetResult with status 'forgotten' or 'not_found'.
+        """
+        from consolidation_memory.database import soft_delete_episode
+
+        self._vector_store.reload_if_stale()
+
+        deleted = soft_delete_episode(episode_id)
+        if deleted:
+            self._vector_store.remove(episode_id)
+            logger.info("Forgot episode %s", episode_id)
+            return ForgetResult(status="forgotten", id=episode_id)
+        else:
+            logger.warning("Episode %s not found for deletion", episode_id)
+            return ForgetResult(status="not_found", id=episode_id)
+
+    def export(self) -> ExportResult:
+        """Export all episodes and knowledge to a JSON snapshot.
+
+        Returns:
+            ExportResult with status, file path, and counts.
+        """
+        from consolidation_memory.config import BACKUP_DIR, KNOWLEDGE_DIR, MAX_BACKUPS
+        from consolidation_memory.database import get_all_episodes, get_all_knowledge_topics
+
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+        episodes = get_all_episodes(include_deleted=False)
+
+        topics = get_all_knowledge_topics()
+        knowledge = []
+        for topic in topics:
+            filepath = KNOWLEDGE_DIR / topic["filename"]
+            content = ""
+            if filepath.exists():
+                content = filepath.read_text(encoding="utf-8")
+            knowledge.append({**topic, "file_content": content})
+
+        snapshot = {
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "version": "1.0",
+            "episodes": episodes,
+            "knowledge_topics": knowledge,
+            "stats": {
+                "episode_count": len(episodes),
+                "knowledge_count": len(knowledge),
+            },
+        }
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_path = BACKUP_DIR / f"memory_export_{timestamp}.json"
+        export_path.write_text(
+            json.dumps(snapshot, indent=2, default=str),
+            encoding="utf-8",
+        )
+
+        # Prune old exports
+        existing = sorted(BACKUP_DIR.glob("memory_export_*.json"), reverse=True)
+        for old in existing[MAX_BACKUPS:]:
+            old.unlink()
+
+        logger.info(
+            "Exported %d episodes + %d topics to %s",
+            len(episodes), len(knowledge), export_path,
+        )
+
+        return ExportResult(
+            status="exported",
+            path=str(export_path),
+            episodes=len(episodes),
+            knowledge_topics=len(knowledge),
+        )
+
+    def correct(self, topic_filename: str, correction: str) -> CorrectResult:
+        """Correct a knowledge document with new information.
+
+        Args:
+            topic_filename: Filename of the knowledge topic (e.g. 'vr_setup.md').
+            correction: Description of what needs correcting and the correct info.
+
+        Returns:
+            CorrectResult with status and updated metadata.
+        """
+        from consolidation_memory.config import KNOWLEDGE_DIR
+        from consolidation_memory.database import get_all_knowledge_topics, upsert_knowledge_topic
+        from consolidation_memory.consolidation import (
+            _version_knowledge_file, _parse_frontmatter, _count_facts, _normalize_output,
+        )
+        from consolidation_memory.backends import get_llm_backend
+
+        filepath = KNOWLEDGE_DIR / topic_filename
+        if not filepath.exists():
+            return CorrectResult(status="not_found", filename=topic_filename)
+
+        llm = get_llm_backend()
+        if llm is None:
+            return CorrectResult(status="error", message="LLM backend is disabled")
+
+        existing_content = filepath.read_text(encoding="utf-8")
+        system_prompt = (
+            "You are a precise knowledge editor. Apply corrections to existing documents "
+            "while preserving all other information. Output the complete corrected document."
+        )
+        user_prompt = (
+            f"Apply this correction to the existing knowledge document:\n\n"
+            f"CORRECTION:\n{correction}\n\n"
+            f"EXISTING DOCUMENT:\n{existing_content}\n\n"
+            f"Output the complete corrected document with updated frontmatter "
+            f"(title, summary, tags, confidence).\n"
+            f"Do NOT wrap in code fences. Output raw markdown starting with --- frontmatter."
+        )
+
+        try:
+            corrected = _normalize_output(llm.generate(system_prompt, user_prompt))
+        except Exception as e:
+            return CorrectResult(status="error", message=str(e))
+
+        _version_knowledge_file(filepath)
+        filepath.write_text(corrected, encoding="utf-8")
+
+        parsed = _parse_frontmatter(corrected)
+        meta = parsed["meta"]
+
+        # Update DB entry
+        topics = get_all_knowledge_topics()
+        for topic in topics:
+            if topic["filename"] == topic_filename:
+                upsert_knowledge_topic(
+                    filename=topic_filename,
+                    title=meta.get("title", topic["title"]),
+                    summary=meta.get("summary", topic["summary"]),
+                    source_episodes=[],
+                    fact_count=_count_facts(corrected),
+                    confidence=float(meta.get("confidence", topic["confidence"])),
+                )
+                break
+
+        logger.info("Corrected knowledge topic: %s", topic_filename)
+
+        return CorrectResult(
+            status="corrected",
+            filename=topic_filename,
+            title=meta.get("title", ""),
+        )
+
+    def consolidate(self) -> dict:
+        """Run consolidation manually. Thread-safe with background thread.
+
+        Returns:
+            Dict with consolidation results or ``{"status": "already_running"}``.
+        """
+        if not self._consolidation_lock.acquire(blocking=False):
+            return {"status": "already_running"}
+        try:
+            from consolidation_memory.consolidation import run_consolidation
+            return run_consolidation(vector_store=self._vector_store)
+        finally:
+            self._consolidation_lock.release()
+
+    # ── Internal ──────────────────────────────────────────────────────────
+
+    def _check_embedding_backend(self) -> None:
+        """Verify the embedding backend is reachable."""
+        from consolidation_memory.config import EMBEDDING_BACKEND, EMBEDDING_API_BASE, EMBEDDING_MODEL_NAME
+
+        if EMBEDDING_BACKEND == "fastembed":
+            logger.info("Embedding backend: fastembed (local, no server check needed)")
+            return
+
+        from urllib.request import urlopen, Request
+        from urllib.error import URLError
+
+        try:
+            req = Request(
+                f"{EMBEDDING_API_BASE}/models",
+                headers={"Content-Type": "application/json"},
+            )
+            with urlopen(req, timeout=5) as resp:
+                body = json.loads(resp.read())
+            model_ids = [m.get("id", "") for m in body.get("data", [])]
+            if EMBEDDING_MODEL_NAME not in model_ids:
+                logger.warning(
+                    "Embedding model '%s' not found. Loaded: %s",
+                    EMBEDDING_MODEL_NAME, model_ids,
+                )
+            else:
+                logger.info("Embedding backend health check passed (%s).", EMBEDDING_BACKEND)
+        except (URLError, ConnectionError, TimeoutError) as e:
+            logger.warning(
+                "%s not reachable at %s: %s. Store/recall will fail until available.",
+                EMBEDDING_BACKEND, EMBEDDING_API_BASE, e,
+            )
+
+    def _start_consolidation_thread(self) -> None:
+        """Start the background consolidation daemon thread."""
+        self._consolidation_stop.clear()
+        self._consolidation_thread = threading.Thread(
+            target=self._consolidation_loop,
+            daemon=True,
+            name="consolidation-bg",
+        )
+        self._consolidation_thread.start()
+
+    def _consolidation_loop(self) -> None:
+        """Background consolidation thread target."""
+        from consolidation_memory import config
+
+        interval = config.CONSOLIDATION_INTERVAL_HOURS * 3600
+        logger.info(
+            "Background consolidation thread started (interval: %.1fh)",
+            config.CONSOLIDATION_INTERVAL_HOURS,
+        )
+
+        while not self._consolidation_stop.wait(timeout=interval):
+            if not self._consolidation_lock.acquire(blocking=False):
+                logger.info("Consolidation already running, skipping")
+                continue
+            try:
+                from consolidation_memory.consolidation import run_consolidation
+                result = run_consolidation(vector_store=self._vector_store)
+                logger.info(
+                    "Background consolidation completed: %s",
+                    result.get("status", result),
+                )
+            except Exception as e:
+                logger.error("Background consolidation failed: %s", e)
+            finally:
+                self._consolidation_lock.release()

@@ -7,11 +7,11 @@ A local-first memory system that stores, retrieves, and *consolidates* knowledge
 No cloud dependency. No subscriptions. Your data stays on your machine.
 
 ```
-You: "My SteamVR keeps crashing when I launch VRChat"
-AI:  (recalls you run Windows 11 + Quest 3 + SteamVR 2.7)
-     (recalls the last crash was a driver conflict, fixed with DDU)
-     "Last time this happened it was an NVIDIA driver issue. Want me to
-      check if your driver version changed since the DDU fix on Feb 10?"
+You: "My build is failing with a linker error"
+AI:  (recalls your project uses CMake + MSVC on Windows)
+     (recalls you hit the same error last month — it was a missing vcpkg dependency)
+     "Last time this happened it was a missing vcpkg package. Want me to
+      check if your vcpkg.json changed since we fixed it?"
 ```
 
 ## How It Works

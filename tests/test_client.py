@@ -270,7 +270,7 @@ class TestClientCompact:
         vec2 = _make_normalized_vec(seed=99)
 
         mock_embed.return_value = vec1.reshape(1, -1)
-        s1 = client.store("keep this")
+        client.store("keep this")
 
         mock_embed.return_value = vec2.reshape(1, -1)
         s2 = client.store("forget this")

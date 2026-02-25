@@ -215,6 +215,34 @@ async def memory_correct(topic_filename: str, correction: str) -> str:
     return json.dumps(dataclasses.asdict(result), default=str)
 
 
+@mcp.tool()
+async def memory_compact() -> str:
+    """Compact the FAISS index by removing tombstoned vectors.
+
+    Call when memory_status shows high tombstone count or ratio.
+    Tombstones accumulate from forget and prune operations.
+    Compaction rebuilds the index without dead vectors.
+    """
+    result = _client.compact()
+    return json.dumps(dataclasses.asdict(result), default=str)
+
+
+@mcp.tool()
+async def memory_consolidate() -> str:
+    """Manually trigger a consolidation run.
+
+    Clusters unconsolidated episodes by semantic similarity, synthesizes
+    knowledge documents via LLM, prunes old episodes, and compacts FAISS.
+    Returns a run report. Will refuse if a consolidation is already in progress.
+
+    NOTE: This can take several minutes depending on episode count and LLM speed.
+    """
+    result = _client.consolidate()
+    if result.get("status") == "already_running":
+        return json.dumps({"status": "already_running", "message": "A consolidation run is already in progress"})
+    return json.dumps({"status": "completed", "report": result}, default=str)
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 def run_server():

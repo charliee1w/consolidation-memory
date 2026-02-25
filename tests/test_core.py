@@ -961,10 +961,10 @@ class TestConfigDefaults:
             KNOWLEDGE_KEYWORD_WEIGHT, KNOWLEDGE_RELEVANCE_THRESHOLD,
             KNOWLEDGE_MAX_RESULTS,
         )
-        assert RECENCY_HALF_LIFE_DAYS == 30.0
+        assert RECENCY_HALF_LIFE_DAYS == 90.0
         assert KNOWLEDGE_SEMANTIC_WEIGHT == 0.8
         assert KNOWLEDGE_KEYWORD_WEIGHT == 0.2
-        assert KNOWLEDGE_RELEVANCE_THRESHOLD == 0.15
+        assert KNOWLEDGE_RELEVANCE_THRESHOLD == 0.25
         assert KNOWLEDGE_MAX_RESULTS == 5
 
     def test_consolidation_tuning_defaults(self):

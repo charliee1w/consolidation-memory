@@ -223,6 +223,68 @@ class TestClientExport:
         client.close()
 
 
+class TestClientCompact:
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_compact_with_tombstones(self, mock_embed):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+
+        vec = _make_normalized_vec(seed=42)
+        mock_embed.return_value = vec.reshape(1, -1)
+
+        stored = client.store("tombstone test")
+        client.forget(stored.id)
+
+        result = client.compact()
+        assert result.status == "compacted"
+        assert result.tombstones_removed == 1
+        assert result.index_size == 0
+
+        client.close()
+
+    def test_compact_no_tombstones(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+
+        result = client.compact()
+        assert result.status == "no_tombstones"
+        assert result.tombstones_removed == 0
+
+        client.close()
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_compact_preserves_live_vectors(self, mock_embed):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+
+        vec1 = _make_normalized_vec(seed=42)
+        vec2 = _make_normalized_vec(seed=99)
+
+        mock_embed.return_value = vec1.reshape(1, -1)
+        s1 = client.store("keep this")
+
+        mock_embed.return_value = vec2.reshape(1, -1)
+        s2 = client.store("forget this")
+
+        client.forget(s2.id)
+
+        result = client.compact()
+        assert result.status == "compacted"
+        assert result.tombstones_removed == 1
+        assert result.index_size == 1
+
+        client.close()
+
+
 class TestClientConsolidate:
     def test_consolidate_lock(self):
         from consolidation_memory.database import ensure_schema

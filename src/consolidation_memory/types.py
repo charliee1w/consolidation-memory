@@ -103,3 +103,12 @@ class BatchStoreResult:
     stored: int = 0
     duplicates: int = 0
     results: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class CompactResult:
+    """Result of a FAISS compaction operation."""
+
+    status: str  # "compacted" | "no_tombstones"
+    tombstones_removed: int = 0
+    index_size: int = 0

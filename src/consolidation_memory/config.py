@@ -119,6 +119,7 @@ LLM_TEMPERATURE = float(_llm.get("temperature", 0.3))
 LLM_MIN_P = float(_llm.get("min_p", 0.05))
 LLM_API_KEY = _llm.get("api_key", "")
 LLM_CALL_TIMEOUT = float(_llm.get("call_timeout", 120))
+LLM_CORRECTION_TIMEOUT = float(_llm.get("correction_timeout", 90))
 LLM_VALIDATION_RETRY = bool(_cfg.get("consolidation", {}).get("validation_retry", True))
 
 # ── Consolidation ────────────────────────────────────────────────────────────
@@ -126,7 +127,7 @@ _consol = _cfg.get("consolidation", {})
 
 CONSOLIDATION_AUTO_RUN = bool(_consol.get("auto_run", True))
 CONSOLIDATION_INTERVAL_HOURS = float(_consol.get("interval_hours", 6))
-CONSOLIDATION_CLUSTER_THRESHOLD = float(_consol.get("cluster_threshold", 0.72))
+CONSOLIDATION_CLUSTER_THRESHOLD = float(_consol.get("cluster_threshold", 0.78))
 CONSOLIDATION_MIN_CLUSTER_SIZE = int(_consol.get("min_cluster_size", 2))
 CONSOLIDATION_MAX_CLUSTER_SIZE = int(_consol.get("max_cluster_size", 20))
 CONSOLIDATION_PRUNE_ENABLED = bool(_consol.get("prune_enabled", False))
@@ -173,10 +174,10 @@ RECALL_MAX_N = int(_recall.get("max_n", 50))
 
 # ── Retrieval tuning ────────────────────────────────────────────────────
 _retrieval = _cfg.get("retrieval", {})
-RECENCY_HALF_LIFE_DAYS = float(_retrieval.get("recency_half_life_days", 30.0))
+RECENCY_HALF_LIFE_DAYS = float(_retrieval.get("recency_half_life_days", 90.0))
 KNOWLEDGE_SEMANTIC_WEIGHT = float(_retrieval.get("knowledge_semantic_weight", 0.8))
 KNOWLEDGE_KEYWORD_WEIGHT = float(_retrieval.get("knowledge_keyword_weight", 0.2))
-KNOWLEDGE_RELEVANCE_THRESHOLD = float(_retrieval.get("knowledge_relevance_threshold", 0.15))
+KNOWLEDGE_RELEVANCE_THRESHOLD = float(_retrieval.get("knowledge_relevance_threshold", 0.25))
 KNOWLEDGE_MAX_RESULTS = int(_retrieval.get("knowledge_max_results", 5))
 
 # ── Circuit breaker ─────────────────────────────────────────────────────

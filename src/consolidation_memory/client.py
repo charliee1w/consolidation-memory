@@ -31,6 +31,7 @@ from consolidation_memory.types import (
     StatusResult,
     ExportResult,
     CorrectResult,
+    CompactResult,
 )
 
 logger = logging.getLogger("consolidation_memory")
@@ -582,8 +583,20 @@ class MemoryClient:
             f"Do NOT wrap in code fences. Output raw markdown starting with --- frontmatter."
         )
 
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+        from consolidation_memory.config import LLM_CORRECTION_TIMEOUT
+
         try:
-            corrected = _normalize_output(llm.generate(system_prompt, user_prompt))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(llm.generate, system_prompt, user_prompt)
+                raw = future.result(timeout=LLM_CORRECTION_TIMEOUT)
+            corrected = _normalize_output(raw)
+        except FuturesTimeoutError:
+            return CorrectResult(
+                status="error",
+                message=f"LLM generation timed out after {LLM_CORRECTION_TIMEOUT}s. "
+                        "Try again or increase llm.correction_timeout in config.",
+            )
         except Exception as e:
             return CorrectResult(status="error", message=str(e))
 
@@ -642,6 +655,26 @@ class MemoryClient:
             return run_consolidation(vector_store=self._vector_store)
         finally:
             self._consolidation_lock.release()
+
+    def compact(self) -> CompactResult:
+        """Compact the FAISS index by removing tombstoned vectors.
+
+        Returns:
+            CompactResult with status, tombstones removed, and new index size.
+        """
+        removed = self._vector_store.compact()
+        if removed == 0:
+            return CompactResult(
+                status="no_tombstones",
+                tombstones_removed=0,
+                index_size=self._vector_store.size,
+            )
+        logger.info("Manual compaction removed %d tombstones", removed)
+        return CompactResult(
+            status="compacted",
+            tombstones_removed=removed,
+            index_size=self._vector_store.size,
+        )
 
     # ── Internal ──────────────────────────────────────────────────────────
 
@@ -763,12 +796,15 @@ class MemoryClient:
 
     def _consolidation_loop(self) -> None:
         """Background consolidation thread target."""
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
         from consolidation_memory import config
 
         interval = config.CONSOLIDATION_INTERVAL_HOURS * 3600
+        # Allow internal timeout + 60s buffer before we forcibly give up
+        max_duration = config.CONSOLIDATION_MAX_DURATION + 60
         logger.info(
-            "Background consolidation thread started (interval: %.1fh)",
-            config.CONSOLIDATION_INTERVAL_HOURS,
+            "Background consolidation thread started (interval: %.1fh, timeout: %ds)",
+            config.CONSOLIDATION_INTERVAL_HOURS, max_duration,
         )
 
         while not self._consolidation_stop.wait(timeout=interval):
@@ -779,11 +815,20 @@ class MemoryClient:
                 continue
             try:
                 from consolidation_memory.consolidation import run_consolidation
-                result = run_consolidation(vector_store=self._vector_store)
-                logger.info(
-                    "Background consolidation completed: %s",
-                    result.get("status", result),
-                )
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(run_consolidation, vector_store=self._vector_store)
+                    try:
+                        result = future.result(timeout=max_duration)
+                        logger.info(
+                            "Background consolidation completed: %s",
+                            result.get("status", result),
+                        )
+                    except FuturesTimeoutError:
+                        logger.error(
+                            "Background consolidation timed out after %ds; "
+                            "releasing lock. The worker thread will be abandoned.",
+                            max_duration,
+                        )
             except Exception:
                 logger.exception("Background consolidation failed")
             finally:

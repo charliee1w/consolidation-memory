@@ -56,10 +56,10 @@ def tmp_data_dir(tmp_path):
         patch("consolidation_memory.consolidation.CONSOLIDATION_LOG_DIR", consol_log),
         patch("consolidation_memory.consolidation.CONSOLIDATION_PRUNE_ENABLED", False),
         # context_assembler module-level imports
-        patch("consolidation_memory.context_assembler.RECENCY_HALF_LIFE_DAYS", 30.0),
+        patch("consolidation_memory.context_assembler.RECENCY_HALF_LIFE_DAYS", 90.0),
         patch("consolidation_memory.context_assembler.KNOWLEDGE_SEMANTIC_WEIGHT", 0.8),
         patch("consolidation_memory.context_assembler.KNOWLEDGE_KEYWORD_WEIGHT", 0.2),
-        patch("consolidation_memory.context_assembler.KNOWLEDGE_RELEVANCE_THRESHOLD", 0.15),
+        patch("consolidation_memory.context_assembler.KNOWLEDGE_RELEVANCE_THRESHOLD", 0.25),
         patch("consolidation_memory.context_assembler.KNOWLEDGE_MAX_RESULTS", 5),
         # consolidation module-level imports
         patch("consolidation_memory.consolidation.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD", 0.75),

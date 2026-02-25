@@ -33,6 +33,13 @@ from consolidation_memory import topic_cache
 logger = logging.getLogger(__name__)
 
 
+def _parse_tags(tags_value: str | list) -> list:
+    """Parse tags from DB storage format (JSON string or already-parsed list)."""
+    if isinstance(tags_value, str):
+        return json.loads(tags_value)
+    return tags_value
+
+
 def invalidate_topic_cache() -> None:
     """Call after consolidation to force re-embedding on next recall."""
     topic_cache.invalidate()
@@ -120,7 +127,7 @@ def recall(
         if _ct_set and ep["content_type"] not in _ct_set:
             continue
         if _tag_set:
-            ep_tags = json.loads(ep["tags"]) if isinstance(ep["tags"], str) else ep["tags"]
+            ep_tags = _parse_tags(ep["tags"])
             if not _tag_set.intersection(ep_tags):
                 continue
         if after and ep["created_at"] < after:
@@ -141,7 +148,7 @@ def recall(
 
     episodes = []
     for ep, score, sim in top:
-        tags = json.loads(ep["tags"]) if isinstance(ep["tags"], str) else ep["tags"]
+        tags = _parse_tags(ep["tags"])
         episodes.append({
             "id": ep["id"],
             "content": ep["content"],

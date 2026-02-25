@@ -207,12 +207,16 @@ class VectorStore:
                 logger.debug("search: all %d vectors tombstoned, returning []", self._index.ntotal)
                 return []
             # Over-fetch to compensate for tombstoned vectors being filtered out.
-            # Use configured padding if set, otherwise auto = k + all tombstones
-            # to guarantee k live results when possible.
+            # Use configured padding if set, otherwise auto-scale based on
+            # tombstone ratio. Capped at k*3 to avoid fetching the entire index
+            # when tombstone counts are pathologically high (>50% of index).
+            # At extreme ratios, this may return fewer than k results —
+            # compaction should have triggered well before that point.
             if FAISS_SEARCH_FETCH_K_PADDING > 0:
                 fetch_k = min(k + FAISS_SEARCH_FETCH_K_PADDING, self._index.ntotal)
             else:
-                fetch_k = min(k + len(self._tombstones), self._index.ntotal)
+                auto_padding = min(len(self._tombstones), k * 3)
+                fetch_k = min(k + auto_padding, self._index.ntotal)
             logger.debug(
                 "search: ntotal=%d, tombstones=%d, effective=%d, k=%d, fetch_k=%d",
                 self._index.ntotal, len(self._tombstones), effective_size, k, fetch_k,

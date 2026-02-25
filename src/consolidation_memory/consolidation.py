@@ -309,6 +309,11 @@ def _validate_llm_output(text: str, cluster_episodes: list[dict]) -> tuple[bool,
 
 
 def _llm_with_validation(prompt: str, cluster_episodes: list[dict]) -> tuple[str, int]:
+    """Call LLM and validate output, retrying once on validation failure.
+
+    Returns:
+        Tuple of (response_text, api_call_count).
+    """
     response_text = _normalize_output(_call_llm(prompt))
     api_calls = 1
 
@@ -453,6 +458,203 @@ def _find_similar_topic(title: str, summary: str, tags: list[str]) -> dict | Non
     return None
 
 
+# ── Cluster processing helpers ─────────────────────────────────────────────
+
+def _build_distillation_prompt(
+    cluster_episodes: list[dict],
+    confidence: float,
+    tag_summary: str,
+) -> str:
+    """Build the LLM prompt for distilling a cluster of episodes."""
+    episode_texts = []
+    for ep in cluster_episodes:
+        episode_texts.append(
+            f"<episode>\n[{ep['created_at']}] [{ep['content_type']}] {_sanitize_for_prompt(ep['content'])}\n</episode>"
+        )
+
+    return f"""Distill {len(cluster_episodes)} episodes into a reference document. This document will be retrieved months later to avoid re-learning the same information.
+
+STRICT RULES:
+- Extract ONLY information explicitly stated in the episodes. NEVER add advice, recommendations, or inferences not directly present in the source text.
+- Preserve specific details: file paths, version numbers, line numbers, command syntax, error messages. These are the most valuable parts. Vague summaries are worthless.
+- A "fact" is a static piece of information (what exists, what is configured, what version).
+- A "solution" is a problem->fix pair. Always state WHAT PROBLEM it solves, then the fix steps. If multiple distinct problems exist, use separate subsections.
+- A "preference" is an explicitly stated user choice or workflow habit. Do NOT invent preferences from facts.
+- The summary must be a dense factual statement, not a description of the document. BAD: "Discusses VR setup." GOOD: "VR stack uses SteamVR with SpaceCalibrator for multi-tracker calibration and VRCFaceTracking for face tracking."
+- Omit any section (Facts, Solutions, Preferences) that would be empty.
+- Do NOT wrap output in code fences. Output raw markdown only.
+
+Common tags: {tag_summary}
+
+Episodes:
+{chr(10).join(episode_texts)}
+
+Output format (raw markdown, no code fences):
+
+---
+title: Short Descriptive Title
+summary: Dense factual summary with key specifics.
+tags: [tag1, tag2]
+confidence: {confidence}
+---
+
+## Facts
+- Specific fact with concrete details preserved
+
+## Solutions
+### Problem Name
+1. Step with exact commands/paths
+2. Next step
+
+## Preferences
+- Explicitly stated user preference"""
+
+
+def _merge_into_existing(
+    existing: dict,
+    response_text: str,
+    cluster_episodes: list[dict],
+    cluster_ep_ids: list[str],
+    confidence: float,
+) -> tuple[str, int]:
+    """Merge new knowledge into an existing topic file.
+
+    Returns:
+        Tuple of (status, api_calls) where status is always 'updated'.
+
+    Raises:
+        Exception: Propagated from LLM or file I/O failures (caller handles).
+    """
+    filepath = KNOWLEDGE_DIR / existing["filename"]
+    existing_content = ""
+    if filepath.exists():
+        existing_content = filepath.read_text(encoding="utf-8")
+
+    merge_prompt = f"""Merge new knowledge into an existing reference document.
+
+STRICT RULES:
+- If a fact appears in both documents, keep the MORE SPECIFIC version (the one with more detail, exact paths, version numbers).
+- If new information contradicts existing information, keep the NEWER information (from NEW KNOWLEDGE) and remove the old.
+- Do NOT add commentary, advice, or inferences not present in either source.
+- Preserve all file paths, commands, version numbers, and error messages exactly.
+- Combine tags from both documents, deduplicated.
+- Update the summary to cover the merged content. Keep it dense and factual.
+- Maintain section structure: Facts, Solutions (with ### subsections per problem), Preferences.
+- Omit empty sections.
+- Do NOT wrap output in code fences. Output raw markdown only.
+
+EXISTING DOCUMENT:
+{existing_content}
+
+NEW KNOWLEDGE TO MERGE:
+{response_text}
+
+Output the complete merged document starting with --- frontmatter:"""
+
+    merged_text, merge_calls = _llm_with_validation(merge_prompt, cluster_episodes)
+    _version_knowledge_file(filepath)
+    filepath.write_text(merged_text, encoding="utf-8")
+    merged_parsed = _parse_frontmatter(merged_text)
+    upsert_knowledge_topic(
+        filename=existing["filename"],
+        title=merged_parsed["meta"].get("title", existing["title"]),
+        summary=merged_parsed["meta"].get("summary", existing["summary"]),
+        source_episodes=cluster_ep_ids,
+        fact_count=_count_facts(merged_text),
+        confidence=float(merged_parsed["meta"].get("confidence", confidence)),
+    )
+    mark_consolidated(cluster_ep_ids, existing["filename"])
+    topic_cache.invalidate()
+    logger.info("Merged into existing topic: %s", existing["filename"])
+    return "updated", merge_calls
+
+
+def _process_cluster(
+    cluster_id: int,
+    cluster_items: list[tuple[dict, int]],
+    sim_matrix: np.ndarray,
+    cluster_confidences: list[float],
+) -> dict:
+    """Process a single cluster: summarize via LLM, create or merge topic.
+
+    Returns:
+        Dict with keys: status ('created'|'updated'|'failed'), api_calls (int),
+        and optionally failed_ep_ids (list[str]).
+    """
+    if len(cluster_items) > CONSOLIDATION_MAX_CLUSTER_SIZE:
+        cluster_items = sorted(
+            cluster_items,
+            key=lambda item: item[0].get("surprise_score", 0.5),
+            reverse=True,
+        )[:CONSOLIDATION_MAX_CLUSTER_SIZE]
+
+    cluster_episodes = [ep for ep, _ in cluster_items]
+    cluster_indices = [idx for _, idx in cluster_items]
+
+    confidence = _compute_cluster_confidence(
+        cluster_episodes, sim_matrix, cluster_indices,
+    )
+    cluster_confidences.append(confidence)
+
+    all_tags: list[str] = []
+    for ep in cluster_episodes:
+        raw = ep["tags"]
+        all_tags.extend(json.loads(raw) if isinstance(raw, str) else raw)
+    tag_counts = Counter(all_tags).most_common(5)
+    tag_summary = ", ".join(f"{t}({c})" for t, c in tag_counts) if tag_counts else "none"
+
+    prompt = _build_distillation_prompt(cluster_episodes, confidence, tag_summary)
+
+    logger.info("Summarizing cluster %d (%d episodes)...", cluster_id, len(cluster_episodes))
+    cluster_ep_ids = [ep["id"] for ep in cluster_episodes]
+    api_calls = 0
+
+    try:
+        response_text, calls = _llm_with_validation(prompt, cluster_episodes)
+        api_calls += calls
+    except Exception as e:
+        logger.error("LLM API call failed for cluster %d: %s", cluster_id, e, exc_info=True)
+        increment_consolidation_attempts(cluster_ep_ids)
+        return {"status": "failed", "api_calls": api_calls, "failed_ep_ids": cluster_ep_ids}
+
+    parsed = _parse_frontmatter(response_text)
+    meta = parsed["meta"]
+    title = meta.get("title", f"Topic {cluster_id}")
+    summary = meta.get("summary", "")
+    tags = meta.get("tags", [t for t, _ in tag_counts])
+
+    existing = _find_similar_topic(title, summary, tags)
+
+    if existing:
+        try:
+            status, merge_calls = _merge_into_existing(
+                existing, response_text, cluster_episodes, cluster_ep_ids, confidence,
+            )
+            api_calls += merge_calls
+            return {"status": status, "api_calls": api_calls}
+        except Exception as e:
+            logger.error("Merge failed for topic %s: %s", existing["filename"], e, exc_info=True)
+            increment_consolidation_attempts(cluster_ep_ids)
+            return {"status": "failed", "api_calls": api_calls, "failed_ep_ids": cluster_ep_ids}
+    else:
+        filename = _slugify(title) + ".md"
+        filepath = KNOWLEDGE_DIR / filename
+        _version_knowledge_file(filepath)
+        filepath.write_text(response_text, encoding="utf-8")
+        upsert_knowledge_topic(
+            filename=filename,
+            title=title,
+            summary=summary,
+            source_episodes=cluster_ep_ids,
+            fact_count=_count_facts(response_text),
+            confidence=confidence,
+        )
+        mark_consolidated(cluster_ep_ids, filename)
+        topic_cache.invalidate()
+        logger.info("Created new topic: %s", filename)
+        return {"status": "created", "api_calls": api_calls}
+
+
 # ── Main consolidation loop ─────────────────────────────────────────────────
 
 def run_consolidation(vector_store: VectorStore | None = None) -> dict:
@@ -546,165 +748,20 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
                 )
                 break
 
-            if len(cluster_items) > CONSOLIDATION_MAX_CLUSTER_SIZE:
-                cluster_items.sort(
-                    key=lambda item: item[0].get("surprise_score", 0.5),
-                    reverse=True,
-                )
-                cluster_items = cluster_items[:CONSOLIDATION_MAX_CLUSTER_SIZE]
-
-            cluster_episodes = [ep for ep, _ in cluster_items]
-            cluster_indices = [idx for _, idx in cluster_items]
-
-            confidence = _compute_cluster_confidence(
-                cluster_episodes, sim_matrix, cluster_indices,
+            result = _process_cluster(
+                cluster_id, cluster_items, sim_matrix, cluster_confidences,
             )
-            cluster_confidences.append(confidence)
-
-            all_tags = []
-            for ep in cluster_episodes:
-                tags = json.loads(ep["tags"]) if isinstance(ep["tags"], str) else ep["tags"]
-                all_tags.extend(tags)
-            tag_counts = Counter(all_tags).most_common(5)
-            tag_summary = ", ".join(f"{t}({c})" for t, c in tag_counts) if tag_counts else "none"
-
-            episode_texts = []
-            for ep in cluster_episodes:
-                episode_texts.append(
-                    f"<episode>\n[{ep['created_at']}] [{ep['content_type']}] {_sanitize_for_prompt(ep['content'])}\n</episode>"
-                )
-
-            prompt = f"""Distill {len(cluster_episodes)} episodes into a reference document. This document will be retrieved months later to avoid re-learning the same information.
-
-STRICT RULES:
-- Extract ONLY information explicitly stated in the episodes. NEVER add advice, recommendations, or inferences not directly present in the source text.
-- Preserve specific details: file paths, version numbers, line numbers, command syntax, error messages. These are the most valuable parts. Vague summaries are worthless.
-- A "fact" is a static piece of information (what exists, what is configured, what version).
-- A "solution" is a problem->fix pair. Always state WHAT PROBLEM it solves, then the fix steps. If multiple distinct problems exist, use separate subsections.
-- A "preference" is an explicitly stated user choice or workflow habit. Do NOT invent preferences from facts.
-- The summary must be a dense factual statement, not a description of the document. BAD: "Discusses VR setup." GOOD: "VR stack uses SteamVR with SpaceCalibrator for multi-tracker calibration and VRCFaceTracking for face tracking."
-- Omit any section (Facts, Solutions, Preferences) that would be empty.
-- Do NOT wrap output in code fences. Output raw markdown only.
-
-Common tags: {tag_summary}
-
-Episodes:
-{chr(10).join(episode_texts)}
-
-Output format (raw markdown, no code fences):
-
----
-title: Short Descriptive Title
-summary: Dense factual summary with key specifics.
-tags: [tag1, tag2]
-confidence: {confidence}
----
-
-## Facts
-- Specific fact with concrete details preserved
-
-## Solutions
-### Problem Name
-1. Step with exact commands/paths
-2. Next step
-
-## Preferences
-- Explicitly stated user preference"""
-
-            logger.info("Summarizing cluster %d (%d episodes)...", cluster_id, len(cluster_episodes))
-            try:
-                response_text, calls = _llm_with_validation(prompt, cluster_episodes)
-                api_calls += calls
-            except Exception as e:
-                logger.error("LLM API call failed for cluster %d: %s", cluster_id, e)
-                clusters_failed += 1
-                consecutive_failures += 1
-                failed_ep_ids = [ep["id"] for ep in cluster_episodes]
-                increment_consolidation_attempts(failed_ep_ids)
-                all_failed_ep_ids.extend(failed_ep_ids)
-                continue
-
-            parsed = _parse_frontmatter(response_text)
-            meta = parsed["meta"]
-            title = meta.get("title", f"Topic {cluster_id}")
-            summary = meta.get("summary", "")
-            tags = meta.get("tags", [t for t, _ in tag_counts])
-
-            existing = _find_similar_topic(title, summary, tags)
-            cluster_ep_ids = [ep["id"] for ep in cluster_episodes]
-
-            if existing:
-                filepath = KNOWLEDGE_DIR / existing["filename"]
-                existing_content = ""
-                if filepath.exists():
-                    existing_content = filepath.read_text(encoding="utf-8")
-
-                merge_prompt = f"""Merge new knowledge into an existing reference document.
-
-STRICT RULES:
-- If a fact appears in both documents, keep the MORE SPECIFIC version (the one with more detail, exact paths, version numbers).
-- If new information contradicts existing information, keep the NEWER information (from NEW KNOWLEDGE) and remove the old.
-- Do NOT add commentary, advice, or inferences not present in either source.
-- Preserve all file paths, commands, version numbers, and error messages exactly.
-- Combine tags from both documents, deduplicated.
-- Update the summary to cover the merged content. Keep it dense and factual.
-- Maintain section structure: Facts, Solutions (with ### subsections per problem), Preferences.
-- Omit empty sections.
-- Do NOT wrap output in code fences. Output raw markdown only.
-
-EXISTING DOCUMENT:
-{existing_content}
-
-NEW KNOWLEDGE TO MERGE:
-{response_text}
-
-Output the complete merged document starting with --- frontmatter:"""
-
-                try:
-                    merged_text, merge_calls = _llm_with_validation(merge_prompt, cluster_episodes)
-                    api_calls += merge_calls
-                    _version_knowledge_file(filepath)
-                    filepath.write_text(merged_text, encoding="utf-8")
-                    merged_parsed = _parse_frontmatter(merged_text)
-                    upsert_knowledge_topic(
-                        filename=existing["filename"],
-                        title=merged_parsed["meta"].get("title", existing["title"]),
-                        summary=merged_parsed["meta"].get("summary", existing["summary"]),
-                        source_episodes=cluster_ep_ids,
-                        fact_count=_count_facts(merged_text),
-                        confidence=float(merged_parsed["meta"].get("confidence", confidence)),
-                    )
-                    mark_consolidated(cluster_ep_ids, existing["filename"])
-                    topic_cache.invalidate()
-                    topics_updated += 1
-                    consecutive_failures = 0
-                    logger.info("Merged into existing topic: %s", existing["filename"])
-                except Exception as e:
-                    logger.error("Merge failed for topic %s: %s", existing["filename"], e)
-                    clusters_failed += 1
-                    consecutive_failures += 1
-                    failed_ep_ids = [ep["id"] for ep in cluster_episodes]
-                    increment_consolidation_attempts(failed_ep_ids)
-                    all_failed_ep_ids.extend(failed_ep_ids)
-                    continue
-            else:
-                filename = _slugify(title) + ".md"
-                filepath = KNOWLEDGE_DIR / filename
-                _version_knowledge_file(filepath)
-                filepath.write_text(response_text, encoding="utf-8")
-                upsert_knowledge_topic(
-                    filename=filename,
-                    title=title,
-                    summary=summary,
-                    source_episodes=cluster_ep_ids,
-                    fact_count=_count_facts(response_text),
-                    confidence=confidence,
-                )
-                mark_consolidated(cluster_ep_ids, filename)
-                topic_cache.invalidate()
+            api_calls += result["api_calls"]
+            if result["status"] == "created":
                 topics_created += 1
                 consecutive_failures = 0
-                logger.info("Created new topic: %s", filename)
+            elif result["status"] == "updated":
+                topics_updated += 1
+                consecutive_failures = 0
+            elif result["status"] == "failed":
+                clusters_failed += 1
+                consecutive_failures += 1
+                all_failed_ep_ids.extend(result.get("failed_ep_ids", []))
 
         _update_index()
 

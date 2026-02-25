@@ -62,6 +62,7 @@ class StatusResult:
     version: str = ""
     health: dict = field(default_factory=dict)
     consolidation_metrics: list[dict] = field(default_factory=list)
+    consolidation_quality: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -81,6 +82,16 @@ class CorrectResult:
     status: str  # "corrected" | "not_found" | "error"
     filename: str | None = None
     title: str | None = None
+    message: str | None = None
+
+
+@dataclass
+class SearchResult:
+    """Result of a keyword/metadata search operation."""
+
+    episodes: list[dict] = field(default_factory=list)
+    total_matches: int = 0
+    query: str | None = None
     message: str | None = None
 
 

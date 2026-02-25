@@ -192,7 +192,7 @@ class TestClientStatus:
         status = client.status()
         assert status.episodic_buffer["total"] == 1
         assert status.faiss_index_size == 1
-        assert status.version == "0.1.0"
+        assert status.version == "0.2.0"
         assert status.embedding_backend != ""
 
         client.close()

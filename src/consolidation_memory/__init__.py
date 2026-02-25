@@ -1,6 +1,6 @@
 """Consolidation Memory — persistent semantic memory for AI conversations."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Lazy imports to avoid pulling in heavy deps (faiss, numpy) on bare import.
 _LAZY_IMPORTS = {
@@ -11,6 +11,8 @@ _LAZY_IMPORTS = {
     "StatusResult": "consolidation_memory.types",
     "ExportResult": "consolidation_memory.types",
     "CorrectResult": "consolidation_memory.types",
+    "SearchResult": "consolidation_memory.types",
+    "BatchStoreResult": "consolidation_memory.types",
 }
 
 __all__ = ["__version__", *_LAZY_IMPORTS]

@@ -563,6 +563,67 @@ def insert_consolidation_metrics(
     return metric_id
 
 
+def search_episodes(
+    query: str | None = None,
+    content_types: list[str] | None = None,
+    tags: list[str] | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Keyword/metadata search over episodes. No embeddings required.
+
+    Args:
+        query: Text substring to search in episode content (case-insensitive).
+        content_types: Filter to specific content types.
+        tags: Filter to episodes with at least one matching tag.
+        after: Only episodes created after this ISO date.
+        before: Only episodes created before this ISO date.
+        limit: Max results.
+
+    Returns:
+        List of episode dicts, ordered by created_at descending.
+    """
+    conditions: list[str] = ["deleted = 0"]
+    params: list[Any] = []
+
+    if query:
+        conditions.append("content LIKE ?")
+        params.append(f"%{query}%")
+
+    if content_types:
+        placeholders = ",".join("?" for _ in content_types)
+        conditions.append(f"content_type IN ({placeholders})")
+        params.extend(content_types)
+
+    if after:
+        conditions.append("created_at > ?")
+        params.append(after)
+
+    if before:
+        conditions.append("created_at < ?")
+        params.append(before)
+
+    where = " AND ".join(conditions)
+    sql = f"SELECT * FROM episodes WHERE {where} ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    with get_connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    results = []
+    for row in rows:
+        ep = dict(row)
+        # Tag filtering in Python since tags are stored as JSON array string
+        if tags:
+            ep_tags = json.loads(ep["tags"]) if isinstance(ep["tags"], str) else ep["tags"]
+            if not set(tags).intersection(ep_tags):
+                continue
+        results.append(ep)
+
+    return results
+
+
 def get_consolidation_metrics(limit: int = 20) -> list[dict[str, Any]]:
     """Retrieve recent consolidation metrics, newest first."""
     with get_connection() as conn:

@@ -131,6 +131,40 @@ async def memory_store_batch(
 
 
 @mcp.tool()
+async def memory_search(
+    query: str | None = None,
+    content_types: list[str] | None = None,
+    tags: list[str] | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    limit: int = 20,
+) -> str:
+    """Keyword/metadata search over episodes. Works without embedding backend.
+
+    Unlike memory_recall (semantic similarity), this does plain text matching
+    in SQLite. Use when the embedding backend is down, or for exact substring
+    searches. At least one filter parameter should be provided.
+
+    Args:
+        query: Text substring to search for in episode content (case-insensitive).
+        content_types: Filter to specific types (e.g. ['solution', 'fact']).
+        tags: Filter to episodes with at least one matching tag.
+        after: Only episodes created after this ISO date (e.g. '2025-01-01').
+        before: Only episodes created before this ISO date.
+        limit: Maximum results (default 20, max 50).
+    """
+    result = _client.search(
+        query=query,
+        content_types=content_types,
+        tags=tags,
+        after=after,
+        before=before,
+        limit=min(limit, 50),
+    )
+    return json.dumps(dataclasses.asdict(result), default=str)
+
+
+@mcp.tool()
 async def memory_status() -> str:
     """Show memory system statistics.
 

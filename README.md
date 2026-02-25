@@ -74,19 +74,22 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-Eight tools become available:
+Nine tools become available:
 
 | Tool | What it does |
 |------|-------------|
 | `memory_store` | Save an episode (fact, solution, preference, exchange) |
 | `memory_store_batch` | Store multiple episodes in one call (single embed + FAISS batch) |
 | `memory_recall` | Semantic search over episodes + knowledge, with optional filters |
-| `memory_status` | System stats + health diagnostics |
+| `memory_search` | Keyword/metadata search — works without embedding backend |
+| `memory_status` | System stats + health diagnostics + consolidation metrics |
 | `memory_forget` | Soft-delete an episode |
 | `memory_export` | Export everything to JSON |
 | `memory_correct` | Fix outdated knowledge documents |
 
 `memory_recall` supports optional filters: `content_types`, `tags`, `after`, `before` — all applied post-vector-search so you can narrow results to specific episode types or date ranges.
+
+`memory_search` does plain text `LIKE` matching in SQLite. No embedding backend needed. Supports the same filters (`content_types`, `tags`, `after`, `before`) plus a `limit` parameter.
 
 ### Python API
 
@@ -129,7 +132,8 @@ consolidation-memory serve --rest --port 8080
 | `POST` | `/memory/store` | Store episode |
 | `POST` | `/memory/store/batch` | Store multiple episodes |
 | `POST` | `/memory/recall` | Semantic search (with optional filters) |
-| `GET` | `/memory/status` | System statistics |
+| `POST` | `/memory/search` | Keyword/metadata search (no embedding needed) |
+| `GET` | `/memory/status` | System statistics + consolidation metrics |
 | `DELETE` | `/memory/episodes/{id}` | Forget episode |
 | `POST` | `/memory/consolidate` | Trigger consolidation |
 | `POST` | `/memory/correct` | Correct knowledge doc |

@@ -26,6 +26,7 @@ from consolidation_memory.types import (
     StoreResult,
     BatchStoreResult,
     RecallResult,
+    SearchResult,
     ForgetResult,
     StatusResult,
     ExportResult,
@@ -348,6 +349,66 @@ class MemoryClient:
             warnings=result.get("warnings", []),
         )
 
+    def search(
+        self,
+        query: str | None = None,
+        content_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 20,
+    ) -> SearchResult:
+        """Keyword/metadata search over episodes. No embedding backend required.
+
+        Unlike recall(), this does plain text LIKE matching in SQLite — useful
+        when the embedding backend is down, or for exact substring matching.
+
+        Args:
+            query: Text substring to search for (case-insensitive).
+            content_types: Filter to specific content types.
+            tags: Filter to episodes with at least one matching tag.
+            after: Only episodes created after this ISO date.
+            before: Only episodes created before this ISO date.
+            limit: Max results (default 20).
+
+        Returns:
+            SearchResult with matching episodes.
+        """
+        import json
+        from consolidation_memory.database import search_episodes
+
+        results = search_episodes(
+            query=query,
+            content_types=content_types,
+            tags=tags,
+            after=after,
+            before=before,
+            limit=limit,
+        )
+
+        episodes = []
+        for ep in results:
+            ep_tags = json.loads(ep["tags"]) if isinstance(ep["tags"], str) else ep["tags"]
+            episodes.append({
+                "id": ep["id"],
+                "content": ep["content"],
+                "content_type": ep["content_type"],
+                "tags": ep_tags,
+                "created_at": ep["created_at"],
+                "surprise_score": ep["surprise_score"],
+                "access_count": ep["access_count"],
+            })
+
+        logger.info(
+            "Search query=%r returned %d results",
+            query, len(episodes),
+        )
+        return SearchResult(
+            episodes=episodes,
+            total_matches=len(episodes),
+            query=query,
+        )
+
     def status(self) -> StatusResult:
         """Get memory system statistics.
 
@@ -372,6 +433,22 @@ class MemoryClient:
         from consolidation_memory.database import get_consolidation_metrics
         metrics = get_consolidation_metrics(limit=10)
 
+        # Compute aggregate quality stats from recent metrics
+        quality_summary = {}
+        if metrics:
+            total_succeeded = sum(m.get("clusters_succeeded", 0) for m in metrics)
+            total_failed = sum(m.get("clusters_failed", 0) for m in metrics)
+            total_clusters = total_succeeded + total_failed
+            confidences = [m["avg_confidence"] for m in metrics if m.get("avg_confidence", 0) > 0]
+            quality_summary = {
+                "runs_analyzed": len(metrics),
+                "total_clusters_processed": total_clusters,
+                "success_rate": round(total_succeeded / total_clusters, 3) if total_clusters else 0,
+                "avg_confidence": round(sum(confidences) / len(confidences), 3) if confidences else 0,
+                "total_api_calls": sum(m.get("api_calls", 0) for m in metrics),
+                "total_episodes_processed": sum(m.get("episodes_processed", 0) for m in metrics),
+            }
+
         return StatusResult(
             episodic_buffer=stats["episodic_buffer"],
             knowledge_base=stats["knowledge_base"],
@@ -384,6 +461,7 @@ class MemoryClient:
             version=__version__,
             health=health,
             consolidation_metrics=metrics,
+            consolidation_quality=quality_summary,
         )
 
     def forget(self, episode_id: str) -> ForgetResult:

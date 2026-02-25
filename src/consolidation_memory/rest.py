@@ -56,6 +56,15 @@ class BatchStoreRequest(BaseModel):
     episodes: list[dict]
 
 
+class SearchRequest(BaseModel):
+    query: str | None = None
+    content_types: list[str] | None = None
+    tags: list[str] | None = None
+    after: str | None = None
+    before: str | None = None
+    limit: int = Field(default=20, ge=1, le=50)
+
+
 class CorrectRequest(BaseModel):
     topic_filename: str
     correction: str
@@ -119,6 +128,19 @@ def create_app() -> FastAPI:
             tags=req.tags,
             after=req.after,
             before=req.before,
+        )
+        return dataclasses.asdict(result)
+
+    @app.post("/memory/search")
+    async def search(req: SearchRequest):
+        """Keyword/metadata search over episodes (no embedding needed)."""
+        result = _client.search(
+            query=req.query,
+            content_types=req.content_types,
+            tags=req.tags,
+            after=req.after,
+            before=req.before,
+            limit=req.limit,
         )
         return dataclasses.asdict(result)
 

@@ -260,11 +260,62 @@ MEMORY_CORRECT_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_SEARCH_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_search",
+        "description": (
+            "Keyword/metadata search over episodes. Works without embedding backend. "
+            "Unlike memory_recall (semantic similarity), this does plain text matching. "
+            "Use when the embedding backend is down, or for exact substring searches."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Text substring to search for in episode content (case-insensitive).",
+                },
+                "content_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["exchange", "fact", "solution", "preference"],
+                    },
+                    "description": "Filter to specific content types.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter to episodes with at least one matching tag.",
+                },
+                "after": {
+                    "type": "string",
+                    "description": "Only episodes created after this ISO date (e.g. '2025-01-01').",
+                },
+                "before": {
+                    "type": "string",
+                    "description": "Only episodes created before this ISO date.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum results to return.",
+                    "default": 20,
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
 # Convenience list of all tool schemas
 openai_tools: list[dict[str, Any]] = [
     MEMORY_STORE_SCHEMA,
     MEMORY_STORE_BATCH_SCHEMA,
     MEMORY_RECALL_SCHEMA,
+    MEMORY_SEARCH_SCHEMA,
     MEMORY_STATUS_SCHEMA,
     MEMORY_FORGET_SCHEMA,
     MEMORY_EXPORT_SCHEMA,
@@ -323,6 +374,17 @@ def dispatch_tool_call(
             tags=arguments.get("tags"),
             after=arguments.get("after"),
             before=arguments.get("before"),
+        )
+        return dataclasses.asdict(result)
+
+    elif name == "memory_search":
+        result = client.search(
+            query=arguments.get("query"),
+            content_types=arguments.get("content_types"),
+            tags=arguments.get("tags"),
+            after=arguments.get("after"),
+            before=arguments.get("before"),
+            limit=arguments.get("limit", 20),
         )
         return dataclasses.asdict(result)
 

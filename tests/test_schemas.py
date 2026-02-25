@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from consolidation_memory.schemas import openai_tools, dispatch_tool_call
-from consolidation_memory.types import StoreResult, RecallResult, ForgetResult, StatusResult
+from consolidation_memory.types import StoreResult, RecallResult, SearchResult, ForgetResult, StatusResult
 
 
 class TestSchemaStructure:
@@ -17,6 +17,7 @@ class TestSchemaStructure:
             "memory_store",
             "memory_store_batch",
             "memory_recall",
+            "memory_search",
             "memory_status",
             "memory_forget",
             "memory_export",
@@ -93,6 +94,25 @@ class TestDispatch:
         result = dispatch_tool_call(client, "memory_forget", {"episode_id": "abc"})
         assert result["status"] == "forgotten"
         client.forget.assert_called_once_with(episode_id="abc")
+
+    def test_dispatch_search(self):
+        client = MagicMock()
+        client.search.return_value = SearchResult(
+            episodes=[{"id": "1", "content": "test"}],
+            total_matches=1,
+            query="test",
+        )
+
+        result = dispatch_tool_call(client, "memory_search", {"query": "test"})
+        assert result["total_matches"] == 1
+        client.search.assert_called_once_with(
+            query="test",
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            limit=20,
+        )
 
     def test_dispatch_unknown_raises(self):
         client = MagicMock()

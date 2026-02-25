@@ -17,6 +17,8 @@ from typing import Any
 from consolidation_memory.config import DB_PATH
 
 _local = threading.local()
+_all_connections: list[sqlite3.Connection] = []  # Track all thread-local connections for cleanup
+_conn_list_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
@@ -72,7 +74,22 @@ def _get_cached_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     _local.conn = conn
+    with _conn_list_lock:
+        _all_connections.append(conn)
     return conn
+
+
+def close_all_connections() -> None:
+    """Close all thread-local connections. Call during shutdown or test teardown."""
+    with _conn_list_lock:
+        for conn in _all_connections:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _all_connections.clear()
+    # Also clear this thread's cached reference
+    _local.conn = None
 
 
 @contextmanager
@@ -154,7 +171,12 @@ def ensure_schema() -> None:
 
 
 def _check_and_migrate(conn: sqlite3.Connection) -> None:
-    """Check current schema version and apply pending migrations."""
+    """Check current schema version and apply pending migrations.
+
+    Each version's migration runs inside a SAVEPOINT so a crash mid-migration
+    leaves the database in the last fully-applied version rather than a
+    half-migrated state.
+    """
     row = conn.execute(
         "SELECT MAX(version) as v FROM schema_version"
     ).fetchone()
@@ -165,9 +187,7 @@ def _check_and_migrate(conn: sqlite3.Connection) -> None:
         # The base CREATE TABLE statements only define the v1 schema;
         # columns and tables added in later migrations must still be executed.
         for version in range(2, CURRENT_SCHEMA_VERSION + 1):
-            if version in MIGRATIONS:
-                for sql in MIGRATIONS[version]:
-                    conn.execute(sql)
+            _apply_migration(conn, version)
         conn.execute(
             "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
             (CURRENT_SCHEMA_VERSION, _now()),
@@ -177,15 +197,28 @@ def _check_and_migrate(conn: sqlite3.Connection) -> None:
     if current >= CURRENT_SCHEMA_VERSION:
         return
 
-    # Apply pending migrations
+    # Apply pending migrations, each in its own savepoint
     for version in range(current + 1, CURRENT_SCHEMA_VERSION + 1):
-        if version in MIGRATIONS:
-            for sql in MIGRATIONS[version]:
-                conn.execute(sql)
+        _apply_migration(conn, version)
         conn.execute(
             "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
             (version, _now()),
         )
+
+
+def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
+    """Apply a single migration version inside a SAVEPOINT for atomicity."""
+    if version not in MIGRATIONS:
+        return
+    savepoint = f"migration_v{version}"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        for sql in MIGRATIONS[version]:
+            conn.execute(sql)
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        raise
 
 
 # ── Episode CRUD ─────────────────────────────────────────────────────────────

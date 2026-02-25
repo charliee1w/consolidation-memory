@@ -206,8 +206,13 @@ class VectorStore:
             if effective_size <= 0:
                 logger.debug("search: all %d vectors tombstoned, returning []", self._index.ntotal)
                 return []
-            padding = FAISS_SEARCH_FETCH_K_PADDING if FAISS_SEARCH_FETCH_K_PADDING > 0 else len(self._tombstones)
-            fetch_k = min(k + padding, self._index.ntotal)
+            # Over-fetch to compensate for tombstoned vectors being filtered out.
+            # Use configured padding if set, otherwise auto = k + all tombstones
+            # to guarantee k live results when possible.
+            if FAISS_SEARCH_FETCH_K_PADDING > 0:
+                fetch_k = min(k + FAISS_SEARCH_FETCH_K_PADDING, self._index.ntotal)
+            else:
+                fetch_k = min(k + len(self._tombstones), self._index.ntotal)
             logger.debug(
                 "search: ntotal=%d, tombstones=%d, effective=%d, k=%d, fetch_k=%d",
                 self._index.ntotal, len(self._tombstones), effective_size, k, fetch_k,

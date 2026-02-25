@@ -9,6 +9,7 @@ Backend is lazily instantiated on first use based on config.EMBEDDING_BACKEND.
 """
 
 import logging
+import threading
 
 import numpy as np
 
@@ -17,6 +18,7 @@ from consolidation_memory.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
+_backend_lock = threading.Lock()
 _embedding_backend: EmbeddingBackend | None = None
 _llm_backend: LLMBackend | None = None
 _embed_circuit: CircuitBreaker | None = None
@@ -25,12 +27,14 @@ _embed_circuit: CircuitBreaker | None = None
 def _get_embed_circuit() -> CircuitBreaker:
     global _embed_circuit
     if _embed_circuit is None:
-        from consolidation_memory.config import CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN
-        _embed_circuit = CircuitBreaker(
-            threshold=CIRCUIT_BREAKER_THRESHOLD,
-            cooldown=CIRCUIT_BREAKER_COOLDOWN,
-            name="embedding",
-        )
+        with _backend_lock:
+            if _embed_circuit is None:
+                from consolidation_memory.config import CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN
+                _embed_circuit = CircuitBreaker(
+                    threshold=CIRCUIT_BREAKER_THRESHOLD,
+                    cooldown=CIRCUIT_BREAKER_COOLDOWN,
+                    name="embedding",
+                )
     return _embed_circuit
 
 
@@ -121,23 +125,28 @@ def _create_llm_backend() -> LLMBackend | None:
 def get_embedding_backend() -> EmbeddingBackend:
     global _embedding_backend
     if _embedding_backend is None:
-        _embedding_backend = _create_embedding_backend()
+        with _backend_lock:
+            if _embedding_backend is None:
+                _embedding_backend = _create_embedding_backend()
     return _embedding_backend
 
 
 def get_llm_backend() -> LLMBackend | None:
     global _llm_backend
     if _llm_backend is None:
-        _llm_backend = _create_llm_backend()
+        with _backend_lock:
+            if _llm_backend is None:
+                _llm_backend = _create_llm_backend()
     return _llm_backend
 
 
 def reset_backends() -> None:
     """Reset cached backends (for testing or config reload)."""
     global _embedding_backend, _llm_backend, _embed_circuit
-    _embedding_backend = None
-    _llm_backend = None
-    _embed_circuit = None
+    with _backend_lock:
+        _embedding_backend = None
+        _llm_backend = None
+        _embed_circuit = None
 
 
 # ── Drop-in compatibility functions ──────────────────────────────────────────

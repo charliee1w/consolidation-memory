@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import shutil
+import threading
 import time
 import unicodedata
 from collections import Counter
@@ -68,13 +69,16 @@ from consolidation_memory.backends import encode_documents, get_llm_backend
 logger = logging.getLogger(__name__)
 
 _llm_circuit: CircuitBreaker | None = None
+_llm_circuit_lock = threading.Lock()
 
 
 def _get_llm_circuit() -> CircuitBreaker:
     global _llm_circuit
     if _llm_circuit is None:
-        from consolidation_memory.config import CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN
-        _llm_circuit = CircuitBreaker(CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN, "llm")
+        with _llm_circuit_lock:
+            if _llm_circuit is None:
+                from consolidation_memory.config import CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN
+                _llm_circuit = CircuitBreaker(CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN, "llm")
     return _llm_circuit
 
 
@@ -150,6 +154,8 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _normalize_output(text: str) -> str:
+    if not text or not text.strip():
+        return ""
     text = _strip_code_fences(text)
 
     if not text.startswith("---"):
@@ -331,7 +337,7 @@ def _version_knowledge_file(filepath: Path) -> None:
 
     KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
     stem = filepath.stem
     versioned_name = f"{stem}.{timestamp}.md"
     versioned_path = KNOWLEDGE_VERSIONS_DIR / versioned_name
@@ -724,7 +730,7 @@ Output the complete merged document starting with --- frontmatter:"""
             "failed_episode_ids": all_failed_ep_ids,
         }
 
-        report_path = CONSOLIDATION_LOG_DIR / f"{datetime.now().strftime('%Y-%m-%dT%H-%M-%S')}.json"
+        report_path = CONSOLIDATION_LOG_DIR / f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}.json"
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
         complete_consolidation_run(

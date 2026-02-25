@@ -401,14 +401,19 @@ class TestVersioning:
 
 class TestTopicCache:
     def test_cache_invalidation(self):
-        from consolidation_memory.topic_cache import _cache, invalidate
+        from consolidation_memory.topic_cache import _cache, _version, invalidate
+        import consolidation_memory.topic_cache as tc
 
-        _cache["topic_count"] = 5
+        # Populate cache with a known version
+        tc._version = 5
+        _cache["version"] = 5
         _cache["topics"] = [{"title": "Cached", "summary": "cached"}]
         _cache["vecs"] = np.zeros((1, 384), dtype=np.float32)
 
         invalidate()
-        assert _cache["topic_count"] == -1
+        # Version should have been bumped, making the cache stale
+        assert tc._version == 6
+        assert _cache["version"] != tc._version
 
     @patch("consolidation_memory.topic_cache.encode_documents")
     def test_cache_reuse(self, mock_embed):

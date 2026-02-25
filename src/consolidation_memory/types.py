@@ -3,6 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class ContentType(str, Enum):
+    """Valid episode content types."""
+    EXCHANGE = "exchange"
+    FACT = "fact"
+    SOLUTION = "solution"
+    PREFERENCE = "preference"
 
 
 @dataclass

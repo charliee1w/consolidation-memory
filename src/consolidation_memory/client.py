@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 from consolidation_memory import __version__
 from consolidation_memory.types import (
+    ContentType,
     StoreResult,
     RecallResult,
     ForgetResult,
@@ -84,7 +85,12 @@ class MemoryClient:
         """Stop background threads. Call when done."""
         self._consolidation_stop.set()
         if self._consolidation_thread is not None:
-            self._consolidation_thread.join(timeout=5)
+            self._consolidation_thread.join(timeout=30)
+            if self._consolidation_thread.is_alive():
+                logger.warning(
+                    "Consolidation thread did not stop within 30s; "
+                    "it will terminate when the process exits (daemon thread)."
+                )
             self._consolidation_thread = None
 
     def __enter__(self) -> MemoryClient:
@@ -148,10 +154,10 @@ class MemoryClient:
                         )
 
         # Validate content_type
-        valid_types = {"exchange", "fact", "solution", "preference"}
+        valid_types = {ct.value for ct in ContentType}
         if content_type not in valid_types:
             logger.warning("Invalid content_type %r, defaulting to 'exchange'", content_type)
-            content_type = "exchange"
+            content_type = ContentType.EXCHANGE.value
 
         episode_id = insert_episode(
             content=content,
@@ -321,7 +327,7 @@ class MemoryClient:
             },
         }
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         export_path = BACKUP_DIR / f"memory_export_{timestamp}.json"
         export_path.write_text(
             json.dumps(snapshot, indent=2, default=str),
@@ -388,6 +394,20 @@ class MemoryClient:
             corrected = _normalize_output(llm.generate(system_prompt, user_prompt))
         except Exception as e:
             return CorrectResult(status="error", message=str(e))
+
+        # Validate LLM output before writing — reject empty or structureless output
+        if not corrected or not corrected.strip():
+            return CorrectResult(
+                status="error",
+                message="LLM returned empty output; original document preserved.",
+            )
+        parsed_check = _parse_frontmatter(corrected)
+        if not parsed_check["meta"].get("title"):
+            logger.warning(
+                "LLM correction output missing frontmatter title for %s; "
+                "writing anyway but this may indicate a bad generation.",
+                topic_filename,
+            )
 
         _version_knowledge_file(filepath)
         filepath.write_text(corrected, encoding="utf-8")
@@ -558,6 +578,8 @@ class MemoryClient:
         )
 
         while not self._consolidation_stop.wait(timeout=interval):
+            if self._consolidation_stop.is_set():
+                break
             if not self._consolidation_lock.acquire(blocking=False):
                 logger.info("Consolidation already running, skipping")
                 continue
@@ -568,7 +590,9 @@ class MemoryClient:
                     "Background consolidation completed: %s",
                     result.get("status", result),
                 )
-            except Exception as e:
-                logger.error("Background consolidation failed: %s", e)
+            except Exception:
+                logger.exception("Background consolidation failed")
             finally:
                 self._consolidation_lock.release()
+
+        logger.info("Background consolidation thread stopped.")

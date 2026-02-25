@@ -79,14 +79,9 @@ def tmp_data_dir(tmp_path):
     for p in patches:
         p.start()
 
-    # Clear thread-local DB connection from previous tests
+    # Close all thread-local DB connections from previous tests
     import consolidation_memory.database as database
-    if hasattr(database._local, "conn"):
-        try:
-            database._local.conn.close()
-        except Exception:
-            pass
-        database._local.conn = None
+    database.close_all_connections()
 
     # Reset backends and circuit breakers so state doesn't leak between tests
     from consolidation_memory.backends import reset_backends
@@ -97,9 +92,5 @@ def tmp_data_dir(tmp_path):
     for p in patches:
         p.stop()
 
-    if hasattr(database._local, "conn"):
-        try:
-            database._local.conn.close()
-        except Exception:
-            pass
-        database._local.conn = None
+    # Close ALL connections (including those from spawned threads)
+    database.close_all_connections()

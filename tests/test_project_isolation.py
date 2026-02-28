@@ -1,15 +1,25 @@
-"""Tests for multi-project namespace support: validation and project switching."""
+"""Tests for multi-project namespace support: validation, project switching, and isolation."""
 
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 from consolidation_memory.config import (
     validate_project_name,
     get_active_project,
     set_active_project,
+    maybe_migrate_to_projects,
 )
 from consolidation_memory import config
+import consolidation_memory.database as database
+
+
+def _make_normalized_vec(dim=384, seed=None):
+    rng = np.random.default_rng(seed)
+    vec = rng.standard_normal(dim).astype(np.float32)
+    vec /= np.linalg.norm(vec)
+    return vec
 
 
 # ── Project name validation ──────────────────────────────────────────────────
@@ -137,3 +147,124 @@ class TestSetActiveProject:
             set_active_project("")
         with pytest.raises(ValueError):
             set_active_project("../escape")
+
+
+# ── Project isolation (end-to-end) ──────────────────────────────────────────
+
+
+class TestProjectIsolation:
+    """Store in project A should not appear in project B recalls."""
+
+    @patch("consolidation_memory.backends.encode_documents")
+    @patch("consolidation_memory.backends.encode_query")
+    def test_store_in_a_not_visible_in_b(self, mock_query, mock_embed, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+
+        vec = _make_normalized_vec(seed=42)
+        mock_embed.return_value = vec.reshape(1, -1)
+        mock_query.return_value = vec
+
+        # Store in project "alpha"
+        database.close_all_connections()
+        config.set_active_project("alpha")
+        with MemoryClient(auto_consolidate=False) as client_a:
+            client_a.store("secret alpha fact", content_type="fact", tags=["alpha"])
+
+        # Recall in project "beta" — should find nothing
+        database.close_all_connections()
+        config.set_active_project("beta")
+        with MemoryClient(auto_consolidate=False) as client_b:
+            result = client_b.recall("secret alpha fact", n_results=10)
+            assert len(result.episodes) == 0
+
+        # Clean up: switch back to default
+        database.close_all_connections()
+        config.set_active_project("default")
+
+    @patch("consolidation_memory.backends.encode_documents")
+    @patch("consolidation_memory.backends.encode_query")
+    def test_store_in_a_visible_in_a(self, mock_query, mock_embed, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+
+        vec = _make_normalized_vec(seed=99)
+        mock_embed.return_value = vec.reshape(1, -1)
+        mock_query.return_value = vec
+
+        database.close_all_connections()
+        config.set_active_project("alpha")
+        with MemoryClient(auto_consolidate=False) as client:
+            client.store("visible alpha fact", content_type="fact", tags=["alpha"])
+
+        # Re-open same project — should find it
+        database.close_all_connections()
+        config.set_active_project("alpha")
+        with MemoryClient(auto_consolidate=False) as client:
+            result = client.recall("visible alpha fact", n_results=10)
+            assert len(result.episodes) > 0
+            assert "visible alpha fact" in result.episodes[0]["content"]
+
+        # Clean up
+        database.close_all_connections()
+        config.set_active_project("default")
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_default_project_works(self, mock_embed, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+
+        vec = _make_normalized_vec(seed=7)
+        mock_embed.return_value = vec.reshape(1, -1)
+
+        database.close_all_connections()
+        config.set_active_project("default")
+        with MemoryClient(auto_consolidate=False) as client:
+            store_result = client.store("default project fact", content_type="fact")
+            assert store_result.status == "stored"
+
+        # Clean up
+        database.close_all_connections()
+        config.set_active_project("default")
+
+
+# ── Migration from flat layout ──────────────────────────────────────────────
+
+
+class TestMigration:
+    """Test auto-migration from flat DATA_DIR to projects/default/."""
+
+    def test_migrate_flat_to_projects(self, tmp_path):
+        base = tmp_path / "migration_test"
+        base.mkdir()
+        # Create flat layout
+        (base / "memory.db").write_text("fake db")
+        (base / "faiss_index.bin").write_bytes(b"fake index")
+        (base / "faiss_id_map.json").write_text("[]")
+        (base / "faiss_tombstones.json").write_text("[]")
+        (base / "knowledge").mkdir()
+        (base / "knowledge" / "topic.md").write_text("knowledge")
+        (base / "backups").mkdir()
+        (base / "consolidation_logs").mkdir()
+
+        migrated = maybe_migrate_to_projects(base)
+        assert migrated is True
+
+        default_dir = base / "projects" / "default"
+        assert (default_dir / "memory.db").exists()
+        assert (default_dir / "faiss_index.bin").exists()
+        assert (default_dir / "knowledge" / "topic.md").exists()
+        assert not (base / "memory.db").exists()  # moved, not copied
+
+    def test_no_migration_if_already_projects(self, tmp_path):
+        base = tmp_path / "migration_test"
+        base.mkdir()
+        (base / "projects").mkdir()
+        (base / "memory.db").write_text("fake db")
+
+        migrated = maybe_migrate_to_projects(base)
+        assert migrated is False
+
+    def test_no_migration_if_no_flat_data(self, tmp_path):
+        base = tmp_path / "migration_test"
+        base.mkdir()
+
+        migrated = maybe_migrate_to_projects(base)
+        assert migrated is False

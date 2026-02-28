@@ -226,6 +226,58 @@ def set_active_project(name: str | None = None) -> str:
     return _active_project
 
 
+# ── Migration from flat layout ──────────────────────────────────────────────
+
+
+def maybe_migrate_to_projects(base_dir: Path) -> bool:
+    """Migrate flat DATA_DIR layout to projects/default/ structure.
+
+    Returns True if migration was performed.
+    """
+    flat_db = base_dir / "memory.db"
+    projects_dir = base_dir / "projects"
+
+    if not flat_db.exists():
+        return False  # nothing to migrate
+
+    if projects_dir.exists():
+        return False  # already migrated or manual setup
+
+    import shutil
+
+    default_dir = projects_dir / "default"
+    default_dir.mkdir(parents=True)
+
+    _FILES_TO_MOVE = [
+        "memory.db", "faiss_index.bin", "faiss_id_map.json",
+        "faiss_tombstones.json", ".faiss_reload",
+    ]
+    _DIRS_TO_MOVE = ["knowledge", "backups", "consolidation_logs"]
+
+    try:
+        for fname in _FILES_TO_MOVE:
+            src = base_dir / fname
+            if src.exists():
+                shutil.move(str(src), str(default_dir / fname))
+
+        for dname in _DIRS_TO_MOVE:
+            src = base_dir / dname
+            if src.exists():
+                shutil.move(str(src), str(default_dir / dname))
+    except OSError:
+        # Rollback: move everything back so the next attempt can retry
+        for item in default_dir.iterdir():
+            shutil.move(str(item), str(base_dir / item.name))
+        shutil.rmtree(str(projects_dir), ignore_errors=True)
+        raise
+
+    print(
+        f"[consolidation-memory] Migrated data to {default_dir}",
+        file=sys.stderr,
+    )
+    return True
+
+
 # ── Deduplication ─────────────────────────────────────────────────────────────
 _dedup = _cfg.get("dedup", {})
 DEDUP_SIMILARITY_THRESHOLD = float(_dedup.get("similarity_threshold", 0.95))
@@ -312,6 +364,14 @@ def _validate_config() -> None:
             "Invalid consolidation_memory config:\n  " + "\n  ".join(errors)
         )
 
+
+try:
+    maybe_migrate_to_projects(_base_data_dir)
+except OSError as _mig_err:
+    print(
+        f"[consolidation-memory] Migration skipped (file locked?): {_mig_err}",
+        file=sys.stderr,
+    )
 
 _validate_config()
 

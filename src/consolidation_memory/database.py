@@ -726,7 +726,8 @@ def get_stats() -> dict[str, Any]:
                  COUNT(*) FILTER (WHERE deleted = 0) as total_records,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'fact') as facts,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'solution') as solutions,
-                 COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'preference') as preferences
+                 COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'preference') as preferences,
+                 COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'procedure') as procedures
                FROM knowledge_records"""
         ).fetchone()
 
@@ -745,6 +746,7 @@ def get_stats() -> dict[str, Any]:
                 "facts": rec_counts["facts"],
                 "solutions": rec_counts["solutions"],
                 "preferences": rec_counts["preferences"],
+                "procedures": rec_counts["procedures"],
             },
         },
     }

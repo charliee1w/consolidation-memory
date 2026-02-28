@@ -19,6 +19,7 @@ class RecordType(str, Enum):
     FACT = "fact"
     SOLUTION = "solution"
     PREFERENCE = "preference"
+    PROCEDURE = "procedure"
 
 
 @dataclass

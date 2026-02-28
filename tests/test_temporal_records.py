@@ -35,7 +35,7 @@ class TestSchemaMigrationV6:
             filename="temporal.md", title="Temporal", summary="S",
             source_episodes=["ep1"],
         )
-        ids = insert_knowledge_records(tid, [
+        insert_knowledge_records(tid, [
             {"record_type": "fact", "content": {"type": "fact", "subject": "X", "info": "Y"},
              "embedding_text": "X: Y"},
         ])
@@ -155,7 +155,7 @@ class TestValidFromInsert:
             filename="vf.md", title="VF", summary="S", source_episodes=[],
         )
         now_ts = datetime.now(timezone.utc).isoformat()
-        ids = insert_knowledge_records(tid, [
+        insert_knowledge_records(tid, [
             {"record_type": "fact", "content": {}, "embedding_text": "x",
              "valid_from": now_ts},
         ])
@@ -167,7 +167,7 @@ class TestValidFromInsert:
         tid = upsert_knowledge_topic(
             filename="nvf.md", title="NVF", summary="S", source_episodes=[],
         )
-        ids = insert_knowledge_records(tid, [
+        insert_knowledge_records(tid, [
             {"record_type": "fact", "content": {}, "embedding_text": "y"},
         ])
         recs = get_records_by_topic(tid, include_expired=True)

@@ -253,6 +253,7 @@ prune_after_days = 60
 |---------|-------------|
 | `consolidation-memory serve` | Start MCP server (default) |
 | `consolidation-memory serve --rest` | Start REST API |
+| `consolidation-memory --project work serve` | Start MCP server for a specific project |
 | `consolidation-memory init` | Interactive setup |
 | `consolidation-memory status` | Show stats |
 | `consolidation-memory consolidate` | Manual consolidation |
@@ -260,15 +261,49 @@ prune_after_days = 60
 | `consolidation-memory import PATH` | Import from JSON |
 | `consolidation-memory reindex` | Re-embed everything (after switching backends) |
 
+## Multi-Project Support
+
+Isolate memories per project — work memories stay in work, personal stays in personal.
+
+```bash
+# CLI flag
+consolidation-memory --project work status
+consolidation-memory --project personal serve --rest --port 8081
+
+# Environment variable
+CONSOLIDATION_MEMORY_PROJECT=work consolidation-memory serve
+```
+
+### MCP (Claude Desktop) — Multiple Projects
+
+Add separate server entries per project:
+
+```json
+{
+  "mcpServers": {
+    "memory-work": {
+      "command": "consolidation-memory",
+      "env": { "CONSOLIDATION_MEMORY_PROJECT": "work" }
+    },
+    "memory-personal": {
+      "command": "consolidation-memory",
+      "env": { "CONSOLIDATION_MEMORY_PROJECT": "personal" }
+    }
+  }
+}
+```
+
+Each project gets its own database, vector index, and knowledge files. Config and embedding/LLM backends are shared. When no project is specified, `default` is used. Existing users are auto-migrated to `projects/default/` on first run.
+
 ## Data Storage
 
 All data stays local.
 
 | Platform | Path |
 |----------|------|
-| Linux | `~/.local/share/consolidation_memory/` |
-| macOS | `~/Library/Application Support/consolidation_memory/` |
-| Windows | `%LOCALAPPDATA%\consolidation_memory\` |
+| Linux | `~/.local/share/consolidation_memory/projects/<name>/` |
+| macOS | `~/Library/Application Support/consolidation_memory/projects/<name>/` |
+| Windows | `%LOCALAPPDATA%\consolidation_memory\projects\<name>\` |
 
 <details>
 <summary>Migrating</summary>

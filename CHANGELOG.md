@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 — 2026-02-28
+
+### Features
+
+- **Multi-project namespace support** — isolate SQLite DB, FAISS index, and knowledge files per project via `--project` CLI flag or `CONSOLIDATION_MEMORY_PROJECT` environment variable
+- **Auto-migration** — existing flat-layout data directories are automatically migrated to `projects/default/` on first run
+- **Project-aware CLI** — `consolidation-memory --project work status`, `consolidation-memory --project personal serve`
+- **Project logging** — MCP server and REST API log the active project at startup; REST `/health` endpoint includes project name
+
+### Internal
+
+- Consumer modules (`database`, `vector_store`, `consolidation`, `context_assembler`) refactored to access config path constants dynamically, enabling runtime project switching
+- `validate_project_name()` enforces lowercase alphanumeric, hyphens, underscores (1-64 chars)
+- `set_active_project()` / `get_active_project()` API for programmatic project switching
+- `maybe_migrate_to_projects()` handles flat-to-project directory migration with rollback on failure
+- 40 new tests (214 total), including project isolation integration tests
+- Simplified `conftest.py` — removed 8 redundant consumer-module path patches
+
 ## 0.5.0 — 2026-02-28
 
 ### Features

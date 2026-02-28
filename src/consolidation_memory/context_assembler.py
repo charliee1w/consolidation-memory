@@ -30,7 +30,8 @@ def _parse_tags(tags_value: str | list) -> list:
     """Parse tags from DB storage format (JSON string or already-parsed list)."""
     if isinstance(tags_value, str):
         try:
-            return json.loads(tags_value)
+            parsed: list = json.loads(tags_value)
+            return parsed
         except (json.JSONDecodeError, ValueError):
             return []
     return tags_value if tags_value is not None else []
@@ -66,12 +67,12 @@ def _recency_decay(created_at_iso: str, half_life_days: float | None = None) -> 
 
 def _priority_score(similarity: float, episode: dict) -> float:
     w = get_config().CONSOLIDATION_PRIORITY_WEIGHTS
-    surprise = episode.get("surprise_score", 0.5)
+    surprise: float = episode.get("surprise_score", 0.5)
     recency = _recency_decay(episode.get("created_at", ""))
-    access = episode.get("access_count", 0)
+    access: int = episode.get("access_count", 0)
 
-    access_factor = 1.0 + math.log1p(access) * w["access_frequency"]
-    metadata_boost = (
+    access_factor: float = 1.0 + math.log1p(access) * w["access_frequency"]
+    metadata_boost: float = (
         (surprise ** w["surprise"])
         * (recency ** w["recency"])
         * access_factor
@@ -108,6 +109,8 @@ def recall(
     fetch_k = n_results * 5 if (content_types or tags or after or before) else n_results * 3
 
     query_vec = backends.encode_query(query)
+    if vector_store is None:
+        raise RuntimeError("vector_store is required for recall")
     candidates = vector_store.search(query_vec, k=fetch_k)
 
     logger.debug(
@@ -170,8 +173,8 @@ def recall(
     accessed_ids = [ep["id"] for ep, _, _ in top]
     increment_access(accessed_ids)
 
-    knowledge = []
-    records = []
+    knowledge: list[dict] = []
+    records: list[dict] = []
     warnings = []
     if include_knowledge:
         knowledge, kw_warnings = _search_knowledge(query, query_vec)

@@ -50,7 +50,8 @@ class LMStudioEmbeddingBackend:
         vecs = np.array([d["embedding"] for d in data], dtype=np.float32)
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
-        return vecs / norms
+        normalized: np.ndarray = vecs / norms
+        return normalized
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         prefixed = [f"search_document: {t}" for t in texts]
@@ -104,7 +105,7 @@ class LMStudioLLMBackend:
                     timeout=120.0,
                 )
                 response.raise_for_status()
-                return response.json()["choices"][0]["message"]["content"]
+                return str(response.json()["choices"][0]["message"]["content"])
             except (httpx.HTTPError, httpx.TimeoutException, KeyError, ConnectionError) as e:
                 last_err = e
                 logger.warning("LM Studio LLM attempt %d/3 failed: %s", attempt + 1, e)

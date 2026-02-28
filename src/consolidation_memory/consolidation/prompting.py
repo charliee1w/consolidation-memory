@@ -83,7 +83,7 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
     if llm is None:
         raise RuntimeError("LLM backend is disabled")
 
-    last_err = None
+    last_err: Exception | None = None
     for attempt in range(max_retries):
         # Don't use ThreadPoolExecutor as context manager — its __exit__ calls
         # shutdown(wait=True), blocking until the thread finishes even after
@@ -176,7 +176,7 @@ def _parse_frontmatter(text: str) -> dict:
 
 
 def _parse_fm_lines(block: str) -> dict:
-    meta = {}
+    meta: dict[str, object] = {}
     for line in block.strip().splitlines():
         line = line.strip()
         if not line or ":" not in line:
@@ -210,7 +210,8 @@ def _parse_llm_json(text: str) -> dict | None:
     text = re.sub(r"\n?```\s*$", "", text)
     text = text.strip()
     try:
-        return json.loads(text)
+        parsed: dict | None = json.loads(text)
+        return parsed
     except json.JSONDecodeError:
         return None
 

@@ -29,7 +29,8 @@ class OllamaEmbeddingBackend:
     def _normalize(self, vecs: np.ndarray) -> np.ndarray:
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
-        return vecs / norms
+        normalized: np.ndarray = vecs / norms
+        return normalized
 
     def _embed_single(self, text: str) -> list[float]:
         response = httpx.post(
@@ -39,7 +40,8 @@ class OllamaEmbeddingBackend:
         )
         response.raise_for_status()
         data = response.json()
-        return data["embeddings"][0]
+        result: list[float] = data["embeddings"][0]
+        return result
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         def _do():
@@ -104,6 +106,7 @@ class OllamaLLMBackend:
             response.raise_for_status()
             return response.json()["message"]["content"]
 
-        return retry_with_backoff(
+        result: str = retry_with_backoff(
             _do, transient_exceptions=_TRANSIENT, context="Ollama LLM",
         )
+        return result

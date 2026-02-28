@@ -55,6 +55,7 @@ from consolidation_memory.consolidation.prompting import (
     _slugify,
 )
 from consolidation_memory.consolidation.scoring import _adjust_surprise_scores
+from consolidation_memory.types import ConsolidationReport
 
 logger = logging.getLogger(__name__)
 
@@ -467,7 +468,7 @@ def _process_cluster(
 # ── Main consolidation loop ───────────────────────────────────────────────────
 
 
-def run_consolidation(vector_store: VectorStore | None = None) -> dict:
+def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationReport:
     """Main consolidation loop.
 
     Args:
@@ -508,16 +509,16 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
 
         vs = vector_store if vector_store is not None else VectorStore()
         episode_ids = [ep["id"] for ep in episodes]
-        result = vs.reconstruct_batch(episode_ids)
+        batch_result = vs.reconstruct_batch(episode_ids)
 
-        if result is None:
+        if batch_result is None:
             logger.warning("No vectors found for episodes — aborting.")
             complete_consolidation_run(
                 run_id, status="failed", error_message="No vectors in FAISS"
             )
             return {"status": "error", "message": "No vectors found"}
 
-        found_ids, vectors = result
+        found_ids, vectors = batch_result
 
         id_to_episode = {ep["id"]: ep for ep in episodes}
         valid_episodes = [id_to_episode[uid] for uid in found_ids if uid in id_to_episode]
@@ -577,23 +578,23 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
                 )
                 break
 
-            result = _process_cluster(
+            cluster_result = _process_cluster(
                 cluster_id,
                 cluster_items,
                 sim_matrix,
                 cluster_confidences,
             )
-            api_calls += result["api_calls"]
-            if result["status"] == "created":
+            api_calls += cluster_result["api_calls"]
+            if cluster_result["status"] == "created":
                 topics_created += 1
                 consecutive_failures = 0
-            elif result["status"] == "updated":
+            elif cluster_result["status"] == "updated":
                 topics_updated += 1
                 consecutive_failures = 0
-            elif result["status"] == "failed":
+            elif cluster_result["status"] == "failed":
                 clusters_failed += 1
                 consecutive_failures += 1
-                all_failed_ep_ids.extend(result.get("failed_ep_ids", []))
+                all_failed_ep_ids.extend(cluster_result.get("failed_ep_ids", []))
 
         _update_index()
 
@@ -623,7 +624,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
 
         VectorStore.signal_reload()
 
-        report = {
+        report: ConsolidationReport = {
             "run_id": run_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "episodes_loaded": len(episodes),
@@ -668,7 +669,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
                 api_calls=api_calls,
                 topics_created=topics_created,
                 topics_updated=topics_updated,
-                episodes_pruned=report.get("episodes_pruned", 0),
+                episodes_pruned=report.get("episodes_pruned") or 0,
             )
         except Exception as e:
             logger.warning("Failed to write consolidation metrics: %s", e)

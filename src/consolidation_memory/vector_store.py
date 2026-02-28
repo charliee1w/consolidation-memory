@@ -18,6 +18,7 @@ import os
 import tempfile
 import threading
 import time
+from typing import Any
 
 import faiss
 import numpy as np
@@ -28,9 +29,9 @@ logger = logging.getLogger(__name__)
 
 
 class VectorStore:
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._index: faiss.Index | None = None
+        self._index: Any = None  # faiss.Index, initialized in _load_or_create
         self._id_map: list[str] = []
         self._uuid_to_pos: dict[str, int] = {}
         self._tombstones: set[str] = set()

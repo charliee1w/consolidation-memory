@@ -360,20 +360,20 @@ def dispatch_tool_call(
         ValueError: If the tool name is unknown.
     """
     if name == "memory_store":
-        result = client.store(
+        store_result = client.store(
             content=arguments["content"],
             content_type=arguments.get("content_type", "exchange"),
             tags=arguments.get("tags"),
             surprise=arguments.get("surprise", 0.5),
         )
-        return dataclasses.asdict(result)
+        return dataclasses.asdict(store_result)
 
     elif name == "memory_store_batch":
-        result = client.store_batch(episodes=arguments["episodes"])
-        return dataclasses.asdict(result)
+        batch_result = client.store_batch(episodes=arguments["episodes"])
+        return dataclasses.asdict(batch_result)
 
     elif name == "memory_recall":
-        result = client.recall(
+        recall_result = client.recall(
             query=arguments["query"],
             n_results=arguments.get("n_results", 10),
             include_knowledge=arguments.get("include_knowledge", True),
@@ -383,10 +383,10 @@ def dispatch_tool_call(
             before=arguments.get("before"),
             include_expired=arguments.get("include_expired", False),
         )
-        return dataclasses.asdict(result)
+        return dataclasses.asdict(recall_result)
 
     elif name == "memory_search":
-        result = client.search(
+        search_result = client.search(
             query=arguments.get("query"),
             content_types=arguments.get("content_types"),
             tags=arguments.get("tags"),
@@ -394,26 +394,26 @@ def dispatch_tool_call(
             before=arguments.get("before"),
             limit=arguments.get("limit", 20),
         )
-        return dataclasses.asdict(result)
+        return dataclasses.asdict(search_result)
 
     elif name == "memory_status":
-        result = client.status()
-        return dataclasses.asdict(result)
+        status_result = client.status()
+        return dataclasses.asdict(status_result)
 
     elif name == "memory_forget":
-        result = client.forget(episode_id=arguments["episode_id"])
-        return dataclasses.asdict(result)
+        forget_result = client.forget(episode_id=arguments["episode_id"])
+        return dataclasses.asdict(forget_result)
 
     elif name == "memory_export":
-        result = client.export()
-        return dataclasses.asdict(result)
+        export_result = client.export()
+        return dataclasses.asdict(export_result)
 
     elif name == "memory_correct":
-        result = client.correct(
+        correct_result = client.correct(
             topic_filename=arguments["topic_filename"],
             correction=arguments["correction"],
         )
-        return dataclasses.asdict(result)
+        return dataclasses.asdict(correct_result)
 
     else:
         raise ValueError(f"Unknown tool: {name}")

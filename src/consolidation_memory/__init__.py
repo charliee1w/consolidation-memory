@@ -15,6 +15,12 @@ _LAZY_IMPORTS = {
     "CorrectResult": "consolidation_memory.types",
     "SearchResult": "consolidation_memory.types",
     "BatchStoreResult": "consolidation_memory.types",
+    "ConsolidationReport": "consolidation_memory.types",
+    "ConsolidationQuality": "consolidation_memory.types",
+    "EpisodicBufferStats": "consolidation_memory.types",
+    "KnowledgeBaseStats": "consolidation_memory.types",
+    "HealthStatus": "consolidation_memory.types",
+    "StatsDict": "consolidation_memory.types",
 }
 
 __all__ = ["__version__", *_LAZY_IMPORTS]

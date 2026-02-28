@@ -22,17 +22,18 @@ class OpenAIEmbeddingBackend:
                 "openai is required for the openai backend. "
                 "Install it with: pip install consolidation-memory[openai]"
             )
-        kwargs = {"api_key": api_key}
+        kwargs: dict[str, str] = {"api_key": api_key}
         if api_base:
             kwargs["base_url"] = api_base
-        self._client = OpenAI(**kwargs)
+        self._client = OpenAI(**kwargs)  # type: ignore[arg-type]
         self._model_name = model_name
         self._dim = dimension
 
     def _normalize(self, vecs: np.ndarray) -> np.ndarray:
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
-        return vecs / norms
+        normalized: np.ndarray = vecs / norms
+        return normalized
 
     def _get_transient_exceptions(self) -> tuple:
         """Return OpenAI SDK transient exception types (import-time safe)."""
@@ -79,10 +80,10 @@ class OpenAILLMBackend:
                 "openai is required for the openai LLM backend. "
                 "Install it with: pip install consolidation-memory[openai]"
             )
-        kwargs = {"api_key": api_key}
+        kwargs: dict[str, str] = {"api_key": api_key}
         if api_base:
             kwargs["base_url"] = api_base
-        self._client = OpenAI(**kwargs)
+        self._client = OpenAI(**kwargs)  # type: ignore[arg-type]
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
@@ -109,6 +110,7 @@ class OpenAILLMBackend:
             )
             return response.choices[0].message.content
 
-        return retry_with_backoff(
+        result: str = retry_with_backoff(
             _do, transient_exceptions=transient, context="OpenAI LLM",
         )
+        return result

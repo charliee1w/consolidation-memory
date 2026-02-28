@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from consolidation_memory.config import get_config as _get_config
+from consolidation_memory.types import StatsDict
 
 _local = threading.local()
 _all_connections: list[sqlite3.Connection] = []  # Track all thread-local connections for cleanup
@@ -87,7 +88,7 @@ def _ensure_parent(path: Path) -> None:
 
 def _get_cached_connection() -> sqlite3.Connection:
     """Return a thread-local cached connection. Creates one if needed."""
-    conn = getattr(_local, "conn", None)
+    conn: sqlite3.Connection | None = getattr(_local, "conn", None)
     if conn is not None:
         try:
             conn.execute("SELECT 1")
@@ -351,7 +352,7 @@ def soft_delete_episode(episode_id: str) -> bool:
             "UPDATE episodes SET deleted = 1, updated_at = ? WHERE id = ? AND deleted = 0",
             (_now(), episode_id),
         )
-    return cursor.rowcount > 0
+    return bool(cursor.rowcount and cursor.rowcount > 0)
 
 
 def hard_delete_episode(episode_id: str) -> bool:
@@ -364,7 +365,7 @@ def hard_delete_episode(episode_id: str) -> bool:
         cursor = conn.execute(
             "DELETE FROM episodes WHERE id = ?", (episode_id,)
         )
-    return cursor.rowcount > 0
+    return bool(cursor.rowcount and cursor.rowcount > 0)
 
 
 def get_prunable_episodes(days: int = 30) -> list[dict[str, Any]]:
@@ -398,7 +399,7 @@ def upsert_knowledge_topic(
         ).fetchone()
 
         if existing:
-            topic_id = existing["id"]
+            topic_id: str = str(existing["id"])
             old_sources = json.loads(existing["source_episodes"])
             merged = list(set(old_sources + source_episodes))
             conn.execute(
@@ -428,7 +429,7 @@ def upsert_knowledge_topic(
                 ).fetchone()
                 if existing is None:
                     raise
-                topic_id = existing["id"]
+                topic_id = str(existing["id"])
                 old_sources = json.loads(existing["source_episodes"])
                 merged = list(set(old_sources + source_episodes))
                 conn.execute(
@@ -513,7 +514,7 @@ def expire_record(record_id: str, valid_until: str | None = None) -> bool:
             "UPDATE knowledge_records SET valid_until = ?, updated_at = ? WHERE id = ? AND deleted = 0",
             (ts, _now(), record_id),
         )
-    return cursor.rowcount > 0
+    return bool(cursor.rowcount and cursor.rowcount > 0)
 
 
 def get_all_active_records(include_expired: bool = False) -> list[dict[str, Any]]:
@@ -575,7 +576,7 @@ def soft_delete_records_by_topic(topic_id: str) -> int:
             "UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE topic_id = ? AND deleted = 0",
             (_now(), topic_id),
         )
-    return cursor.rowcount
+    return int(cursor.rowcount)
 
 
 def soft_delete_records_by_ids(record_ids: list[str]) -> int:
@@ -589,7 +590,7 @@ def soft_delete_records_by_ids(record_ids: list[str]) -> int:
             f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",
             [now] + record_ids,
         )
-    return cursor.rowcount
+    return int(cursor.rowcount)
 
 
 def increment_record_access(record_ids: list[str]) -> None:
@@ -706,7 +707,7 @@ def update_surprise_scores(updates: list[tuple[float, str]]) -> None:
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 
-def get_stats() -> dict[str, Any]:
+def get_stats() -> StatsDict:
     with get_connection() as conn:
         ep_counts = conn.execute(
             """SELECT
@@ -785,7 +786,7 @@ def reset_stale_consolidation_attempts(max_attempts: int = 5, stale_hours: int =
                AND (last_consolidation_attempt IS NULL OR last_consolidation_attempt < ?)""",
             (max_attempts, cutoff),
         )
-    return cursor.rowcount
+    return int(cursor.rowcount)
 
 
 def get_median_access_count() -> float:

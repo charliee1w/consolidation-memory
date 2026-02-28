@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from consolidation_memory import __version__
 from consolidation_memory.types import (
     ContentType,
+    ConsolidationReport,
+    HealthStatus,
     StoreResult,
     BatchStoreResult,
     RecallResult,
@@ -685,7 +687,7 @@ class MemoryClient:
             title=meta.get("title", ""),
         )
 
-    def consolidate(self) -> dict:
+    def consolidate(self) -> ConsolidationReport:
         """Run consolidation manually. Thread-safe with background thread.
 
         Returns:
@@ -723,10 +725,10 @@ class MemoryClient:
 
     def _compute_health(
         self,
-        last_run: dict | None,
+        last_run: dict[str, object] | None,
         interval_hours: float,
         compaction_threshold: float,
-    ) -> dict:
+    ) -> HealthStatus:
         """Build health assessment dict."""
         issues: list[str] = []
 
@@ -747,7 +749,7 @@ class MemoryClient:
                     f"Last consolidation failed: {last_run.get('error_message', 'unknown')}"
                 )
             completed_at = last_run.get("completed_at") or last_run.get("started_at")
-            if completed_at:
+            if completed_at and isinstance(completed_at, str):
                 from datetime import datetime, timezone
                 try:
                     last_time = datetime.fromisoformat(completed_at)

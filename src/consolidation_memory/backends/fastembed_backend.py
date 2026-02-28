@@ -28,7 +28,8 @@ class FastEmbedEmbeddingBackend:
     def _normalize(self, vecs: np.ndarray) -> np.ndarray:
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
-        return vecs / norms
+        normalized: np.ndarray = vecs / norms
+        return normalized
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         embeddings = list(self._model.embed(texts))

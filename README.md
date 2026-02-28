@@ -1,13 +1,17 @@
-# consolidation-memory
+<div align="center">
 
-[![CI](https://github.com/charliee1w/consolidation-memory/actions/workflows/test.yml/badge.svg)](https://github.com/charliee1w/consolidation-memory/actions/workflows/test.yml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/consolidation-memory/)
+# consolidation-memory
 
 **Your AI forgets everything between sessions. This fixes that.**
 
-A local-first memory system that stores, retrieves, and *consolidates* knowledge across conversations. Episodes go in, structured knowledge comes out — automatically, via a background LLM that clusters and synthesizes what it's learned.
+A local-first memory system that stores, retrieves, and *consolidates* knowledge across conversations — automatically.
 
-No cloud dependency. No subscriptions. Your data stays on your machine.
+[![PyPI](https://img.shields.io/pypi/v/consolidation-memory?style=flat-square&color=1a1a2e&labelColor=0f0f1a)](https://pypi.org/project/consolidation-memory/)
+[![CI](https://img.shields.io/github/actions/workflow/status/charliee1w/consolidation-memory/test.yml?style=flat-square&label=tests&color=1a1a2e&labelColor=0f0f1a)](https://github.com/charliee1w/consolidation-memory/actions)
+[![Python](https://img.shields.io/badge/python-3.10+-1a1a2e?style=flat-square&labelColor=0f0f1a)](https://pypi.org/project/consolidation-memory/)
+[![License](https://img.shields.io/badge/license-MIT-1a1a2e?style=flat-square&labelColor=0f0f1a)](LICENSE)
+
+</div>
 
 ```
 You: "My build is failing with a linker error"
@@ -19,37 +23,19 @@ AI:  (recalls your project uses CMake + MSVC on Windows)
 
 ## How It Works
 
-```
- ┌─────────┐     ┌───────────┐     ┌────────────┐
- │  Store   │────▶│  Embed    │────▶│ FAISS Index │
- │ episodes │     │ (any LLM) │     │ + SQLite DB │
- └─────────┘     └───────────┘     └──────┬─────┘
-                                          │
-                 ┌───────────┐     ┌──────▼─────┐
-                 │ Knowledge │◀────│   Recall    │
-                 │   Docs    │     │ (semantic)  │
-                 └─────┬─────┘     └────────────┘
-                       │
-                ┌──────▼──────┐
-                │ Consolidate │  ← background thread
-                │ (cluster +  │    clusters episodes
-                │  LLM synth) │    into knowledge docs
-                └─────────────┘
+```mermaid
+flowchart LR
+    A["Store"] -->|episodes + embeddings| B["SQLite + FAISS"]
+    B -->|semantic search| C["Recall"]
+    C -->|priority scoring| D["Results"]
+    B -->|background thread| E["Consolidate"]
+    E -->|cluster + synthesize| F["Knowledge Records"]
+    F -->|feeds back into| B
 ```
 
 1. **Store** — Save episodes (facts, solutions, preferences) with embeddings into SQLite + FAISS
 2. **Recall** — Semantic search with priority scoring (surprise, recency, access frequency)
-3. **Consolidate** — Background LLM clusters related episodes and synthesizes structured markdown knowledge documents
-
-### How Consolidation Works
-
-The consolidation engine runs on a background daemon thread (default: every 6 hours). It fetches all unconsolidated episodes, embeds them, and groups them using agglomerative hierarchical clustering with a configurable distance threshold. Each cluster represents a coherent topic.
-
-For each cluster, the engine checks existing knowledge topics for semantic overlap. If a matching topic exists (above the topic-match threshold), the cluster's episodes are merged into the existing document. Otherwise, a new knowledge document is synthesized from scratch.
-
-The LLM receives the cluster's episodes (with prompt injection patterns sanitized) and produces a structured markdown document with YAML frontmatter (title, summary, tags, confidence score). The engine validates the output, versions the previous document, writes the new one, and updates the SQLite metadata. Episodes that have been consolidated and aged past the prune threshold are soft-deleted to keep the FAISS index lean.
-
-All backends retry transient failures with exponential backoff. If 3 consecutive clusters fail (indicating the LLM backend is down), consolidation aborts early rather than burning through timeouts.
+3. **Consolidate** — Background LLM clusters related episodes and synthesizes structured knowledge records
 
 ## Quick Start
 
@@ -58,11 +44,14 @@ pip install consolidation-memory[fastembed]
 consolidation-memory init
 ```
 
-That's it. FastEmbed runs locally, no external services needed.
+FastEmbed runs locally — no external services needed.
 
-### MCP Server (Claude Desktop / Claude Code / Cursor)
+## Integrations
 
-Add to your `claude_desktop_config.json`:
+<details open>
+<summary><strong>MCP Server</strong></summary>
+
+Add to your MCP client config (`claude_desktop_config.json`, `.claude/settings.json`, etc.):
 
 ```json
 {
@@ -74,24 +63,23 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-Nine tools become available:
-
-| Tool | What it does |
+| Tool | Description |
 |------|-------------|
 | `memory_store` | Save an episode (fact, solution, preference, exchange) |
 | `memory_store_batch` | Store multiple episodes in one call (single embed + FAISS batch) |
 | `memory_recall` | Semantic search over episodes + knowledge, with optional filters |
 | `memory_search` | Keyword/metadata search — works without embedding backend |
-| `memory_status` | System stats + health diagnostics + consolidation metrics |
-| `memory_forget` | Soft-delete an episode |
-| `memory_export` | Export everything to JSON |
-| `memory_correct` | Fix outdated knowledge documents |
+| `memory_status` | System stats, health diagnostics, and consolidation metrics |
+| `memory_forget` | Soft-delete an episode by ID |
+| `memory_export` | Export all episodes and knowledge to a JSON snapshot |
+| `memory_correct` | Fix outdated knowledge documents with new information |
+| `memory_compact` | Rebuild FAISS index, removing tombstoned vectors |
+| `memory_consolidate` | Manually trigger a consolidation run |
 
-`memory_recall` supports optional filters: `content_types`, `tags`, `after`, `before` — all applied post-vector-search so you can narrow results to specific episode types or date ranges.
+</details>
 
-`memory_search` does plain text `LIKE` matching in SQLite. No embedding backend needed. Supports the same filters (`content_types`, `tags`, `after`, `before`) plus a `limit` parameter.
-
-### Python API
+<details>
+<summary><strong>Python API</strong></summary>
 
 ```python
 from consolidation_memory import MemoryClient
@@ -107,7 +95,10 @@ with MemoryClient() as mem:
     print(stats.health)  # {"status": "healthy", "issues": [], "backend_reachable": true}
 ```
 
-### OpenAI Function Calling
+</details>
+
+<details>
+<summary><strong>OpenAI Function Calling</strong></summary>
 
 Works with any OpenAI-compatible API (LM Studio, Ollama, OpenAI, Azure):
 
@@ -119,7 +110,10 @@ mem = MemoryClient()
 # Pass openai_tools to your chat completion, dispatch results with dispatch_tool_call()
 ```
 
-### REST API
+</details>
+
+<details>
+<summary><strong>REST API</strong></summary>
 
 ```bash
 pip install consolidation-memory[rest]
@@ -139,18 +133,36 @@ consolidation-memory serve --rest --port 8080
 | `POST` | `/memory/correct` | Correct knowledge doc |
 | `POST` | `/memory/export` | Export to JSON |
 
-## Embedding Backends
+</details>
 
-| Backend | Install | Model | Dimensions | Runs locally? |
-|---------|---------|-------|-----------|:---:|
-| **FastEmbed** (default) | `pip install consolidation-memory[fastembed]` | bge-small-en-v1.5 | 384 | Yes |
-| LM Studio | Built-in | nomic-embed-text-v1.5 | 768 | Yes |
-| Ollama | Built-in | nomic-embed-text | 768 | Yes |
-| OpenAI | `pip install consolidation-memory[openai]` | text-embedding-3-small | 1536 | No |
+## How Consolidation Works
 
-## LLM Backends (for consolidation)
+```mermaid
+flowchart TD
+    A["Fetch unconsolidated episodes"] --> B["Embed + cluster"]
+    B --> C{"Match existing topic?"}
+    C -->|Yes| D["Merge into topic"]
+    C -->|No| E["Create new topic"]
+    D --> F["LLM synthesizes structured records"]
+    E --> F
+    F --> G["Validate + version + write"]
+    G --> H["Prune old episodes"]
+```
 
-The consolidation step needs a chat-capable LLM to synthesize clusters into knowledge documents. Set `backend = "disabled"` to skip consolidation and use store/recall only.
+Runs on a background thread (default: every 6 hours). Episodes are grouped by hierarchical clustering, matched to existing knowledge topics by semantic similarity, then synthesized into structured records (facts, solutions, preferences) via LLM. Three consecutive failures trigger a circuit breaker to avoid burning through timeouts.
+
+## Backends
+
+### Embedding
+
+| Backend | Install | Model | Local |
+|---------|---------|-------|:-----:|
+| **FastEmbed** (default) | `pip install consolidation-memory[fastembed]` | bge-small-en-v1.5 | Y |
+| LM Studio | Built-in | nomic-embed-text-v1.5 | Y |
+| Ollama | Built-in | nomic-embed-text | Y |
+| OpenAI | `pip install consolidation-memory[openai]` | text-embedding-3-small | N |
+
+### LLM
 
 | Backend | Requirements |
 |---------|-------------|
@@ -162,10 +174,11 @@ The consolidation step needs a chat-capable LLM to synthesize clusters into know
 ## Configuration
 
 ```bash
-consolidation-memory init  # Interactive setup
+consolidation-memory init
 ```
 
-Or edit the config directly:
+<details>
+<summary>Manual configuration</summary>
 
 | Platform | Path |
 |----------|------|
@@ -190,22 +203,24 @@ prune_enabled = true
 prune_after_days = 60
 ```
 
+</details>
+
 ## CLI
 
-```bash
-consolidation-memory serve              # MCP server (default)
-consolidation-memory serve --rest       # REST API
-consolidation-memory init               # Interactive setup
-consolidation-memory status             # Show stats
-consolidation-memory consolidate        # Manual consolidation
-consolidation-memory export             # Export to JSON
-consolidation-memory import PATH        # Import from JSON
-consolidation-memory reindex            # Re-embed everything (after switching backends)
-```
+| Command | Description |
+|---------|-------------|
+| `consolidation-memory serve` | Start MCP server (default) |
+| `consolidation-memory serve --rest` | Start REST API |
+| `consolidation-memory init` | Interactive setup |
+| `consolidation-memory status` | Show stats |
+| `consolidation-memory consolidate` | Manual consolidation |
+| `consolidation-memory export` | Export to JSON |
+| `consolidation-memory import PATH` | Import from JSON |
+| `consolidation-memory reindex` | Re-embed everything (after switching backends) |
 
 ## Data Storage
 
-All data stays local:
+All data stays local.
 
 | Platform | Path |
 |----------|------|
@@ -213,11 +228,10 @@ All data stays local:
 | macOS | `~/Library/Application Support/consolidation_memory/` |
 | Windows | `%LOCALAPPDATA%\consolidation_memory\` |
 
-Override with `data_dir` under `[paths]` in config.
+<details>
+<summary>Migrating</summary>
 
-## Migrating
-
-Already have a data directory? Point your config at it:
+Point your config at an existing data directory:
 
 ```toml
 [paths]
@@ -230,14 +244,16 @@ Switching embedding backends (different dimensions)?
 consolidation-memory reindex
 ```
 
+</details>
+
 ## Development
 
 ```bash
 git clone https://github.com/charliee1w/consolidation-memory
 cd consolidation-memory
-pip install -e ".[fastembed,dev]"
-python -m pytest tests/ -v      # 88 tests, no external services needed
-python -m ruff check src/ tests/
+pip install -e ".[all,dev]"
+pytest tests/ -v
+ruff check src/ tests/
 ```
 
 ## License

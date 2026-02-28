@@ -102,6 +102,7 @@ def recall(
     tags: list[str] | None = None,
     after: str | None = None,
     before: str | None = None,
+    include_expired: bool = False,
 ) -> dict:
     """Main retrieval function. Returns ranked episodes + knowledge excerpts.
 
@@ -110,6 +111,7 @@ def recall(
         tags: Only return episodes that have at least one of these tags.
         after: Only return episodes created after this ISO date string.
         before: Only return episodes created before this ISO date string.
+        include_expired: If True, include temporally expired knowledge records.
     """
     n_results = min(n_results, RECALL_MAX_N)
 
@@ -185,7 +187,7 @@ def recall(
     if include_knowledge:
         knowledge, kw_warnings = _search_knowledge(query, query_vec)
         warnings.extend(kw_warnings)
-        records, rec_warnings = _search_records(query, query_vec)
+        records, rec_warnings = _search_records(query, query_vec, include_expired=include_expired)
         warnings.extend(rec_warnings)
 
     return {
@@ -264,11 +266,11 @@ def _search_knowledge(
 
 
 def _search_records(
-    query: str, query_vec: np.ndarray | None = None,
+    query: str, query_vec: np.ndarray | None = None, *, include_expired: bool = False,
 ) -> tuple[list[dict], list[str]]:
     """Search individual knowledge records by semantic + keyword similarity."""
     warnings: list[str] = []
-    records, record_vecs = record_cache.get_record_vecs()
+    records, record_vecs = record_cache.get_record_vecs(include_expired=include_expired)
     if not records:
         return [], warnings
 

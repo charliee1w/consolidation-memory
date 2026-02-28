@@ -179,6 +179,11 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "description": "Only episodes created before this ISO date.",
                 },
+                "include_expired": {
+                    "type": "boolean",
+                    "description": "Include temporally expired knowledge records. Default False.",
+                    "default": False,
+                },
             },
             "required": ["query"],
         },
@@ -376,6 +381,7 @@ def dispatch_tool_call(
             tags=arguments.get("tags"),
             after=arguments.get("after"),
             before=arguments.get("before"),
+            include_expired=arguments.get("include_expired", False),
         )
         return dataclasses.asdict(result)
 

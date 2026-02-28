@@ -67,6 +67,8 @@ def tmp_data_dir(tmp_path):
             "consolidation_memory.consolidation.CONSOLIDATION_STOPWORDS",
             frozenset({"the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "is", "at", "it"}),
         ),
+        patch("consolidation_memory.consolidation.CONTRADICTION_SIMILARITY_THRESHOLD", 0.7),
+        patch("consolidation_memory.consolidation.CONTRADICTION_LLM_ENABLED", True),
         patch("consolidation_memory.consolidation.RENDER_MARKDOWN", True),
         patch("consolidation_memory.consolidation.CONSOLIDATION_MAX_DURATION", 1800),
         patch("consolidation_memory.consolidation.CONSOLIDATION_MAX_ATTEMPTS", 5),

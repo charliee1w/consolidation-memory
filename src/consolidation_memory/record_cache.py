@@ -34,18 +34,35 @@ def invalidate() -> None:
         _version += 1
 
 
-def get_record_vecs() -> tuple[list[dict], np.ndarray | None]:
+def get_record_vecs(include_expired: bool = False) -> tuple[list[dict], np.ndarray | None]:
     """Return (records, embedding_matrix) with caching.
 
     Cache is valid as long as its version matches the current version.
     Returns ([], None) if no records exist.
+
+    Args:
+        include_expired: If True, include records with valid_until in the past.
+            These bypass the cache and are fetched fresh each time.
     """
+    if include_expired:
+        # Expired inclusion bypasses cache — always fresh
+        records = get_all_active_records(include_expired=True)
+        if not records:
+            return [], None
+        texts = [r["embedding_text"] for r in records]
+        try:
+            vecs = encode_documents(texts)
+        except Exception as e:
+            logger.warning("Failed to embed record texts: %s", e, exc_info=True)
+            return records, None
+        return records, vecs
+
     with _lock:
         if _cache["version"] == _version and _cache["vecs"] is not None:
             return _cache["records"], _cache["vecs"]
         fetch_version = _version
 
-    records = get_all_active_records()
+    records = get_all_active_records(include_expired=False)
     if not records:
         return [], None
 

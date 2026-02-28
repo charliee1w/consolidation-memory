@@ -22,7 +22,7 @@ _conn_list_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -68,6 +68,11 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_records_topic ON knowledge_records(topic_id)",
         "CREATE INDEX IF NOT EXISTS idx_records_type ON knowledge_records(record_type)",
         "CREATE INDEX IF NOT EXISTS idx_records_deleted ON knowledge_records(deleted)",
+    ],
+    6: [
+        "ALTER TABLE knowledge_records ADD COLUMN valid_from TEXT",
+        "ALTER TABLE knowledge_records ADD COLUMN valid_until TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_records_valid_until ON knowledge_records(valid_until)",
     ],
 }
 
@@ -467,7 +472,7 @@ def insert_knowledge_records(
     """Insert multiple knowledge records for a topic.
 
     Each record dict must have: record_type, content (JSON-serializable dict),
-    embedding_text. Optional: confidence.
+    embedding_text. Optional: confidence, valid_from.
 
     Returns list of inserted record IDs.
     """
@@ -480,39 +485,86 @@ def insert_knowledge_records(
         for rec in records:
             rec_id = str(uuid.uuid4())
             content = rec["content"] if isinstance(rec["content"], str) else json.dumps(rec["content"])
+            valid_from = rec.get("valid_from")
             conn.execute(
                 """INSERT INTO knowledge_records
                    (id, topic_id, record_type, content, embedding_text,
-                    source_episodes, confidence, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    source_episodes, confidence, created_at, updated_at, valid_from)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (rec_id, topic_id, rec["record_type"], content,
                  rec["embedding_text"], src, rec.get("confidence", 0.8),
-                 now, now),
+                 now, now, valid_from),
             )
             ids.append(rec_id)
     return ids
 
 
-def get_all_active_records() -> list[dict[str, Any]]:
-    """Return all non-deleted knowledge records."""
+def expire_record(record_id: str, valid_until: str | None = None) -> bool:
+    """Set valid_until on a record, marking it as temporally superseded.
+
+    Unlike soft-delete, expired records retain their content and can be
+    retrieved with include_expired=True for historical queries.
+
+    Returns True if a record was updated.
+    """
+    ts = valid_until or _now()
     with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
-               FROM knowledge_records kr
-               JOIN knowledge_topics kt ON kr.topic_id = kt.id
-               WHERE kr.deleted = 0
-               ORDER BY kr.updated_at DESC"""
-        ).fetchall()
+        cursor = conn.execute(
+            "UPDATE knowledge_records SET valid_until = ?, updated_at = ? WHERE id = ? AND deleted = 0",
+            (ts, _now(), record_id),
+        )
+    return cursor.rowcount > 0
+
+
+def get_all_active_records(include_expired: bool = False) -> list[dict[str, Any]]:
+    """Return all non-deleted knowledge records.
+
+    Args:
+        include_expired: If False (default), exclude records where
+            valid_until is set and in the past.
+    """
+    now = _now()
+    with get_connection() as conn:
+        if include_expired:
+            rows = conn.execute(
+                """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
+                   FROM knowledge_records kr
+                   JOIN knowledge_topics kt ON kr.topic_id = kt.id
+                   WHERE kr.deleted = 0
+                   ORDER BY kr.updated_at DESC"""
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
+                   FROM knowledge_records kr
+                   JOIN knowledge_topics kt ON kr.topic_id = kt.id
+                   WHERE kr.deleted = 0
+                     AND (kr.valid_until IS NULL OR kr.valid_until > ?)
+                   ORDER BY kr.updated_at DESC""",
+                (now,),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_records_by_topic(topic_id: str) -> list[dict[str, Any]]:
-    """Return all active records for a specific topic."""
+def get_records_by_topic(topic_id: str, include_expired: bool = False) -> list[dict[str, Any]]:
+    """Return all active records for a specific topic.
+
+    Args:
+        include_expired: If False (default), exclude temporally expired records.
+    """
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM knowledge_records WHERE topic_id = ? AND deleted = 0",
-            (topic_id,),
-        ).fetchall()
+        if include_expired:
+            rows = conn.execute(
+                "SELECT * FROM knowledge_records WHERE topic_id = ? AND deleted = 0",
+                (topic_id,),
+            ).fetchall()
+        else:
+            now = _now()
+            rows = conn.execute(
+                """SELECT * FROM knowledge_records WHERE topic_id = ? AND deleted = 0
+                   AND (valid_until IS NULL OR valid_until > ?)""",
+                (topic_id, now),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -522,6 +574,20 @@ def soft_delete_records_by_topic(topic_id: str) -> int:
         cursor = conn.execute(
             "UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE topic_id = ? AND deleted = 0",
             (_now(), topic_id),
+        )
+    return cursor.rowcount
+
+
+def soft_delete_records_by_ids(record_ids: list[str]) -> int:
+    """Soft-delete specific records by their IDs. Returns count of affected rows."""
+    if not record_ids:
+        return 0
+    now = _now()
+    with get_connection() as conn:
+        placeholders = ",".join("?" for _ in record_ids)
+        cursor = conn.execute(
+            f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",
+            [now] + record_ids,
         )
     return cursor.rowcount
 
@@ -539,12 +605,20 @@ def increment_record_access(record_ids: list[str]) -> None:
         )
 
 
-def get_record_count() -> int:
+def get_record_count(include_expired: bool = False) -> int:
     """Return count of active (non-deleted) knowledge records."""
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) as cnt FROM knowledge_records WHERE deleted = 0"
-        ).fetchone()
+        if include_expired:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM knowledge_records WHERE deleted = 0"
+            ).fetchone()
+        else:
+            now = _now()
+            row = conn.execute(
+                """SELECT COUNT(*) as cnt FROM knowledge_records
+                   WHERE deleted = 0 AND (valid_until IS NULL OR valid_until > ?)""",
+                (now,),
+            ).fetchone()
     return row["cnt"] if row else 0
 
 

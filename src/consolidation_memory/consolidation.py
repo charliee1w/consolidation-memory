@@ -23,6 +23,8 @@ from scipy.spatial.distance import squareform
 
 from consolidation_memory import config as _config
 from consolidation_memory.config import (
+    CONTRADICTION_LLM_ENABLED,
+    CONTRADICTION_SIMILARITY_THRESHOLD,
     FAISS_COMPACTION_THRESHOLD,
     LLM_VALIDATION_RETRY,
     CONSOLIDATION_CLUSTER_THRESHOLD,
@@ -50,7 +52,9 @@ from consolidation_memory.circuit_breaker import CircuitBreaker
 from consolidation_memory.database import (
     complete_consolidation_run,
     ensure_schema,
+    expire_record,
     get_active_episodes_paginated,
+    get_all_active_records,
     get_all_knowledge_topics,
     get_median_access_count,
     get_prunable_episodes,
@@ -62,6 +66,7 @@ from consolidation_memory.database import (
     mark_consolidated,
     mark_pruned,
     reset_stale_consolidation_attempts,
+    soft_delete_records_by_ids,
     soft_delete_records_by_topic,
     start_consolidation_run,
     update_surprise_scores,
@@ -785,6 +790,147 @@ confidence: {confidence}
 - Explicitly stated user preference"""
 
 
+def _build_contradiction_prompt(pairs: list[tuple[dict, dict]]) -> str:
+    """Build an LLM prompt to verify which record pairs are contradictions."""
+    lines = [
+        "You are a contradiction detector. For each numbered pair of knowledge records, "
+        "determine if they CONTRADICT each other (state incompatible facts about the same subject) "
+        "or are COMPATIBLE (same topic but not conflicting, or complementary information).\n",
+        "STRICT RULES:",
+        "- CONTRADICTS means the two records cannot both be true simultaneously.",
+        "- COMPATIBLE means they can coexist (even if about the same subject).",
+        "- Output ONLY a JSON array of verdicts, one per pair, in order.",
+        '- Example: ["CONTRADICTS", "COMPATIBLE", "CONTRADICTS"]',
+        "- No commentary or explanation.\n",
+        "PAIRS:",
+    ]
+    for i, (existing_rec, new_rec) in enumerate(pairs):
+        lines.append(f"\nPair {i + 1}:")
+        lines.append(f"  EXISTING: {json.dumps(existing_rec)}")
+        lines.append(f"  NEW: {json.dumps(new_rec)}")
+
+    lines.append("\nOutput JSON array of verdicts:")
+    return "\n".join(lines)
+
+
+def _detect_contradictions(
+    new_records: list[dict],
+    existing_records: list[dict],
+) -> list[tuple[int, str]]:
+    """Detect contradictions between new and existing knowledge records.
+
+    Uses semantic similarity to find candidate pairs, then LLM verification
+    for pairs above the similarity threshold.
+
+    Args:
+        new_records: List of new record dicts (with 'embedding_text' and content fields).
+        existing_records: List of existing DB record dicts (with 'id', 'embedding_text', 'content').
+
+    Returns:
+        List of (new_record_index, existing_record_id) pairs that contradict.
+    """
+    if not new_records or not existing_records:
+        return []
+
+    # Embed new records
+    new_texts = []
+    for rec in new_records:
+        text = rec.get("embedding_text", "")
+        if not text:
+            text = _embedding_text_for_record(rec)
+        new_texts.append(text)
+
+    existing_texts = []
+    for rec in existing_records:
+        text = rec.get("embedding_text", "")
+        if not text:
+            content = rec.get("content", {})
+            if isinstance(content, str):
+                try:
+                    content = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    content = {}
+            text = _embedding_text_for_record(content)
+        existing_texts.append(text)
+
+    try:
+        new_vecs = encode_documents(new_texts)
+        existing_vecs = encode_documents(existing_texts)
+    except Exception as e:
+        logger.warning("Failed to embed records for contradiction detection: %s", e)
+        return []
+
+    # Compute similarities
+    sims = new_vecs @ existing_vecs.T  # shape: (len(new), len(existing))
+
+    # Find candidate pairs above threshold
+    candidate_pairs: list[tuple[int, int]] = []
+    for new_idx in range(len(new_records)):
+        for ex_idx in range(len(existing_records)):
+            if float(sims[new_idx, ex_idx]) >= CONTRADICTION_SIMILARITY_THRESHOLD:
+                candidate_pairs.append((new_idx, ex_idx))
+
+    if not candidate_pairs:
+        return []
+
+    logger.info(
+        "Contradiction detection: %d candidate pairs above threshold %.2f",
+        len(candidate_pairs), CONTRADICTION_SIMILARITY_THRESHOLD,
+    )
+
+    if not CONTRADICTION_LLM_ENABLED:
+        # Without LLM, treat all high-similarity pairs as contradictions
+        return [
+            (new_idx, existing_records[ex_idx]["id"])
+            for new_idx, ex_idx in candidate_pairs
+        ]
+
+    # Build pair contents for LLM verification
+    pair_contents: list[tuple[dict, dict]] = []
+    for new_idx, ex_idx in candidate_pairs:
+        ex_content = existing_records[ex_idx].get("content", {})
+        if isinstance(ex_content, str):
+            try:
+                ex_content = json.loads(ex_content)
+            except (json.JSONDecodeError, TypeError):
+                ex_content = {}
+        new_content = new_records[new_idx]
+        # Strip embedding_text from content sent to LLM to keep prompt focused
+        new_for_llm = {k: v for k, v in new_content.items() if k != "embedding_text"}
+        pair_contents.append((ex_content, new_for_llm))
+
+    prompt = _build_contradiction_prompt(pair_contents)
+
+    try:
+        raw = _call_llm(prompt, max_retries=2)
+        raw = raw.strip()
+        raw = re.sub(r"^```(?:json)?\s*\n?", "", raw)
+        raw = re.sub(r"\n?```\s*$", "", raw)
+        verdicts = json.loads(raw.strip())
+    except Exception as e:
+        logger.warning("LLM contradiction verification failed: %s", e)
+        return []
+
+    if not isinstance(verdicts, list) or len(verdicts) != len(candidate_pairs):
+        logger.warning(
+            "LLM returned %d verdicts for %d pairs; expected exact match. Skipping.",
+            len(verdicts) if isinstance(verdicts, list) else 0,
+            len(candidate_pairs),
+        )
+        return []
+
+    contradictions = []
+    for (new_idx, ex_idx), verdict in zip(candidate_pairs, verdicts):
+        if isinstance(verdict, str) and "CONTRADICT" in verdict.upper():
+            contradictions.append((new_idx, existing_records[ex_idx]["id"]))
+
+    logger.info(
+        "Contradiction detection: %d/%d candidate pairs confirmed as contradictions",
+        len(contradictions), len(candidate_pairs),
+    )
+    return contradictions
+
+
 def _merge_into_existing(
     existing: dict,
     extraction_data: dict,
@@ -845,16 +991,41 @@ def _merge_into_existing(
         increment_consolidation_attempts(cluster_ep_ids)
         return "failed", merge_calls
 
-    # Soft-delete old records, insert merged ones
-    soft_delete_records_by_topic(existing["id"])
+    # Detect contradictions between new extraction and existing records
+    new_for_detection = []
+    for rec in new_records:
+        det = dict(rec)
+        det["embedding_text"] = _embedding_text_for_record(rec)
+        new_for_detection.append(det)
+
+    contradictions = _detect_contradictions(new_for_detection, existing_db_records)
+    contradicted_existing_ids = {ex_id for _, ex_id in contradictions}
+    contradicting_new_indices = {new_idx for new_idx, _ in contradictions}
+
+    now_ts = datetime.now(timezone.utc).isoformat()
+
+    # Expire contradicted records instead of soft-deleting them
+    for ex_id in contradicted_existing_ids:
+        expire_record(ex_id, valid_until=now_ts)
+        logger.info("Expired contradicted record %s in topic %s", ex_id, existing["filename"])
+
+    # Soft-delete remaining old records (non-contradicted ones replaced by merge)
+    non_contradicted_ids = [r["id"] for r in existing_db_records if r["id"] not in contradicted_existing_ids]
+    if non_contradicted_ids:
+        soft_delete_records_by_ids(non_contradicted_ids)
+
+    # Build merged record rows, marking those that contradict with valid_from
     record_rows = []
-    for rec in merged_records:
-        record_rows.append({
+    for i, rec in enumerate(merged_records):
+        row = {
             "record_type": rec.get("type", "fact"),
             "content": rec,
             "embedding_text": _embedding_text_for_record(rec),
             "confidence": confidence,
-        })
+        }
+        if contradicting_new_indices:
+            row["valid_from"] = now_ts
+        record_rows.append(row)
     insert_knowledge_records(existing["id"], record_rows, source_episodes=cluster_ep_ids)
 
     # Render markdown

@@ -321,6 +321,7 @@ class MemoryClient:
         tags: list[str] | None = None,
         after: str | None = None,
         before: str | None = None,
+        include_expired: bool = False,
     ) -> RecallResult:
         """Retrieve relevant memories by semantic similarity.
 
@@ -332,6 +333,7 @@ class MemoryClient:
             tags: Filter to episodes with at least one matching tag.
             after: Only episodes created after this ISO date (e.g. '2025-01-01').
             before: Only episodes created before this ISO date.
+            include_expired: Include temporally expired knowledge records.
 
         Returns:
             RecallResult with episodes and knowledge lists.
@@ -351,6 +353,7 @@ class MemoryClient:
                 tags=tags,
                 after=after,
                 before=before,
+                include_expired=include_expired,
             )
         except ConnectionError as e:
             logger.error("Embedding backend unreachable during recall: %s", e)

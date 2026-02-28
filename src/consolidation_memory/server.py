@@ -90,6 +90,7 @@ async def memory_recall(
     tags: list[str] | None = None,
     after: str | None = None,
     before: str | None = None,
+    include_expired: bool = False,
 ) -> str:
     """Retrieve relevant memories by semantic similarity.
 
@@ -106,12 +107,14 @@ async def memory_recall(
         tags: Filter to episodes with at least one matching tag.
         after: Only episodes created after this ISO date (e.g. '2025-01-01').
         before: Only episodes created before this ISO date.
+        include_expired: Include temporally expired knowledge records. Default False.
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
     result = _client.recall(
         query, n_results, include_knowledge,
         content_types=content_types, tags=tags, after=after, before=before,
+        include_expired=include_expired,
     )
     return json.dumps(dataclasses.asdict(result), default=str)
 

@@ -149,10 +149,11 @@ similarity_threshold = 0.95
     print(f"\nConfig written to: {config_path}")
 
     # Initialize data directory
-    from consolidation_memory.config import DATA_DIR, KNOWLEDGE_DIR, LOG_DIR, BACKUP_DIR
-    for d in [DATA_DIR, KNOWLEDGE_DIR, LOG_DIR, BACKUP_DIR]:
+    from consolidation_memory.config import get_config
+    cfg = get_config()
+    for d in [cfg.DATA_DIR, cfg.KNOWLEDGE_DIR, cfg.LOG_DIR, cfg.BACKUP_DIR]:
         d.mkdir(parents=True, exist_ok=True)
-    print(f"Data directory: {DATA_DIR}")
+    print(f"Data directory: {cfg.DATA_DIR}")
 
     # Initialize DB
     from consolidation_memory.database import ensure_schema
@@ -187,26 +188,23 @@ def cmd_consolidate():
 def cmd_status():
     """Show system statistics."""
     from consolidation_memory.database import ensure_schema, get_stats, get_last_consolidation_run
-    from consolidation_memory.config import (
-        EMBEDDING_BACKEND, EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSION,
-        LLM_BACKEND, LLM_MODEL, DB_PATH, DATA_DIR,
-    )
+    from consolidation_memory.config import get_config, get_active_project
+    cfg = get_config()
 
     ensure_schema()
     stats = get_stats()
     last_run = get_last_consolidation_run()
 
     db_size_mb = 0.0
-    if DB_PATH.exists():
-        db_size_mb = round(DB_PATH.stat().st_size / (1024 * 1024), 2)
+    if cfg.DB_PATH.exists():
+        db_size_mb = round(cfg.DB_PATH.stat().st_size / (1024 * 1024), 2)
 
     print(f"consolidation-memory v{__version__}")
-    from consolidation_memory.config import get_active_project
     print(f"Project:     {get_active_project()}")
-    print(f"Data dir:    {DATA_DIR}")
+    print(f"Data dir:    {cfg.DATA_DIR}")
     print(f"DB size:     {db_size_mb} MB")
-    print(f"Embedding:   {EMBEDDING_BACKEND} ({EMBEDDING_MODEL_NAME}, {EMBEDDING_DIMENSION}-dim)")
-    print(f"LLM:         {LLM_BACKEND} ({LLM_MODEL})")
+    print(f"Embedding:   {cfg.EMBEDDING_BACKEND} ({cfg.EMBEDDING_MODEL_NAME}, {cfg.EMBEDDING_DIMENSION}-dim)")
+    print(f"LLM:         {cfg.LLM_BACKEND} ({cfg.LLM_MODEL})")
     print()
 
     eb = stats["episodic_buffer"]
@@ -233,17 +231,18 @@ def cmd_export():
     from consolidation_memory.database import (
         ensure_schema, get_all_episodes, get_all_knowledge_topics, get_all_active_records,
     )
-    from consolidation_memory.config import BACKUP_DIR, KNOWLEDGE_DIR, MAX_BACKUPS
+    from consolidation_memory.config import get_config
     from datetime import datetime, timezone
 
+    cfg = get_config()
     ensure_schema()
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
     episodes = get_all_episodes(include_deleted=False)
     topics = get_all_knowledge_topics()
     knowledge = []
     for topic in topics:
-        filepath = KNOWLEDGE_DIR / topic["filename"]
+        filepath = cfg.KNOWLEDGE_DIR / topic["filename"]
         content = filepath.read_text(encoding="utf-8") if filepath.exists() else ""
         knowledge.append({**topic, "file_content": content})
 
@@ -263,11 +262,11 @@ def cmd_export():
     }
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    export_path = BACKUP_DIR / f"memory_export_{timestamp}.json"
+    export_path = cfg.BACKUP_DIR / f"memory_export_{timestamp}.json"
     export_path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
 
-    existing = sorted(BACKUP_DIR.glob("memory_export_*.json"), reverse=True)
-    for old in existing[MAX_BACKUPS:]:
+    existing = sorted(cfg.BACKUP_DIR.glob("memory_export_*.json"), reverse=True)
+    for old in existing[cfg.MAX_BACKUPS:]:
         old.unlink()
 
     print(f"Exported {len(episodes)} episodes + {len(knowledge)} topics + {len(records)} records to {export_path}")
@@ -334,8 +333,9 @@ def cmd_import(path: str):
     )
     from consolidation_memory.backends import encode_documents
     from consolidation_memory.vector_store import VectorStore
-    from consolidation_memory.config import KNOWLEDGE_DIR
+    from consolidation_memory.config import get_config
 
+    cfg = get_config()
     export_path = Path(path)
     if not export_path.exists():
         print(f"File not found: {export_path}")
@@ -392,12 +392,12 @@ def cmd_import(path: str):
     print(f"\nEpisodes: {imported} imported, {skipped} skipped (already exist)")
 
     # Import knowledge
-    KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     k_imported = 0
-    knowledge_resolved = KNOWLEDGE_DIR.resolve()
+    knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
     for topic in data.get("knowledge_topics", []):
         if topic.get("file_content"):
-            filepath = (KNOWLEDGE_DIR / topic["filename"]).resolve()
+            filepath = (cfg.KNOWLEDGE_DIR / topic["filename"]).resolve()
             if not filepath.is_relative_to(knowledge_resolved):
                 print(f"  Skipping {topic['filename']!r}: path traversal detected")
                 continue
@@ -452,12 +452,11 @@ def cmd_reindex():
     )
     from consolidation_memory.database import ensure_schema, get_all_episodes
     from consolidation_memory.backends import encode_documents, get_dimension
-    from consolidation_memory.config import (
-        FAISS_INDEX_PATH, FAISS_ID_MAP_PATH, FAISS_TOMBSTONE_PATH, DATA_DIR,
-    )
+    from consolidation_memory.config import get_config
     from consolidation_memory.vector_store import VectorStore
     import faiss
 
+    cfg = get_config()
     ensure_schema()
     episodes = get_all_episodes(include_deleted=False)
     if not episodes:
@@ -496,10 +495,10 @@ def cmd_reindex():
     index = faiss.IndexFlatIP(dim)
     index.add(all_vecs_arr)
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     # Atomic swap: write to temp files, then rename
-    parent = str(FAISS_INDEX_PATH.parent)
+    parent = str(cfg.FAISS_INDEX_PATH.parent)
 
     idx_fd, idx_tmp = tempfile.mkstemp(dir=parent, suffix=".faiss.tmp")
     os.close(idx_fd)
@@ -532,9 +531,9 @@ def cmd_reindex():
         return
 
     # All writes succeeded — atomic swap
-    os.replace(idx_tmp, str(FAISS_INDEX_PATH))
-    os.replace(map_tmp, str(FAISS_ID_MAP_PATH))
-    os.replace(tomb_tmp, str(FAISS_TOMBSTONE_PATH))
+    os.replace(idx_tmp, str(cfg.FAISS_INDEX_PATH))
+    os.replace(map_tmp, str(cfg.FAISS_ID_MAP_PATH))
+    os.replace(tomb_tmp, str(cfg.FAISS_TOMBSTONE_PATH))
 
     VectorStore.signal_reload()
 

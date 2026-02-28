@@ -49,19 +49,14 @@ class MemoryClient:
     """
 
     def __init__(self, auto_consolidate: bool = True) -> None:
-        from consolidation_memory.config import (
-            DATA_DIR,
-            KNOWLEDGE_DIR,
-            CONSOLIDATION_LOG_DIR,
-            LOG_DIR,
-            BACKUP_DIR,
-            CONSOLIDATION_AUTO_RUN,
-        )
+        from consolidation_memory.config import get_config
         from consolidation_memory.database import ensure_schema
         from consolidation_memory.vector_store import VectorStore
 
+        cfg = get_config()
+
         # Ensure directories
-        for d in [DATA_DIR, KNOWLEDGE_DIR, CONSOLIDATION_LOG_DIR, LOG_DIR, BACKUP_DIR]:
+        for d in [cfg.DATA_DIR, cfg.KNOWLEDGE_DIR, cfg.CONSOLIDATION_LOG_DIR, cfg.LOG_DIR, cfg.BACKUP_DIR]:
             d.mkdir(parents=True, exist_ok=True)
 
         ensure_schema()
@@ -77,7 +72,7 @@ class MemoryClient:
         self._probe_cache: tuple[bool, float] | None = None
         self._probe_cache_ttl = 30.0  # seconds
 
-        if auto_consolidate and CONSOLIDATION_AUTO_RUN:
+        if auto_consolidate and cfg.CONSOLIDATION_AUTO_RUN:
             self._start_consolidation_thread()
 
         logger.info(
@@ -128,8 +123,9 @@ class MemoryClient:
         """
         from consolidation_memory.database import insert_episode, get_episode, hard_delete_episode
         from consolidation_memory.backends import encode_documents
-        from consolidation_memory.config import DEDUP_SIMILARITY_THRESHOLD, DEDUP_ENABLED
+        from consolidation_memory.config import get_config
 
+        cfg = get_config()
         self._vector_store.reload_if_stale()
 
         try:
@@ -142,15 +138,15 @@ class MemoryClient:
             )
 
         # Dedup check: search top-3 so tombstone-filtered results don't mask real duplicates
-        if DEDUP_ENABLED and self._vector_store.size > 0:
+        if cfg.DEDUP_ENABLED and self._vector_store.size > 0:
             matches = self._vector_store.search(embedding[0], k=3)
             for match_id, match_sim in matches:
-                if match_sim >= DEDUP_SIMILARITY_THRESHOLD:
+                if match_sim >= cfg.DEDUP_SIMILARITY_THRESHOLD:
                     existing = get_episode(match_id)
                     if existing is not None:
                         logger.info(
                             "Duplicate detected (sim=%.4f >= %.2f): existing=%s",
-                            match_sim, DEDUP_SIMILARITY_THRESHOLD, match_id,
+                            match_sim, cfg.DEDUP_SIMILARITY_THRESHOLD, match_id,
                         )
                         return StoreResult(
                             status="duplicate_detected",
@@ -214,8 +210,10 @@ class MemoryClient:
         """
         from consolidation_memory.database import insert_episode, get_episode, hard_delete_episode
         from consolidation_memory.backends import encode_documents
-        from consolidation_memory.config import DEDUP_SIMILARITY_THRESHOLD, DEDUP_ENABLED
+        from consolidation_memory.config import get_config
         import numpy as np
+
+        cfg = get_config()
 
         if not episodes:
             return BatchStoreResult(status="stored", stored=0, duplicates=0)
@@ -257,11 +255,11 @@ class MemoryClient:
             emb = embeddings[i]
 
             # Dedup check: search top-3 so tombstone-filtered results don't mask real duplicates
-            if DEDUP_ENABLED and self._vector_store.size > 0:
+            if cfg.DEDUP_ENABLED and self._vector_store.size > 0:
                 matches = self._vector_store.search(emb, k=3)
                 is_dup = False
                 for match_id, match_sim in matches:
-                    if match_sim >= DEDUP_SIMILARITY_THRESHOLD:
+                    if match_sim >= cfg.DEDUP_SIMILARITY_THRESHOLD:
                         existing = get_episode(match_id)
                         if existing is not None:
                             duplicates += 1
@@ -444,19 +442,17 @@ class MemoryClient:
             StatusResult with counts, backend info, health, and last consolidation.
         """
         from consolidation_memory.database import get_stats, get_last_consolidation_run
-        from consolidation_memory.config import (
-            EMBEDDING_MODEL_NAME, EMBEDDING_BACKEND, DB_PATH,
-            CONSOLIDATION_INTERVAL_HOURS, FAISS_COMPACTION_THRESHOLD,
-        )
+        from consolidation_memory.config import get_config
 
+        cfg = get_config()
         stats = get_stats()
         last_run = get_last_consolidation_run()
 
         db_size_mb = 0.0
-        if DB_PATH.exists():
-            db_size_mb = round(DB_PATH.stat().st_size / (1024 * 1024), 2)
+        if cfg.DB_PATH.exists():
+            db_size_mb = round(cfg.DB_PATH.stat().st_size / (1024 * 1024), 2)
 
-        health = self._compute_health(last_run, CONSOLIDATION_INTERVAL_HOURS, FAISS_COMPACTION_THRESHOLD)
+        health = self._compute_health(last_run, cfg.CONSOLIDATION_INTERVAL_HOURS, cfg.FAISS_COMPACTION_THRESHOLD)
 
         from consolidation_memory.database import get_consolidation_metrics
         metrics = get_consolidation_metrics(limit=10)
@@ -481,8 +477,8 @@ class MemoryClient:
             episodic_buffer=stats["episodic_buffer"],
             knowledge_base=stats["knowledge_base"],
             last_consolidation=last_run,
-            embedding_backend=EMBEDDING_BACKEND,
-            embedding_model=EMBEDDING_MODEL_NAME,
+            embedding_backend=cfg.EMBEDDING_BACKEND,
+            embedding_model=cfg.EMBEDDING_MODEL_NAME,
             faiss_index_size=self._vector_store.size,
             faiss_tombstones=self._vector_store.tombstone_count,
             db_size_mb=db_size_mb,
@@ -520,20 +516,21 @@ class MemoryClient:
         Returns:
             ExportResult with status, file path, and counts.
         """
-        from consolidation_memory.config import BACKUP_DIR, KNOWLEDGE_DIR, MAX_BACKUPS
+        from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             get_all_episodes, get_all_knowledge_topics, get_all_active_records,
         )
 
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        cfg = get_config()
+        cfg.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
         episodes = get_all_episodes(include_deleted=False)
 
         topics = get_all_knowledge_topics()
         knowledge = []
-        knowledge_resolved = KNOWLEDGE_DIR.resolve()
+        knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
         for topic in topics:
-            filepath = (KNOWLEDGE_DIR / topic["filename"]).resolve()
+            filepath = (cfg.KNOWLEDGE_DIR / topic["filename"]).resolve()
             content = ""
             # Path traversal guard: skip files that resolve outside KNOWLEDGE_DIR
             if filepath.is_relative_to(knowledge_resolved) and filepath.exists():
@@ -556,15 +553,15 @@ class MemoryClient:
         }
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        export_path = BACKUP_DIR / f"memory_export_{timestamp}.json"
+        export_path = cfg.BACKUP_DIR / f"memory_export_{timestamp}.json"
         export_path.write_text(
             json.dumps(snapshot, indent=2, default=str),
             encoding="utf-8",
         )
 
         # Prune old exports
-        existing = sorted(BACKUP_DIR.glob("memory_export_*.json"), reverse=True)
-        for old in existing[MAX_BACKUPS:]:
+        existing = sorted(cfg.BACKUP_DIR.glob("memory_export_*.json"), reverse=True)
+        for old in existing[cfg.MAX_BACKUPS:]:
             old.unlink()
 
         logger.info(
@@ -589,16 +586,17 @@ class MemoryClient:
         Returns:
             CorrectResult with status and updated metadata.
         """
-        from consolidation_memory.config import KNOWLEDGE_DIR
+        from consolidation_memory.config import get_config
         from consolidation_memory.database import get_all_knowledge_topics, upsert_knowledge_topic
         from consolidation_memory.consolidation import (
             _version_knowledge_file, _parse_frontmatter, _count_facts, _normalize_output,
         )
         from consolidation_memory.backends import get_llm_backend
 
+        cfg = get_config()
         # Validate filename doesn't escape KNOWLEDGE_DIR (path traversal)
-        filepath = (KNOWLEDGE_DIR / topic_filename).resolve()
-        if not filepath.is_relative_to(KNOWLEDGE_DIR.resolve()):
+        filepath = (cfg.KNOWLEDGE_DIR / topic_filename).resolve()
+        if not filepath.is_relative_to(cfg.KNOWLEDGE_DIR.resolve()):
             return CorrectResult(
                 status="error",
                 filename=topic_filename,
@@ -626,17 +624,16 @@ class MemoryClient:
         )
 
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-        from consolidation_memory.config import LLM_CORRECTION_TIMEOUT
 
         try:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(llm.generate, system_prompt, user_prompt)
-                raw = future.result(timeout=LLM_CORRECTION_TIMEOUT)
+                raw = future.result(timeout=cfg.LLM_CORRECTION_TIMEOUT)
             corrected = _normalize_output(raw)
         except FuturesTimeoutError:
             return CorrectResult(
                 status="error",
-                message=f"LLM generation timed out after {LLM_CORRECTION_TIMEOUT}s. "
+                message=f"LLM generation timed out after {cfg.LLM_CORRECTION_TIMEOUT}s. "
                         "Try again or increase llm.correction_timeout in config.",
             )
         except Exception as e:
@@ -780,9 +777,10 @@ class MemoryClient:
     def _probe_backend(self) -> bool:
         """Quick check if embedding backend is reachable. Cached for 30s."""
         import time
-        from consolidation_memory.config import EMBEDDING_BACKEND, EMBEDDING_API_BASE
+        from consolidation_memory.config import get_config
 
-        if EMBEDDING_BACKEND == "fastembed":
+        cfg = get_config()
+        if cfg.EMBEDDING_BACKEND == "fastembed":
             return True
 
         # Return cached result if fresh
@@ -796,7 +794,7 @@ class MemoryClient:
 
         try:
             req = Request(
-                f"{EMBEDDING_API_BASE}/models",
+                f"{cfg.EMBEDDING_API_BASE}/models",
                 headers={"Content-Type": "application/json"},
             )
             with urlopen(req, timeout=3) as resp:
@@ -809,9 +807,10 @@ class MemoryClient:
 
     def _check_embedding_backend(self) -> None:
         """Verify the embedding backend is reachable."""
-        from consolidation_memory.config import EMBEDDING_BACKEND, EMBEDDING_API_BASE, EMBEDDING_MODEL_NAME
+        from consolidation_memory.config import get_config
 
-        if EMBEDDING_BACKEND == "fastembed":
+        cfg = get_config()
+        if cfg.EMBEDDING_BACKEND == "fastembed":
             logger.info("Embedding backend: fastembed (local, no server check needed)")
             return
 
@@ -820,23 +819,23 @@ class MemoryClient:
 
         try:
             req = Request(
-                f"{EMBEDDING_API_BASE}/models",
+                f"{cfg.EMBEDDING_API_BASE}/models",
                 headers={"Content-Type": "application/json"},
             )
             with urlopen(req, timeout=5) as resp:
                 body = json.loads(resp.read())
             model_ids = [m.get("id", "") for m in body.get("data", [])]
-            if EMBEDDING_MODEL_NAME not in model_ids:
+            if cfg.EMBEDDING_MODEL_NAME not in model_ids:
                 logger.warning(
                     "Embedding model '%s' not found. Loaded: %s",
-                    EMBEDDING_MODEL_NAME, model_ids,
+                    cfg.EMBEDDING_MODEL_NAME, model_ids,
                 )
             else:
-                logger.info("Embedding backend health check passed (%s).", EMBEDDING_BACKEND)
+                logger.info("Embedding backend health check passed (%s).", cfg.EMBEDDING_BACKEND)
         except (URLError, ConnectionError, TimeoutError) as e:
             logger.warning(
                 "%s not reachable at %s: %s. Store/recall will fail until available.",
-                EMBEDDING_BACKEND, EMBEDDING_API_BASE, e,
+                cfg.EMBEDDING_BACKEND, cfg.EMBEDDING_API_BASE, e,
             )
 
     def _start_consolidation_thread(self) -> None:
@@ -852,14 +851,15 @@ class MemoryClient:
     def _consolidation_loop(self) -> None:
         """Background consolidation thread target."""
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-        from consolidation_memory import config
+        from consolidation_memory.config import get_config
 
-        interval = config.CONSOLIDATION_INTERVAL_HOURS * 3600
+        cfg = get_config()
+        interval = cfg.CONSOLIDATION_INTERVAL_HOURS * 3600
         # Allow internal timeout + 60s buffer before we forcibly give up
-        max_duration = config.CONSOLIDATION_MAX_DURATION + 60
+        max_duration = cfg.CONSOLIDATION_MAX_DURATION + 60
         logger.info(
             "Background consolidation thread started (interval: %.1fh, timeout: %ds)",
-            config.CONSOLIDATION_INTERVAL_HOURS, max_duration,
+            cfg.CONSOLIDATION_INTERVAL_HOURS, max_duration,
         )
 
         while not self._consolidation_stop.wait(timeout=interval):

@@ -7,13 +7,7 @@ inactivity decay, and clamping to configured min/max bounds.
 import logging
 from datetime import datetime, timezone
 
-from consolidation_memory.config import (
-    SURPRISE_BOOST_PER_ACCESS,
-    SURPRISE_DECAY_INACTIVE_DAYS,
-    SURPRISE_DECAY_RATE,
-    SURPRISE_MAX,
-    SURPRISE_MIN,
-)
+from consolidation_memory.config import get_config
 from consolidation_memory.database import (
     get_active_episodes_paginated,
     get_median_access_count,
@@ -24,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _adjust_surprise_scores() -> int:
+    cfg = get_config()
     # Get median access count via single SQL query instead of loading all episodes
     median_access = get_median_access_count()
 
@@ -48,7 +43,7 @@ def _adjust_surprise_scores() -> int:
 
             if access > median_access and median_access > 0:
                 excess = access - median_access
-                boost = min(excess * SURPRISE_BOOST_PER_ACCESS, 0.15)
+                boost = min(excess * cfg.SURPRISE_BOOST_PER_ACCESS, 0.15)
                 new_score += boost
 
             try:
@@ -65,10 +60,10 @@ def _adjust_surprise_scores() -> int:
             # obscurity.  This breaks the positive feedback loop where low-access
             # episodes decay → rank lower → get accessed even less → decay more.
             is_consolidated = ep.get("consolidated", 0) == 1
-            if access == 0 and days_inactive >= SURPRISE_DECAY_INACTIVE_DAYS and is_consolidated:
-                new_score -= SURPRISE_DECAY_RATE
+            if access == 0 and days_inactive >= cfg.SURPRISE_DECAY_INACTIVE_DAYS and is_consolidated:
+                new_score -= cfg.SURPRISE_DECAY_RATE
 
-            new_score = max(SURPRISE_MIN, min(SURPRISE_MAX, new_score))
+            new_score = max(cfg.SURPRISE_MIN, min(cfg.SURPRISE_MAX, new_score))
 
             if abs(new_score - original) >= 0.005:
                 updates.append((round(new_score, 4), ep["id"]))

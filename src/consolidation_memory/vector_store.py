@@ -22,13 +22,7 @@ import time
 import faiss
 import numpy as np
 
-from consolidation_memory import config as _config
-from consolidation_memory.config import (
-    EMBEDDING_DIMENSION,
-    FAISS_IVF_UPGRADE_THRESHOLD,
-    FAISS_SEARCH_FETCH_K_PADDING,
-    FAISS_SIZE_WARNING_THRESHOLD,
-)
+from consolidation_memory.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +39,11 @@ class VectorStore:
 
     def _load_or_create(self) -> None:
         """Load existing FAISS index and id map from disk, or create empty. Validates dimension and id-map integrity on load."""
-        if _config.FAISS_INDEX_PATH.exists() and _config.FAISS_ID_MAP_PATH.exists():
-            logger.info("Loading FAISS index from %s", _config.FAISS_INDEX_PATH)
-            self._index = faiss.read_index(str(_config.FAISS_INDEX_PATH))
-            with open(_config.FAISS_ID_MAP_PATH, "r") as f:
+        cfg = get_config()
+        if cfg.FAISS_INDEX_PATH.exists() and cfg.FAISS_ID_MAP_PATH.exists():
+            logger.info("Loading FAISS index from %s", cfg.FAISS_INDEX_PATH)
+            self._index = faiss.read_index(str(cfg.FAISS_INDEX_PATH))
+            with open(cfg.FAISS_ID_MAP_PATH, "r") as f:
                 self._id_map = json.load(f)
             self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
 
@@ -57,7 +52,7 @@ class VectorStore:
                     "FAISS/id_map mismatch: %d vectors vs %d ids. Rebuilding empty index.",
                     self._index.ntotal, len(self._id_map),
                 )
-                self._index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+                self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
                 self._id_map = []
                 self._uuid_to_pos = {}
                 self._tombstones = set()
@@ -67,35 +62,35 @@ class VectorStore:
                 logger.info("Loaded %d vectors", self._index.ntotal)
                 if (
                     isinstance(self._index, faiss.IndexFlatIP)
-                    and self._index.ntotal >= FAISS_SIZE_WARNING_THRESHOLD
+                    and self._index.ntotal >= cfg.FAISS_SIZE_WARNING_THRESHOLD
                 ):
                     logger.warning(
                         "FAISS index has %d vectors (threshold: %d). "
                         "Auto-upgrade to IndexIVFFlat will trigger on next add.",
-                        self._index.ntotal, FAISS_SIZE_WARNING_THRESHOLD,
+                        self._index.ntotal, cfg.FAISS_SIZE_WARNING_THRESHOLD,
                     )
 
-            if self._index.ntotal > 0 and self._index.d != EMBEDDING_DIMENSION:
+            if self._index.ntotal > 0 and self._index.d != cfg.EMBEDDING_DIMENSION:
                 logger.error(
                     "FAISS dimension mismatch: index=%d, config=%d. Rebuilding empty index.",
-                    self._index.d, EMBEDDING_DIMENSION,
+                    self._index.d, cfg.EMBEDDING_DIMENSION,
                 )
-                self._index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+                self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
                 self._id_map = []
                 self._uuid_to_pos = {}
                 self._tombstones = set()
                 self._save()
                 self._save_tombstones()
         else:
-            logger.info("Creating new FAISS index (dim=%d)", EMBEDDING_DIMENSION)
-            self._index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+            logger.info("Creating new FAISS index (dim=%d)", cfg.EMBEDDING_DIMENSION)
+            self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
             self._id_map = []
             self._uuid_to_pos = {}
             self._tombstones = set()
 
-        if _config.FAISS_TOMBSTONE_PATH.exists():
+        if cfg.FAISS_TOMBSTONE_PATH.exists():
             try:
-                with open(_config.FAISS_TOMBSTONE_PATH, "r") as f:
+                with open(cfg.FAISS_TOMBSTONE_PATH, "r") as f:
                     self._tombstones = set(json.load(f))
                 if self._tombstones:
                     logger.info("Loaded %d tombstones", len(self._tombstones))
@@ -107,7 +102,8 @@ class VectorStore:
 
     def _save(self) -> None:
         """Atomic save: write to temp files, then rename over originals."""
-        parent = _config.FAISS_INDEX_PATH.parent
+        cfg = get_config()
+        parent = cfg.FAISS_INDEX_PATH.parent
         parent.mkdir(parents=True, exist_ok=True)
 
         idx_fd, idx_tmp = tempfile.mkstemp(dir=str(parent), suffix=".faiss.tmp")
@@ -127,12 +123,13 @@ class VectorStore:
             os.unlink(map_tmp)
             raise
 
-        os.replace(idx_tmp, str(_config.FAISS_INDEX_PATH))
-        os.replace(map_tmp, str(_config.FAISS_ID_MAP_PATH))
+        os.replace(idx_tmp, str(cfg.FAISS_INDEX_PATH))
+        os.replace(map_tmp, str(cfg.FAISS_ID_MAP_PATH))
 
     def _save_tombstones(self) -> None:
         """Atomic save of tombstone set."""
-        parent = _config.FAISS_TOMBSTONE_PATH.parent
+        cfg = get_config()
+        parent = cfg.FAISS_TOMBSTONE_PATH.parent
         parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(parent), suffix=".json.tmp")
         try:
@@ -141,7 +138,7 @@ class VectorStore:
         except Exception:
             os.unlink(tmp)
             raise
-        os.replace(tmp, str(_config.FAISS_TOMBSTONE_PATH))
+        os.replace(tmp, str(cfg.FAISS_TOMBSTONE_PATH))
 
     # ── Index upgrade ────────────────────────────────────────────────────────
 
@@ -157,7 +154,7 @@ class VectorStore:
         """
         if not isinstance(self._index, faiss.IndexFlatIP):
             return False
-        if self._index.ntotal < FAISS_IVF_UPGRADE_THRESHOLD:
+        if self._index.ntotal < get_config().FAISS_IVF_UPGRADE_THRESHOLD:
             return False
 
         n = self._index.ntotal
@@ -210,17 +207,18 @@ class VectorStore:
 
     def reload_if_stale(self) -> bool:
         """Reload FAISS index if the reload signal file is newer than last load. Thread-safe via double-checked lock. Returns True if reloaded."""
-        if not _config.FAISS_RELOAD_SIGNAL.exists():
+        cfg = get_config()
+        if not cfg.FAISS_RELOAD_SIGNAL.exists():
             return False
         try:
-            signal_mtime = _config.FAISS_RELOAD_SIGNAL.stat().st_mtime
+            signal_mtime = cfg.FAISS_RELOAD_SIGNAL.stat().st_mtime
         except OSError:
             return False
         if signal_mtime <= self._last_load_time:
             return False
         with self._lock:
             try:
-                signal_mtime = _config.FAISS_RELOAD_SIGNAL.stat().st_mtime
+                signal_mtime = cfg.FAISS_RELOAD_SIGNAL.stat().st_mtime
             except OSError:
                 return False
             if signal_mtime <= self._last_load_time:
@@ -232,8 +230,9 @@ class VectorStore:
     @staticmethod
     def signal_reload() -> None:
         """Write reload signal file to notify other processes to reload FAISS index."""
-        _config.FAISS_RELOAD_SIGNAL.parent.mkdir(parents=True, exist_ok=True)
-        _config.FAISS_RELOAD_SIGNAL.write_text(str(time.time()), encoding="utf-8")
+        cfg = get_config()
+        cfg.FAISS_RELOAD_SIGNAL.parent.mkdir(parents=True, exist_ok=True)
+        cfg.FAISS_RELOAD_SIGNAL.write_text(str(time.time()), encoding="utf-8")
         logger.info("Wrote FAISS reload signal")
 
     # ── Add ──────────────────────────────────────────────────────────────────
@@ -278,8 +277,9 @@ class VectorStore:
             # when tombstone counts are pathologically high (>50% of index).
             # At extreme ratios, this may return fewer than k results —
             # compaction should have triggered well before that point.
-            if FAISS_SEARCH_FETCH_K_PADDING > 0:
-                fetch_k = min(k + FAISS_SEARCH_FETCH_K_PADDING, self._index.ntotal)
+            cfg = get_config()
+            if cfg.FAISS_SEARCH_FETCH_K_PADDING > 0:
+                fetch_k = min(k + cfg.FAISS_SEARCH_FETCH_K_PADDING, self._index.ntotal)
             else:
                 auto_padding = min(len(self._tombstones), k * 3)
                 fetch_k = min(k + auto_padding, self._index.ntotal)
@@ -342,6 +342,7 @@ class VectorStore:
             if not self._tombstones:
                 return 0
             removed = len(self._tombstones)
+            cfg = get_config()
 
             keep_positions = [
                 i for i, uid in enumerate(self._id_map)
@@ -349,7 +350,7 @@ class VectorStore:
             ]
 
             if not keep_positions:
-                self._index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+                self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
                 self._id_map = []
                 self._uuid_to_pos = {}
                 self._tombstones = set()
@@ -358,13 +359,13 @@ class VectorStore:
                 return removed
 
             kept_vectors = np.zeros(
-                (len(keep_positions), EMBEDDING_DIMENSION), dtype=np.float32
+                (len(keep_positions), cfg.EMBEDDING_DIMENSION), dtype=np.float32
             )
             for new_i, old_i in enumerate(keep_positions):
                 kept_vectors[new_i] = self._index.reconstruct(old_i)
 
             new_id_map = [self._id_map[i] for i in keep_positions]
-            self._index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
+            self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
             self._index.add(kept_vectors)
             self._id_map = new_id_map
             self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
@@ -394,7 +395,7 @@ class VectorStore:
                     positions.append(self._uuid_to_pos[uid])
             if not positions:
                 return None
-            vectors = np.zeros((len(positions), EMBEDDING_DIMENSION), dtype=np.float32)
+            vectors = np.zeros((len(positions), get_config().EMBEDDING_DIMENSION), dtype=np.float32)
             for i, pos in enumerate(positions):
                 vectors[i] = self._index.reconstruct(pos)
             return found_ids, vectors

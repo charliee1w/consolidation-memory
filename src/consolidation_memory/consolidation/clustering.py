@@ -8,12 +8,7 @@ import logging
 
 import numpy as np
 
-from consolidation_memory.config import (
-    CONSOLIDATION_CONFIDENCE_COHERENCE_W,
-    CONSOLIDATION_CONFIDENCE_SURPRISE_W,
-    CONSOLIDATION_STOPWORDS,
-    CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD,
-)
+from consolidation_memory.config import get_config
 from consolidation_memory import topic_cache
 
 logger = logging.getLogger(__name__)
@@ -24,6 +19,7 @@ def _compute_cluster_confidence(
     sim_matrix: np.ndarray,
     cluster_indices: list[int],
 ) -> float:
+    cfg = get_config()
     if len(cluster_indices) < 2:
         coherence = 0.8
     else:
@@ -37,8 +33,8 @@ def _compute_cluster_confidence(
     source_quality = float(np.mean(surprises))
 
     confidence = (
-        coherence * CONSOLIDATION_CONFIDENCE_COHERENCE_W
-        + source_quality * CONSOLIDATION_CONFIDENCE_SURPRISE_W
+        coherence * cfg.CONSOLIDATION_CONFIDENCE_COHERENCE_W
+        + source_quality * cfg.CONSOLIDATION_CONFIDENCE_SURPRISE_W
     )
     return round(max(0.5, min(0.95, confidence)), 2)
 
@@ -56,7 +52,7 @@ def _find_similar_topic(title: str, summary: str, tags: list[str]) -> dict | Non
         if existing_vecs is not None:
             sims = (new_vec @ existing_vecs.T).flatten()
             best_idx = int(np.argmax(sims))
-            if sims[best_idx] >= CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD:
+            if sims[best_idx] >= get_config().CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD:
                 logger.info(
                     "Semantic topic match: '%.40s' -> '%.40s' (sim=%.3f)",
                     title,
@@ -71,7 +67,7 @@ def _find_similar_topic(title: str, summary: str, tags: list[str]) -> dict | Non
             exc_info=True,
         )
 
-    stopwords = CONSOLIDATION_STOPWORDS
+    stopwords = get_config().CONSOLIDATION_STOPWORDS
     title_words = set(title.lower().split()) - stopwords
     if not title_words:
         return None

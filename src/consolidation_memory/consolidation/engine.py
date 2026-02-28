@@ -17,23 +17,8 @@ import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
-from consolidation_memory import config as _config
 from consolidation_memory import record_cache, topic_cache
-from consolidation_memory.config import (
-    CONSOLIDATION_CLUSTER_THRESHOLD,
-    CONSOLIDATION_MAX_ATTEMPTS,
-    CONSOLIDATION_MAX_CLUSTER_SIZE,
-    CONSOLIDATION_MAX_DURATION,
-    CONSOLIDATION_MAX_EPISODES_PER_RUN,
-    CONSOLIDATION_MIN_CLUSTER_SIZE,
-    CONSOLIDATION_PRUNE_AFTER_DAYS,
-    CONSOLIDATION_PRUNE_ENABLED,
-    CONTRADICTION_LLM_ENABLED,
-    CONTRADICTION_SIMILARITY_THRESHOLD,
-    FAISS_COMPACTION_THRESHOLD,
-    KNOWLEDGE_MAX_VERSIONS,
-    RENDER_MARKDOWN,
-)
+from consolidation_memory.config import get_config
 from consolidation_memory.database import (
     complete_consolidation_run,
     ensure_schema,
@@ -81,23 +66,23 @@ def _version_knowledge_file(filepath: Path) -> None:
     if not filepath.exists():
         return
 
-    _config.KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    get_config().KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
     stem = filepath.stem
     versioned_name = f"{stem}.{timestamp}.md"
-    versioned_path = _config.KNOWLEDGE_VERSIONS_DIR / versioned_name
+    versioned_path = get_config().KNOWLEDGE_VERSIONS_DIR / versioned_name
 
     shutil.copy2(str(filepath), str(versioned_path))
     logger.info("Versioned %s -> %s", filepath.name, versioned_name)
 
     pattern = f"{stem}.*.md"
     existing_versions = sorted(
-        _config.KNOWLEDGE_VERSIONS_DIR.glob(pattern),
+        get_config().KNOWLEDGE_VERSIONS_DIR.glob(pattern),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    for old in existing_versions[KNOWLEDGE_MAX_VERSIONS:]:
+    for old in existing_versions[get_config().KNOWLEDGE_MAX_VERSIONS:]:
         old.unlink()
         logger.debug("Pruned old version: %s", old.name)
 
@@ -159,7 +144,7 @@ def _detect_contradictions(
     candidate_pairs: list[tuple[int, int]] = []
     for new_idx in range(len(new_records)):
         for ex_idx in range(len(existing_records)):
-            if float(sims[new_idx, ex_idx]) >= CONTRADICTION_SIMILARITY_THRESHOLD:
+            if float(sims[new_idx, ex_idx]) >= get_config().CONTRADICTION_SIMILARITY_THRESHOLD:
                 candidate_pairs.append((new_idx, ex_idx))
 
     if not candidate_pairs:
@@ -168,10 +153,10 @@ def _detect_contradictions(
     logger.info(
         "Contradiction detection: %d candidate pairs above threshold %.2f",
         len(candidate_pairs),
-        CONTRADICTION_SIMILARITY_THRESHOLD,
+        get_config().CONTRADICTION_SIMILARITY_THRESHOLD,
     )
 
-    if not CONTRADICTION_LLM_ENABLED:
+    if not get_config().CONTRADICTION_LLM_ENABLED:
         # Without LLM, treat all high-similarity pairs as contradictions
         return [
             (new_idx, existing_records[ex_idx]["id"])
@@ -257,7 +242,7 @@ def _merge_into_existing(
 
     # Parse existing topic metadata
     existing_tags = []
-    filepath = _config.KNOWLEDGE_DIR / existing["filename"]
+    filepath = get_config().KNOWLEDGE_DIR / existing["filename"]
     if filepath.exists():
         existing_content = filepath.read_text(encoding="utf-8")
         parsed_fm = _parse_frontmatter(existing_content)
@@ -330,7 +315,7 @@ def _merge_into_existing(
     insert_knowledge_records(existing["id"], record_rows, source_episodes=cluster_ep_ids)
 
     # Render markdown
-    if RENDER_MARKDOWN:
+    if get_config().RENDER_MARKDOWN:
         _version_knowledge_file(filepath)
         md = _render_markdown_from_records(
             merged_title, merged_summary, merged_tags, confidence, merged_records
@@ -369,12 +354,13 @@ def _process_cluster(
         Dict with keys: status ('created'|'updated'|'failed'), api_calls (int),
         and optionally failed_ep_ids (list[str]).
     """
-    if len(cluster_items) > CONSOLIDATION_MAX_CLUSTER_SIZE:
+    cfg = get_config()
+    if len(cluster_items) > cfg.CONSOLIDATION_MAX_CLUSTER_SIZE:
         cluster_items = sorted(
             cluster_items,
             key=lambda item: item[0].get("surprise_score", 0.5),
             reverse=True,
-        )[:CONSOLIDATION_MAX_CLUSTER_SIZE]
+        )[:cfg.CONSOLIDATION_MAX_CLUSTER_SIZE]
 
     cluster_episodes = [ep for ep, _ in cluster_items]
     cluster_indices = [idx for _, idx in cluster_items]
@@ -438,11 +424,11 @@ def _process_cluster(
     else:
         base_slug = _slugify(title)
         filename = base_slug + ".md"
-        filepath = _config.KNOWLEDGE_DIR / filename
+        filepath = cfg.KNOWLEDGE_DIR / filename
         counter = 2
         while filepath.exists():
             filename = f"{base_slug}_{counter}.md"
-            filepath = _config.KNOWLEDGE_DIR / filename
+            filepath = cfg.KNOWLEDGE_DIR / filename
             counter += 1
 
         # Store records in DB
@@ -467,7 +453,7 @@ def _process_cluster(
         insert_knowledge_records(topic_id, record_rows, source_episodes=cluster_ep_ids)
 
         # Render markdown file
-        if RENDER_MARKDOWN:
+        if cfg.RENDER_MARKDOWN:
             md = _render_markdown_from_records(title, summary, tags, confidence, records)
             filepath.write_text(md, encoding="utf-8")
 
@@ -488,17 +474,18 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
         vector_store: Existing VectorStore instance to reuse. If None, creates
             a new one (backwards compatible for CLI/scheduled task usage).
     """
+    cfg = get_config()
     ensure_schema()
-    _config.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
-    _config.KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    _config.CONSOLIDATION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.CONSOLIDATION_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     topic_cache.invalidate()
     record_cache.invalidate()
 
     # Reset episodes stuck at max attempts whose last retry was >24h ago,
     # so they get another chance after backend recovery.
-    reset_count = reset_stale_consolidation_attempts(max_attempts=CONSOLIDATION_MAX_ATTEMPTS)
+    reset_count = reset_stale_consolidation_attempts(max_attempts=cfg.CONSOLIDATION_MAX_ATTEMPTS)
     if reset_count:
         logger.info("Reset consolidation_attempts for %d stale episodes", reset_count)
 
@@ -507,10 +494,10 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
 
     try:
         episodes = get_unconsolidated_episodes(
-            limit=CONSOLIDATION_MAX_EPISODES_PER_RUN, max_attempts=CONSOLIDATION_MAX_ATTEMPTS
+            limit=cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN, max_attempts=cfg.CONSOLIDATION_MAX_ATTEMPTS
         )
 
-        if len(episodes) < CONSOLIDATION_MIN_CLUSTER_SIZE:
+        if len(episodes) < cfg.CONSOLIDATION_MIN_CLUSTER_SIZE:
             logger.info("Only %d episodes — nothing to consolidate.", len(episodes))
             complete_consolidation_run(
                 run_id, status="completed", episodes_processed=len(episodes)
@@ -547,21 +534,21 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
 
         condensed = squareform(dist_matrix, checks=False)
         Z = linkage(condensed, method="average")
-        labels = fcluster(Z, t=1.0 - CONSOLIDATION_CLUSTER_THRESHOLD, criterion="distance")
+        labels = fcluster(Z, t=1.0 - cfg.CONSOLIDATION_CLUSTER_THRESHOLD, criterion="distance")
 
         clusters: dict[int, list[tuple[dict, int]]] = {}
         for idx, (ep, label) in enumerate(zip(valid_episodes, labels)):
             clusters.setdefault(int(label), []).append((ep, idx))
 
         valid_clusters = {
-            k: v for k, v in clusters.items() if len(v) >= CONSOLIDATION_MIN_CLUSTER_SIZE
+            k: v for k, v in clusters.items() if len(v) >= cfg.CONSOLIDATION_MIN_CLUSTER_SIZE
         }
 
         logger.info(
             "Formed %d clusters, %d valid (>=%d episodes)",
             len(clusters),
             len(valid_clusters),
-            CONSOLIDATION_MIN_CLUSTER_SIZE,
+            cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
         )
 
         topics_created = 0
@@ -575,10 +562,10 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
 
         for cluster_id, cluster_items in valid_clusters.items():
             elapsed = time.monotonic() - _run_start
-            if elapsed > CONSOLIDATION_MAX_DURATION:
+            if elapsed > cfg.CONSOLIDATION_MAX_DURATION:
                 logger.warning(
                     "Consolidation max duration (%.0fs) exceeded after %.0fs, stopping early",
-                    CONSOLIDATION_MAX_DURATION,
+                    cfg.CONSOLIDATION_MAX_DURATION,
                     elapsed,
                 )
                 break
@@ -613,8 +600,8 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
         surprise_adjusted = _adjust_surprise_scores()
 
         prunable = []
-        if CONSOLIDATION_PRUNE_ENABLED:
-            prunable = get_prunable_episodes(days=CONSOLIDATION_PRUNE_AFTER_DAYS)
+        if cfg.CONSOLIDATION_PRUNE_ENABLED:
+            prunable = get_prunable_episodes(days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS)
             if prunable:
                 prune_ids = [ep["id"] for ep in prunable]
                 mark_pruned(prune_ids)
@@ -628,9 +615,9 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
         logger.info(
             "FAISS tombstone ratio: %.1f%% (compaction threshold: %.1f%%)",
             vs.tombstone_ratio * 100,
-            FAISS_COMPACTION_THRESHOLD * 100,
+            cfg.FAISS_COMPACTION_THRESHOLD * 100,
         )
-        if vs.tombstone_ratio >= FAISS_COMPACTION_THRESHOLD:
+        if vs.tombstone_ratio >= cfg.FAISS_COMPACTION_THRESHOLD:
             compacted = vs.compact()
             logger.info("Compacted %d tombstoned vectors from FAISS index", compacted)
 
@@ -652,7 +639,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
             "failed_episode_ids": all_failed_ep_ids,
         }
 
-        report_path = _config.CONSOLIDATION_LOG_DIR / (
+        report_path = cfg.CONSOLIDATION_LOG_DIR / (
             f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}.json"
         )
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -724,6 +711,6 @@ def _update_index() -> None:
             f"Accessed: {topic['access_count']}x*\n"
         )
 
-    index_path = _config.KNOWLEDGE_DIR / "index.md"
+    index_path = get_config().KNOWLEDGE_DIR / "index.md"
     index_path.write_text("\n".join(lines), encoding="utf-8")
     logger.info("Updated index.md with %d topics", len(topics))

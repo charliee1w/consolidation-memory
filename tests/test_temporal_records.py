@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import numpy as np
 
+from consolidation_memory.config import override_config
+
 from consolidation_memory.database import (
     ensure_schema,
     expire_record,
@@ -282,7 +284,7 @@ class TestContradictionDetection:
         vec /= np.linalg.norm(vec)
 
         with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode, \
-             patch("consolidation_memory.consolidation.engine.CONTRADICTION_LLM_ENABLED", False):
+             override_config(CONTRADICTION_LLM_ENABLED=False):
             mock_encode.side_effect = [vec, vec]
 
             result = _detect_contradictions(

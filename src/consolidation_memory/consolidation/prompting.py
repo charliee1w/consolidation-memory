@@ -14,10 +14,7 @@ import time
 import unicodedata
 
 from consolidation_memory.circuit_breaker import CircuitBreaker
-from consolidation_memory.config import (
-    LLM_CALL_TIMEOUT,
-    LLM_VALIDATION_RETRY,
-)
+from consolidation_memory.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +29,8 @@ def _get_llm_circuit() -> CircuitBreaker:
     if _llm_circuit is None:
         with _llm_circuit_lock:
             if _llm_circuit is None:
-                from consolidation_memory.config import CIRCUIT_BREAKER_COOLDOWN, CIRCUIT_BREAKER_THRESHOLD
-
-                _llm_circuit = CircuitBreaker(CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN, "llm")
+                _cb_cfg = get_config()
+                _llm_circuit = CircuitBreaker(_cb_cfg.CIRCUIT_BREAKER_THRESHOLD, _cb_cfg.CIRCUIT_BREAKER_COOLDOWN, "llm")
     return _llm_circuit
 
 
@@ -95,13 +91,13 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
             future = executor.submit(llm.generate, _LLM_SYSTEM_PROMPT, prompt)
-            result = future.result(timeout=LLM_CALL_TIMEOUT)
+            result = future.result(timeout=get_config().LLM_CALL_TIMEOUT)
             cb.record_success()
             return result
         except concurrent.futures.TimeoutError:
-            last_err = TimeoutError(f"LLM call timed out after {LLM_CALL_TIMEOUT}s")
+            last_err = TimeoutError(f"LLM call timed out after {get_config().LLM_CALL_TIMEOUT}s")
             logger.warning(
-                "LLM attempt %d/%d timed out after %.0fs", attempt + 1, max_retries, LLM_CALL_TIMEOUT
+                "LLM attempt %d/%d timed out after %.0fs", attempt + 1, max_retries, get_config().LLM_CALL_TIMEOUT
             )
         except Exception as e:
             last_err = e
@@ -524,7 +520,7 @@ def _llm_extract_with_validation(
 
     data = _parse_llm_json(raw)
     if data is None:
-        if LLM_VALIDATION_RETRY:
+        if get_config().LLM_VALIDATION_RETRY:
             logger.warning("LLM output is not valid JSON. Retrying...")
             retry_prompt = prompt + (
                 "\n\nPREVIOUS ATTEMPT PRODUCED INVALID JSON. "
@@ -537,7 +533,7 @@ def _llm_extract_with_validation(
             raise ValueError(f"LLM output is not valid JSON: {raw[:200]}")
 
     is_valid, failures = _validate_extraction_output(data, cluster_episodes)
-    if not is_valid and LLM_VALIDATION_RETRY:
+    if not is_valid and get_config().LLM_VALIDATION_RETRY:
         logger.warning("Extraction failed validation: %s. Retrying...", "; ".join(failures))
         retry_addendum = (
             "\n\nPREVIOUS ATTEMPT FAILED VALIDATION. Fix these issues:\n"
@@ -572,7 +568,7 @@ def _llm_with_validation(prompt: str, cluster_episodes: list[dict]) -> tuple[str
     api_calls = 1
 
     is_valid, failures = _validate_llm_output(response_text, cluster_episodes)
-    if not is_valid and LLM_VALIDATION_RETRY:
+    if not is_valid and get_config().LLM_VALIDATION_RETRY:
         logger.warning("Output failed validation: %s. Retrying...", "; ".join(failures))
         retry_addendum = (
             "\n\nPREVIOUS ATTEMPT FAILED VALIDATION. Fix these issues:\n"

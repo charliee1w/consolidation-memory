@@ -265,14 +265,15 @@ class TestGetFaissStats:
         assert stats["tombstone_ratio"] == 0.0
 
     def test_reads_from_metadata_files(self, data, tmp_data_dir):
-        from consolidation_memory import config
+        from consolidation_memory.config import get_config
+        cfg = get_config()
 
         # Write mock FAISS metadata files
         id_map = ["id1", "id2", "id3", "id4", "id5"]
-        config.FAISS_ID_MAP_PATH.write_text(json.dumps(id_map))
+        cfg.FAISS_ID_MAP_PATH.write_text(json.dumps(id_map))
 
         tombstones = ["id2", "id4"]
-        config.FAISS_TOMBSTONE_PATH.write_text(json.dumps(tombstones))
+        cfg.FAISS_TOMBSTONE_PATH.write_text(json.dumps(tombstones))
 
         stats = data.get_faiss_stats()
         assert stats["index_size"] == 3  # 5 total - 2 tombstones

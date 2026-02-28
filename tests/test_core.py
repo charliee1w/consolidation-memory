@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import faiss
+from consolidation_memory.config import override_config
 import numpy as np
 import pytest
 
@@ -214,14 +215,15 @@ class TestVectorStore:
 
     def test_integrity_check_mismatch(self):
         from consolidation_memory.vector_store import VectorStore
-        from consolidation_memory.config import FAISS_INDEX_PATH, FAISS_ID_MAP_PATH, EMBEDDING_DIMENSION
+        from consolidation_memory.config import get_config
         import faiss
 
-        idx = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
-        vecs = np.random.randn(2, EMBEDDING_DIMENSION).astype(np.float32)
+        cfg = get_config()
+        idx = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
+        vecs = np.random.randn(2, cfg.EMBEDDING_DIMENSION).astype(np.float32)
         idx.add(vecs)
-        faiss.write_index(idx, str(FAISS_INDEX_PATH))
-        with open(FAISS_ID_MAP_PATH, "w") as f:
+        faiss.write_index(idx, str(cfg.FAISS_INDEX_PATH))
+        with open(cfg.FAISS_ID_MAP_PATH, "w") as f:
             json.dump(["only-one-id"], f)
 
         vs = VectorStore()
@@ -309,27 +311,29 @@ class TestTombstones:
 class TestReloadSignal:
     def test_signal_triggers_reload(self):
         from consolidation_memory.vector_store import VectorStore
-        from consolidation_memory.config import FAISS_RELOAD_SIGNAL
+        from consolidation_memory.config import get_config
+        cfg = get_config()
         vs = VectorStore()
 
         vec = _make_normalized_vec(seed=42)
         vs.add("before-reload", vec)
 
         vs._last_load_time = time.time() - 100
-        FAISS_RELOAD_SIGNAL.write_text(str(time.time()), encoding="utf-8")
+        cfg.FAISS_RELOAD_SIGNAL.write_text(str(time.time()), encoding="utf-8")
 
         reloaded = vs.reload_if_stale()
         assert reloaded is True
 
     def test_old_signal_ignored(self):
         from consolidation_memory.vector_store import VectorStore
-        from consolidation_memory.config import FAISS_RELOAD_SIGNAL
+        from consolidation_memory.config import get_config
+        cfg = get_config()
         vs = VectorStore()
 
-        FAISS_RELOAD_SIGNAL.write_text(str(time.time() - 200), encoding="utf-8")
+        cfg.FAISS_RELOAD_SIGNAL.write_text(str(time.time() - 200), encoding="utf-8")
         # Backdate file mtime so it's older than _last_load_time
         old_time = time.time() - 200
-        os.utime(FAISS_RELOAD_SIGNAL, (old_time, old_time))
+        os.utime(cfg.FAISS_RELOAD_SIGNAL, (old_time, old_time))
         vs._last_load_time = time.time()
 
         reloaded = vs.reload_if_stale()
@@ -337,11 +341,12 @@ class TestReloadSignal:
 
     def test_signal_file_written(self):
         from consolidation_memory.vector_store import VectorStore
-        from consolidation_memory.config import FAISS_RELOAD_SIGNAL
+        from consolidation_memory.config import get_config
+        cfg = get_config()
 
-        assert not FAISS_RELOAD_SIGNAL.exists()
+        assert not cfg.FAISS_RELOAD_SIGNAL.exists()
         VectorStore.signal_reload()
-        assert FAISS_RELOAD_SIGNAL.exists()
+        assert cfg.FAISS_RELOAD_SIGNAL.exists()
 
 
 # ── IVF migration tests ─────────────────────────────────────────────────────
@@ -352,7 +357,7 @@ class TestIVFMigration:
     def test_no_upgrade_below_threshold(self):
         """Migration should not trigger when vector count is below threshold."""
         from consolidation_memory.vector_store import VectorStore
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=100):
             vs = VectorStore()
             vecs = _make_normalized_batch(50, seed=42)
             ids = [f"ep-{i}" for i in range(50)]
@@ -364,7 +369,7 @@ class TestIVFMigration:
         """Migration should trigger when vector count reaches threshold."""
         from consolidation_memory.vector_store import VectorStore
         threshold = 100
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", threshold):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=threshold):
             vs = VectorStore()
             vecs = _make_normalized_batch(threshold, seed=42)
             ids = [f"ep-{i}" for i in range(threshold)]
@@ -376,7 +381,7 @@ class TestIVFMigration:
         """Round-trip: all vectors should be reconstructable after migration."""
         from consolidation_memory.vector_store import VectorStore
         n = 120
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=100):
             vs = VectorStore()
             vecs = _make_normalized_batch(n, seed=42)
             ids = [f"ep-{i}" for i in range(n)]
@@ -409,7 +414,7 @@ class TestIVFMigration:
         ids = [f"ep-{i}" for i in range(n)]
 
         # Build flat index below threshold and capture search results
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 999_999):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=999_999):
             vs = VectorStore()
             vs.add_batch(ids, vecs)
             assert isinstance(vs._index, faiss.IndexFlatIP)
@@ -417,7 +422,7 @@ class TestIVFMigration:
             flat_ids = [r[0] for r in flat_results]
 
             # Now trigger upgrade on the same store
-            with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+            with override_config(FAISS_IVF_UPGRADE_THRESHOLD=100):
                 with vs._lock:
                     upgraded = vs._maybe_upgrade_index()
                 assert upgraded is True
@@ -440,7 +445,7 @@ class TestIVFMigration:
         from consolidation_memory.vector_store import VectorStore
         n = 100
         with (
-            patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100),
+            override_config(FAISS_IVF_UPGRADE_THRESHOLD=100),
             patch("faiss.IndexIVFFlat", side_effect=RuntimeError("training failed")),
         ):
             vs = VectorStore()
@@ -459,7 +464,7 @@ class TestIVFMigration:
         """After migration, reloading from disk should load the IVF index."""
         from consolidation_memory.vector_store import VectorStore
         n = 100
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=100):
             vs1 = VectorStore()
             vecs = _make_normalized_batch(n, seed=42)
             ids = [f"ep-{i}" for i in range(n)]
@@ -481,7 +486,7 @@ class TestIVFMigration:
         """Migration should preserve tombstones and effective size."""
         from consolidation_memory.vector_store import VectorStore
         n = 120
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=100):
             vs = VectorStore()
             vecs = _make_normalized_batch(n, seed=42)
             ids = [f"ep-{i}" for i in range(n)]
@@ -504,7 +509,7 @@ class TestIVFMigration:
         """Compaction on an IVF index rebuilds as flat, then re-upgrades if still above threshold."""
         from consolidation_memory.vector_store import VectorStore
         n = 120
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=100):
             vs = VectorStore()
             vecs = _make_normalized_batch(n, seed=42)
             ids = [f"ep-{i}" for i in range(n)]
@@ -525,7 +530,7 @@ class TestIVFMigration:
         """Compaction that brings count below threshold should stay flat."""
         from consolidation_memory.vector_store import VectorStore
         n = 110
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=100):
             vs = VectorStore()
             vecs = _make_normalized_batch(n, seed=42)
             ids = [f"ep-{i}" for i in range(n)]
@@ -545,7 +550,7 @@ class TestIVFMigration:
         """Single add() that crosses threshold should trigger upgrade."""
         from consolidation_memory.vector_store import VectorStore
         n = 99
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=100):
             vs = VectorStore()
             vecs = _make_normalized_batch(n, seed=42)
             ids = [f"ep-{i}" for i in range(n)]
@@ -562,7 +567,7 @@ class TestIVFMigration:
         """nlist and nprobe should be set to reasonable values."""
         from consolidation_memory.vector_store import VectorStore
         n = 400  # sqrt(400) = 20
-        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+        with override_config(FAISS_IVF_UPGRADE_THRESHOLD=100):
             vs = VectorStore()
             vecs = _make_normalized_batch(n, seed=42)
             ids = [f"ep-{i}" for i in range(n)]
@@ -577,52 +582,56 @@ class TestIVFMigration:
 class TestVersioning:
     def test_creates_backup(self, tmp_data_dir):
         from consolidation_memory.consolidation import _version_knowledge_file
-        from consolidation_memory.config import KNOWLEDGE_DIR, KNOWLEDGE_VERSIONS_DIR
+        from consolidation_memory.config import get_config
+        cfg = get_config()
 
-        filepath = KNOWLEDGE_DIR / "test_topic.md"
+        filepath = cfg.KNOWLEDGE_DIR / "test_topic.md"
         filepath.write_text("# Original Content", encoding="utf-8")
 
         _version_knowledge_file(filepath)
 
-        versions = list(KNOWLEDGE_VERSIONS_DIR.glob("test_topic.*.md"))
+        versions = list(cfg.KNOWLEDGE_VERSIONS_DIR.glob("test_topic.*.md"))
         assert len(versions) == 1
         assert versions[0].read_text(encoding="utf-8") == "# Original Content"
 
     def test_preserves_content(self, tmp_data_dir):
         from consolidation_memory.consolidation import _version_knowledge_file
-        from consolidation_memory.config import KNOWLEDGE_DIR, KNOWLEDGE_VERSIONS_DIR
+        from consolidation_memory.config import get_config
+        cfg = get_config()
 
-        filepath = KNOWLEDGE_DIR / "preserve.md"
+        filepath = cfg.KNOWLEDGE_DIR / "preserve.md"
         original = "---\ntitle: Test\n---\n\n## Facts\n- Important fact"
         filepath.write_text(original, encoding="utf-8")
 
         _version_knowledge_file(filepath)
 
-        versions = list(KNOWLEDGE_VERSIONS_DIR.glob("preserve.*.md"))
+        versions = list(cfg.KNOWLEDGE_VERSIONS_DIR.glob("preserve.*.md"))
         assert versions[0].read_text(encoding="utf-8") == original
 
     def test_prunes_old_versions(self, tmp_data_dir):
         from consolidation_memory.consolidation import _version_knowledge_file
-        from consolidation_memory.config import KNOWLEDGE_DIR, KNOWLEDGE_VERSIONS_DIR
+        from consolidation_memory.config import get_config
+        cfg = get_config()
 
-        filepath = KNOWLEDGE_DIR / "pruned.md"
+        filepath = cfg.KNOWLEDGE_DIR / "pruned.md"
 
         for i in range(7):
             filepath.write_text(f"Version {i}", encoding="utf-8")
             _version_knowledge_file(filepath)
             time.sleep(0.05)
 
-        versions = list(KNOWLEDGE_VERSIONS_DIR.glob("pruned.*.md"))
+        versions = list(cfg.KNOWLEDGE_VERSIONS_DIR.glob("pruned.*.md"))
         assert len(versions) <= 5
 
     def test_noop_new_file(self, tmp_data_dir):
         from consolidation_memory.consolidation import _version_knowledge_file
-        from consolidation_memory.config import KNOWLEDGE_DIR, KNOWLEDGE_VERSIONS_DIR
+        from consolidation_memory.config import get_config
+        cfg = get_config()
 
-        filepath = KNOWLEDGE_DIR / "nonexistent.md"
+        filepath = cfg.KNOWLEDGE_DIR / "nonexistent.md"
         _version_knowledge_file(filepath)
 
-        versions = list(KNOWLEDGE_VERSIONS_DIR.glob("nonexistent.*.md"))
+        versions = list(cfg.KNOWLEDGE_VERSIONS_DIR.glob("nonexistent.*.md"))
         assert len(versions) == 0
 
 
@@ -949,7 +958,8 @@ class TestExport:
     def test_creates_export_file(self, tmp_data_dir):
         from consolidation_memory.database import ensure_schema, insert_episode
         from consolidation_memory.client import MemoryClient
-        from consolidation_memory.config import BACKUP_DIR
+        from consolidation_memory.config import get_config
+        cfg = get_config()
 
         ensure_schema()
         insert_episode(content="Export test episode", tags=["test"])
@@ -959,18 +969,19 @@ class TestExport:
         assert result.status == "exported"
         assert result.episodes == 1
 
-        exports = list(BACKUP_DIR.glob("memory_export_*.json"))
+        exports = list(cfg.BACKUP_DIR.glob("memory_export_*.json"))
         assert len(exports) == 1
         client.close()
 
     def test_includes_knowledge(self, tmp_data_dir):
         from consolidation_memory.database import ensure_schema, upsert_knowledge_topic
         from consolidation_memory.client import MemoryClient
-        from consolidation_memory.config import KNOWLEDGE_DIR
+        from consolidation_memory.config import get_config
+        cfg = get_config()
 
         ensure_schema()
 
-        kf = KNOWLEDGE_DIR / "export_topic.md"
+        kf = cfg.KNOWLEDGE_DIR / "export_topic.md"
         kf.write_text("# Test Knowledge", encoding="utf-8")
         upsert_knowledge_topic("export_topic.md", "Export Topic", "Test", ["ep1"])
 
@@ -978,8 +989,7 @@ class TestExport:
         result = client.export()
         assert result.knowledge_topics == 1
 
-        from consolidation_memory.config import BACKUP_DIR
-        export_file = list(BACKUP_DIR.glob("memory_export_*.json"))[0]
+        export_file = list(cfg.BACKUP_DIR.glob("memory_export_*.json"))[0]
         data = json.loads(export_file.read_text(encoding="utf-8"))
         assert data["knowledge_topics"][0]["file_content"] == "# Test Knowledge"
         client.close()
@@ -987,7 +997,8 @@ class TestExport:
     def test_prunes_old_exports(self, tmp_data_dir):
         from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
-        from consolidation_memory.config import BACKUP_DIR
+        from consolidation_memory.config import get_config
+        cfg = get_config()
 
         ensure_schema()
 
@@ -996,7 +1007,7 @@ class TestExport:
             client.export()
             time.sleep(0.05)
 
-        exports = list(BACKUP_DIR.glob("memory_export_*.json"))
+        exports = list(cfg.BACKUP_DIR.glob("memory_export_*.json"))
         assert len(exports) <= 5
         client.close()
 
@@ -1173,10 +1184,9 @@ class TestBackendFactory:
         assert backends._embedding_backend is None
         assert backends._llm_backend is None
 
-    @patch("consolidation_memory.config.EMBEDDING_BACKEND", "fastembed")
     def test_invalid_backend_raises(self):
         from consolidation_memory.backends import _create_embedding_backend
-        with patch("consolidation_memory.config.EMBEDDING_BACKEND", "nonexistent"):
+        with override_config(EMBEDDING_BACKEND="nonexistent"):
             with pytest.raises(ValueError, match="Unknown embedding backend"):
                 _create_embedding_backend()
 
@@ -1185,33 +1195,26 @@ class TestBackendFactory:
 
 class TestConfigDefaults:
     def test_retrieval_defaults(self):
-        from consolidation_memory.config import (
-            RECENCY_HALF_LIFE_DAYS, KNOWLEDGE_SEMANTIC_WEIGHT,
-            KNOWLEDGE_KEYWORD_WEIGHT, KNOWLEDGE_RELEVANCE_THRESHOLD,
-            KNOWLEDGE_MAX_RESULTS,
-        )
-        assert RECENCY_HALF_LIFE_DAYS == 90.0
-        assert KNOWLEDGE_SEMANTIC_WEIGHT == 0.8
-        assert KNOWLEDGE_KEYWORD_WEIGHT == 0.2
-        assert KNOWLEDGE_RELEVANCE_THRESHOLD == 0.25
-        assert KNOWLEDGE_MAX_RESULTS == 5
+        from consolidation_memory.config import get_config
+        cfg = get_config()
+        assert cfg.RECENCY_HALF_LIFE_DAYS == 90.0
+        assert cfg.KNOWLEDGE_SEMANTIC_WEIGHT == 0.8
+        assert cfg.KNOWLEDGE_KEYWORD_WEIGHT == 0.2
+        assert cfg.KNOWLEDGE_RELEVANCE_THRESHOLD == 0.25
+        assert cfg.KNOWLEDGE_MAX_RESULTS == 5
 
     def test_consolidation_tuning_defaults(self):
-        from consolidation_memory.config import (
-            CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD,
-            CONSOLIDATION_CONFIDENCE_COHERENCE_W,
-            CONSOLIDATION_CONFIDENCE_SURPRISE_W,
-        )
-        assert CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD == 0.75
-        assert CONSOLIDATION_CONFIDENCE_COHERENCE_W == 0.6
-        assert CONSOLIDATION_CONFIDENCE_SURPRISE_W == 0.4
+        from consolidation_memory.config import get_config
+        cfg = get_config()
+        assert cfg.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD == 0.75
+        assert cfg.CONSOLIDATION_CONFIDENCE_COHERENCE_W == 0.6
+        assert cfg.CONSOLIDATION_CONFIDENCE_SURPRISE_W == 0.4
 
     def test_circuit_breaker_defaults(self):
-        from consolidation_memory.config import (
-            CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN,
-        )
-        assert CIRCUIT_BREAKER_THRESHOLD == 3
-        assert CIRCUIT_BREAKER_COOLDOWN == 60.0
+        from consolidation_memory.config import get_config
+        cfg = get_config()
+        assert cfg.CIRCUIT_BREAKER_THRESHOLD == 3
+        assert cfg.CIRCUIT_BREAKER_COOLDOWN == 60.0
 
 
 # ── Circuit breaker tests ───────────────────────────────────────────────────

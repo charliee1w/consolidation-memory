@@ -1,8 +1,8 @@
 """Shared fixtures for all test modules."""
 
-from unittest.mock import patch
-
 import pytest
+
+from consolidation_memory.config import reset_config
 
 
 @pytest.fixture(autouse=True)
@@ -16,70 +16,13 @@ def tmp_data_dir(tmp_path):
     (tmp_path / "data" / "logs").mkdir(parents=True)
     (data_dir / "backups").mkdir()
 
-    db_path = data_dir / "memory.db"
-    faiss_idx = data_dir / "faiss_index.bin"
-    faiss_map = data_dir / "faiss_id_map.json"
-    faiss_tombstone = data_dir / "faiss_tombstones.json"
-    faiss_reload = data_dir / ".faiss_reload"
-    knowledge = data_dir / "knowledge"
-    knowledge_versions = knowledge / "versions"
-    consol_log = data_dir / "consolidation_logs"
-    log_dir = tmp_path / "data" / "logs"
-    backup_dir = data_dir / "backups"
-
     # Tests use 384-dim vectors regardless of user config
-    test_dim = 384
-
-    patches = [
-        patch("consolidation_memory.config._base_data_dir", tmp_path / "data"),
-        patch("consolidation_memory.config._active_project", "default"),
-        patch("consolidation_memory.config.DATA_DIR", data_dir),
-        patch("consolidation_memory.config.DB_PATH", db_path),
-        patch("consolidation_memory.config.FAISS_INDEX_PATH", faiss_idx),
-        patch("consolidation_memory.config.FAISS_ID_MAP_PATH", faiss_map),
-        patch("consolidation_memory.config.FAISS_TOMBSTONE_PATH", faiss_tombstone),
-        patch("consolidation_memory.config.FAISS_RELOAD_SIGNAL", faiss_reload),
-        patch("consolidation_memory.config.KNOWLEDGE_DIR", knowledge),
-        patch("consolidation_memory.config.KNOWLEDGE_VERSIONS_DIR", knowledge_versions),
-        patch("consolidation_memory.config.CONSOLIDATION_LOG_DIR", consol_log),
-        patch("consolidation_memory.config.LOG_DIR", log_dir),
-        patch("consolidation_memory.config.BACKUP_DIR", backup_dir),
-        patch("consolidation_memory.config.EMBEDDING_DIMENSION", test_dim),
-        patch("consolidation_memory.config.EMBEDDING_BACKEND", "fastembed"),
-        # Patch modules that still import non-path constants at module level
-        patch("consolidation_memory.vector_store.EMBEDDING_DIMENSION", test_dim),
-        patch("consolidation_memory.consolidation.engine.CONSOLIDATION_PRUNE_ENABLED", False),
-        # context_assembler module-level imports
-        patch("consolidation_memory.context_assembler.RECENCY_HALF_LIFE_DAYS", 90.0),
-        patch("consolidation_memory.context_assembler.KNOWLEDGE_SEMANTIC_WEIGHT", 0.8),
-        patch("consolidation_memory.context_assembler.KNOWLEDGE_KEYWORD_WEIGHT", 0.2),
-        patch("consolidation_memory.context_assembler.KNOWLEDGE_RELEVANCE_THRESHOLD", 0.25),
-        patch("consolidation_memory.context_assembler.KNOWLEDGE_MAX_RESULTS", 5),
-        patch("consolidation_memory.context_assembler.RECORDS_SEMANTIC_WEIGHT", 0.9),
-        patch("consolidation_memory.context_assembler.RECORDS_KEYWORD_WEIGHT", 0.1),
-        patch("consolidation_memory.context_assembler.RECORDS_RELEVANCE_THRESHOLD", 0.3),
-        patch("consolidation_memory.context_assembler.RECORDS_MAX_RESULTS", 15),
-        # consolidation submodule-level imports (split from monolithic consolidation.py)
-        patch("consolidation_memory.consolidation.clustering.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD", 0.75),
-        patch("consolidation_memory.consolidation.clustering.CONSOLIDATION_CONFIDENCE_COHERENCE_W", 0.6),
-        patch("consolidation_memory.consolidation.clustering.CONSOLIDATION_CONFIDENCE_SURPRISE_W", 0.4),
-        patch(
-            "consolidation_memory.consolidation.clustering.CONSOLIDATION_STOPWORDS",
-            frozenset({"the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "is", "at", "it"}),
-        ),
-        patch("consolidation_memory.consolidation.engine.CONTRADICTION_SIMILARITY_THRESHOLD", 0.7),
-        patch("consolidation_memory.consolidation.engine.CONTRADICTION_LLM_ENABLED", True),
-        patch("consolidation_memory.consolidation.engine.RENDER_MARKDOWN", True),
-        patch("consolidation_memory.consolidation.engine.CONSOLIDATION_MAX_DURATION", 1800),
-        patch("consolidation_memory.consolidation.engine.CONSOLIDATION_MAX_ATTEMPTS", 5),
-        patch("consolidation_memory.consolidation.prompting.LLM_CALL_TIMEOUT", 120),
-        # vector_store module-level imports
-        patch("consolidation_memory.vector_store.FAISS_SEARCH_FETCH_K_PADDING", 0),
-        patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 10_000),
-    ]
-
-    for p in patches:
-        p.start()
+    reset_config(
+        _base_data_dir=tmp_path / "data",
+        active_project="default",
+        EMBEDDING_DIMENSION=384,
+        EMBEDDING_BACKEND="fastembed",
+    )
 
     # Close all thread-local DB connections from previous tests
     import consolidation_memory.database as database
@@ -90,9 +33,6 @@ def tmp_data_dir(tmp_path):
     reset_backends()
 
     yield tmp_path
-
-    for p in patches:
-        p.stop()
 
     # Close ALL connections (including those from spawned threads)
     database.close_all_connections()

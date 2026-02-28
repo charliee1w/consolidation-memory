@@ -9,6 +9,7 @@ from consolidation_memory.config import (
     validate_project_name,
     get_active_project,
     set_active_project,
+    get_config,
     maybe_migrate_to_projects,
 )
 from consolidation_memory import config
@@ -92,35 +93,38 @@ class TestSetActiveProject:
         assert get_active_project() == "default"
 
     def test_set_custom_project(self, tmp_data_dir):
-        """Switching to a custom project updates _active_project and paths."""
-        base = config._base_data_dir
+        """Switching to a custom project updates active_project and paths."""
+        cfg = get_config()
+        base = cfg._base_data_dir
         result = set_active_project("my-project")
         assert result == "my-project"
         assert get_active_project() == "my-project"
-        assert config.DATA_DIR == base / "projects" / "my-project"
+        assert cfg.DATA_DIR == base / "projects" / "my-project"
 
     def test_all_paths_recalculated(self, tmp_data_dir):
-        """All path globals should point into the new project directory."""
-        base = config._base_data_dir
+        """All path fields should point into the new project directory."""
+        cfg = get_config()
+        base = cfg._base_data_dir
         set_active_project("alpha")
         expected_data = base / "projects" / "alpha"
 
-        assert config.DATA_DIR == expected_data
-        assert config.DB_PATH == expected_data / "memory.db"
-        assert config.FAISS_INDEX_PATH == expected_data / "faiss_index.bin"
-        assert config.FAISS_ID_MAP_PATH == expected_data / "faiss_id_map.json"
-        assert config.FAISS_TOMBSTONE_PATH == expected_data / "faiss_tombstones.json"
-        assert config.FAISS_RELOAD_SIGNAL == expected_data / ".faiss_reload"
-        assert config.KNOWLEDGE_DIR == expected_data / "knowledge"
-        assert config.KNOWLEDGE_VERSIONS_DIR == expected_data / "knowledge" / "versions"
-        assert config.CONSOLIDATION_LOG_DIR == expected_data / "consolidation_logs"
-        assert config.BACKUP_DIR == expected_data / "backups"
+        assert cfg.DATA_DIR == expected_data
+        assert cfg.DB_PATH == expected_data / "memory.db"
+        assert cfg.FAISS_INDEX_PATH == expected_data / "faiss_index.bin"
+        assert cfg.FAISS_ID_MAP_PATH == expected_data / "faiss_id_map.json"
+        assert cfg.FAISS_TOMBSTONE_PATH == expected_data / "faiss_tombstones.json"
+        assert cfg.FAISS_RELOAD_SIGNAL == expected_data / ".faiss_reload"
+        assert cfg.KNOWLEDGE_DIR == expected_data / "knowledge"
+        assert cfg.KNOWLEDGE_VERSIONS_DIR == expected_data / "knowledge" / "versions"
+        assert cfg.CONSOLIDATION_LOG_DIR == expected_data / "consolidation_logs"
+        assert cfg.BACKUP_DIR == expected_data / "backups"
 
     def test_log_dir_shared_across_projects(self, tmp_data_dir):
         """LOG_DIR is shared and must NOT change when project changes."""
-        log_before = config.LOG_DIR
+        cfg = get_config()
+        log_before = cfg.LOG_DIR
         set_active_project("other-project")
-        assert config.LOG_DIR == log_before
+        assert cfg.LOG_DIR == log_before
 
     def test_none_resolves_to_env_default(self, tmp_data_dir):
         """None without env var falls back to 'default'."""

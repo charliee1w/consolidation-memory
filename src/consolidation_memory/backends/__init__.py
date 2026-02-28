@@ -68,18 +68,20 @@ def _get_embed_circuit() -> CircuitBreaker:
     if _embed_circuit is None:
         with _backend_lock:
             if _embed_circuit is None:
-                from consolidation_memory.config import CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN
+                from consolidation_memory.config import get_config
+                cfg = get_config()
                 _embed_circuit = CircuitBreaker(
-                    threshold=CIRCUIT_BREAKER_THRESHOLD,
-                    cooldown=CIRCUIT_BREAKER_COOLDOWN,
+                    threshold=cfg.CIRCUIT_BREAKER_THRESHOLD,
+                    cooldown=cfg.CIRCUIT_BREAKER_COOLDOWN,
                     name="embedding",
                 )
     return _embed_circuit
 
 
 def _create_embedding_backend() -> EmbeddingBackend:
-    from consolidation_memory import config
+    from consolidation_memory.config import get_config
 
+    config = get_config()
     backend = config.EMBEDDING_BACKEND
     logger.info("Initializing embedding backend: %s", backend)
 
@@ -118,8 +120,9 @@ def _create_embedding_backend() -> EmbeddingBackend:
 
 
 def _create_llm_backend() -> LLMBackend | None:
-    from consolidation_memory import config
+    from consolidation_memory.config import get_config
 
+    config = get_config()
     backend = config.LLM_BACKEND
     if backend == "disabled":
         logger.info("LLM backend disabled — consolidation will not run.")

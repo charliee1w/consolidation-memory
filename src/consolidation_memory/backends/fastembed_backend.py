@@ -48,5 +48,5 @@ class FastEmbedEmbeddingBackend:
     def dimension(self) -> int:
         if self._dim is not None:
             return self._dim
-        from consolidation_memory.config import EMBEDDING_DIMENSION
-        return EMBEDDING_DIMENSION
+        from consolidation_memory.config import get_config
+        return get_config().EMBEDDING_DIMENSION

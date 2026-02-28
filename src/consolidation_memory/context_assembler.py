@@ -11,20 +11,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from consolidation_memory import config as _config
-from consolidation_memory.config import (
-    CONSOLIDATION_PRIORITY_WEIGHTS,
-    KNOWLEDGE_KEYWORD_WEIGHT,
-    KNOWLEDGE_MAX_RESULTS,
-    KNOWLEDGE_RELEVANCE_THRESHOLD,
-    KNOWLEDGE_SEMANTIC_WEIGHT,
-    RECALL_MAX_N,
-    RECENCY_HALF_LIFE_DAYS,
-    RECORDS_KEYWORD_WEIGHT,
-    RECORDS_MAX_RESULTS,
-    RECORDS_RELEVANCE_THRESHOLD,
-    RECORDS_SEMANTIC_WEIGHT,
-)
+from consolidation_memory.config import get_config
 from consolidation_memory.database import (
     get_episodes_batch,
     increment_access,
@@ -61,7 +48,9 @@ def invalidate_record_cache() -> None:
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
-def _recency_decay(created_at_iso: str, half_life_days: float = RECENCY_HALF_LIFE_DAYS) -> float:
+def _recency_decay(created_at_iso: str, half_life_days: float | None = None) -> float:
+    if half_life_days is None:
+        half_life_days = get_config().RECENCY_HALF_LIFE_DAYS
     try:
         created = datetime.fromisoformat(created_at_iso)
         # Handle naive datetimes (no timezone info) by assuming UTC
@@ -76,7 +65,7 @@ def _recency_decay(created_at_iso: str, half_life_days: float = RECENCY_HALF_LIF
 
 
 def _priority_score(similarity: float, episode: dict) -> float:
-    w = CONSOLIDATION_PRIORITY_WEIGHTS
+    w = get_config().CONSOLIDATION_PRIORITY_WEIGHTS
     surprise = episode.get("surprise_score", 0.5)
     recency = _recency_decay(episode.get("created_at", ""))
     access = episode.get("access_count", 0)
@@ -113,7 +102,7 @@ def recall(
         before: Only return episodes created before this ISO date string.
         include_expired: If True, include temporally expired knowledge records.
     """
-    n_results = min(n_results, RECALL_MAX_N)
+    n_results = min(n_results, get_config().RECALL_MAX_N)
 
     # Fetch more candidates when filtering, since many will be discarded
     fetch_k = n_results * 5 if (content_types or tags or after or before) else n_results * 3
@@ -201,6 +190,7 @@ def recall(
 def _search_knowledge(
     query: str, query_vec: np.ndarray | None = None,
 ) -> tuple[list[dict], list[str]]:
+    cfg = get_config()
     warnings: list[str] = []
     topics, summary_vecs = topic_cache.get_topic_vecs()
     if not topics:
@@ -233,12 +223,12 @@ def _search_knowledge(
         kw_hits = sum(1 for w in query_words if w in title_lower or w in summary_lower)
         kw_score = kw_hits / len(query_words) if query_words else 0
 
-        relevance = sem_score * KNOWLEDGE_SEMANTIC_WEIGHT + kw_score * KNOWLEDGE_KEYWORD_WEIGHT
+        relevance = sem_score * cfg.KNOWLEDGE_SEMANTIC_WEIGHT + kw_score * cfg.KNOWLEDGE_KEYWORD_WEIGHT
 
-        if relevance < KNOWLEDGE_RELEVANCE_THRESHOLD:
+        if relevance < cfg.KNOWLEDGE_RELEVANCE_THRESHOLD:
             continue
 
-        filepath = _config.KNOWLEDGE_DIR / topic["filename"]
+        filepath = cfg.KNOWLEDGE_DIR / topic["filename"]
         content = ""
         if filepath.exists():
             content = filepath.read_text(encoding="utf-8")
@@ -255,20 +245,21 @@ def _search_knowledge(
 
     logger.debug(
         "knowledge_search: %d topics checked, %d passed relevance threshold (>=%s)",
-        len(topics), len(scored_topics), KNOWLEDGE_RELEVANCE_THRESHOLD,
+        len(topics), len(scored_topics), cfg.KNOWLEDGE_RELEVANCE_THRESHOLD,
     )
 
     if scored_topics:
         increment_topic_access([t["filename"] for t in scored_topics])
 
     scored_topics.sort(key=lambda x: x["relevance"], reverse=True)
-    return scored_topics[:KNOWLEDGE_MAX_RESULTS], warnings
+    return scored_topics[:cfg.KNOWLEDGE_MAX_RESULTS], warnings
 
 
 def _search_records(
     query: str, query_vec: np.ndarray | None = None, *, include_expired: bool = False,
 ) -> tuple[list[dict], list[str]]:
     """Search individual knowledge records by semantic + keyword similarity."""
+    cfg = get_config()
     warnings: list[str] = []
     records, record_vecs = record_cache.get_record_vecs(include_expired=include_expired)
     if not records:
@@ -305,13 +296,13 @@ def _search_records(
         kw_hits = sum(1 for w in query_words if w in embed_text)
         kw_score = kw_hits / len(query_words) if query_words else 0
 
-        relevance = sem_score * RECORDS_SEMANTIC_WEIGHT + kw_score * RECORDS_KEYWORD_WEIGHT
+        relevance = sem_score * cfg.RECORDS_SEMANTIC_WEIGHT + kw_score * cfg.RECORDS_KEYWORD_WEIGHT
 
         # Boost procedure records for task-oriented queries
         if _is_task_query and rec.get("record_type") == "procedure":
             relevance *= 1.15
 
-        if relevance < RECORDS_RELEVANCE_THRESHOLD:
+        if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
             continue
 
         try:
@@ -332,11 +323,11 @@ def _search_records(
 
     logger.debug(
         "record_search: %d records checked, %d passed relevance threshold (>=%s)",
-        len(records), len(scored_records), RECORDS_RELEVANCE_THRESHOLD,
+        len(records), len(scored_records), cfg.RECORDS_RELEVANCE_THRESHOLD,
     )
 
     if scored_records:
         increment_record_access([r["id"] for r in scored_records])
 
     scored_records.sort(key=lambda x: x["relevance"], reverse=True)
-    return scored_records[:RECORDS_MAX_RESULTS], warnings
+    return scored_records[:cfg.RECORDS_MAX_RESULTS], warnings

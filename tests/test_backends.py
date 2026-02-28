@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from consolidation_memory.backends import retry_with_backoff
+from consolidation_memory.config import override_config
 
 
 # ── retry_with_backoff ────────────────────────────────────────────────────────
@@ -250,18 +251,18 @@ class TestOpenAILLMBackend:
 
 class TestBackendFactory:
     def test_unknown_embedding_backend(self):
-        with patch("consolidation_memory.config.EMBEDDING_BACKEND", "nonexistent"):
+        with override_config(EMBEDDING_BACKEND="nonexistent"):
             from consolidation_memory.backends import _create_embedding_backend
             with pytest.raises(ValueError, match="Unknown embedding backend"):
                 _create_embedding_backend()
 
     def test_unknown_llm_backend(self):
-        with patch("consolidation_memory.config.LLM_BACKEND", "nonexistent"):
+        with override_config(LLM_BACKEND="nonexistent"):
             from consolidation_memory.backends import _create_llm_backend
             with pytest.raises(ValueError, match="Unknown LLM backend"):
                 _create_llm_backend()
 
     def test_disabled_llm_backend(self):
-        with patch("consolidation_memory.config.LLM_BACKEND", "disabled"):
+        with override_config(LLM_BACKEND="disabled"):
             from consolidation_memory.backends import _create_llm_backend
             assert _create_llm_backend() is None

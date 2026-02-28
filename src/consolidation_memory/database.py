@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from consolidation_memory import config as _config
+from consolidation_memory.config import get_config as _get_config
 
 _local = threading.local()
 _all_connections: list[sqlite3.Connection] = []  # Track all thread-local connections for cleanup
@@ -95,8 +95,8 @@ def _get_cached_connection() -> sqlite3.Connection:
         except (sqlite3.ProgrammingError, sqlite3.OperationalError):
             _local.conn = None
 
-    _ensure_parent(_config.DB_PATH)
-    conn = sqlite3.connect(str(_config.DB_PATH), timeout=10)
+    _ensure_parent(_get_config().DB_PATH)
+    conn = sqlite3.connect(str(_get_config().DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

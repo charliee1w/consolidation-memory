@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from consolidation_memory import config as _config
+from consolidation_memory.config import get_config as _get_config
 from consolidation_memory.database import ensure_schema, get_connection
 
 
@@ -136,9 +136,9 @@ class DashboardData:
 
         # DB size
         db_size_mb = 0.0
-        if _config.DB_PATH.exists():
+        if _get_config().DB_PATH.exists():
             db_size_mb = round(
-                _config.DB_PATH.stat().st_size / (1024 * 1024), 2
+                _get_config().DB_PATH.stat().st_size / (1024 * 1024), 2
             )
 
         return {
@@ -155,8 +155,8 @@ class DashboardData:
 
         Parses the JSON sidecar files to get index size and tombstone info.
         """
-        id_map_path = _config.FAISS_ID_MAP_PATH
-        tombstone_path = _config.FAISS_TOMBSTONE_PATH
+        id_map_path = _get_config().FAISS_ID_MAP_PATH
+        tombstone_path = _get_config().FAISS_TOMBSTONE_PATH
 
         total = 0
         tombstones = 0

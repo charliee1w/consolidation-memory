@@ -70,6 +70,9 @@ module = [
     "textual.*",
     "mcp.*",
     "platformdirs.*",
+    "tomli",
+    "fastapi.*",
+    "uvicorn.*",
 ]
 ignore_missing_imports = true
 

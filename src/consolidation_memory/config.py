@@ -70,7 +70,8 @@ def _load_toml() -> dict:
     path = _find_config_path()
     if path:
         with open(path, "rb") as f:
-            return tomllib.load(f)
+            loaded: dict = tomllib.load(f)
+            return loaded
     return {}
 
 

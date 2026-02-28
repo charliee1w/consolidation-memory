@@ -73,6 +73,8 @@ async def memory_store(
         tags: Optional topic tags for organization (e.g., ['vr', 'steamvr']).
         surprise: How novel this is, 0.0 (routine) to 1.0 (very surprising).
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.store(content, content_type, tags, surprise)
     return json.dumps(dataclasses.asdict(result), default=str)
 
@@ -103,6 +105,8 @@ async def memory_recall(
         after: Only episodes created after this ISO date (e.g. '2025-01-01').
         before: Only episodes created before this ISO date.
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.recall(
         query, n_results, include_knowledge,
         content_types=content_types, tags=tags, after=after, before=before,
@@ -126,6 +130,8 @@ async def memory_store_batch(
             - tags (list[str]): Optional topic tags.
             - surprise (float): Novelty score 0.0-1.0.
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.store_batch(episodes)
     return json.dumps(dataclasses.asdict(result), default=str)
 
@@ -153,6 +159,8 @@ async def memory_search(
         before: Only episodes created before this ISO date.
         limit: Maximum results (default 20, max 50).
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.search(
         query=query,
         content_types=content_types,
@@ -170,6 +178,8 @@ async def memory_status() -> str:
 
     Call this to check the health and state of the memory system.
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.status()
     return json.dumps(dataclasses.asdict(result), default=str)
 
@@ -184,6 +194,8 @@ async def memory_forget(episode_id: str) -> str:
     Args:
         episode_id: The UUID of the episode to forget.
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.forget(episode_id)
     return json.dumps(dataclasses.asdict(result), default=str)
 
@@ -196,6 +208,8 @@ async def memory_export() -> str:
     all episodes (non-deleted) and knowledge topics with their content.
     Returns the file path.
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.export()
     return json.dumps(dataclasses.asdict(result), default=str)
 
@@ -211,6 +225,8 @@ async def memory_correct(topic_filename: str, correction: str) -> str:
         topic_filename: The filename of the knowledge topic (e.g., 'vr_setup.md').
         correction: Description of what needs to be corrected and the correct information.
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.correct(topic_filename, correction)
     return json.dumps(dataclasses.asdict(result), default=str)
 
@@ -223,6 +239,8 @@ async def memory_compact() -> str:
     Tombstones accumulate from forget and prune operations.
     Compaction rebuilds the index without dead vectors.
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.compact()
     return json.dumps(dataclasses.asdict(result), default=str)
 
@@ -237,6 +255,8 @@ async def memory_consolidate() -> str:
 
     NOTE: This can take several minutes depending on episode count and LLM speed.
     """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
     result = _client.consolidate()
     if result.get("status") == "already_running":
         return json.dumps({"status": "already_running", "message": "A consolidation run is already in progress"})

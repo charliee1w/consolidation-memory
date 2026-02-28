@@ -108,8 +108,9 @@ def get_connection():
 
 def ensure_schema() -> None:
     with get_connection() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS episodes (
+        # Individual execute() calls instead of executescript() — the latter
+        # implicitly COMMITs before running, breaking transaction atomicity.
+        conn.execute("""CREATE TABLE IF NOT EXISTS episodes (
                 id              TEXT PRIMARY KEY,
                 created_at      TEXT NOT NULL,
                 updated_at      TEXT NOT NULL,
@@ -123,18 +124,20 @@ def ensure_schema() -> None:
                 consolidated_at TEXT,
                 consolidated_to TEXT,
                 deleted         INTEGER NOT NULL DEFAULT 0
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_episodes_consolidated
-                ON episodes(consolidated);
-            CREATE INDEX IF NOT EXISTS idx_episodes_created
-                ON episodes(created_at);
-            CREATE INDEX IF NOT EXISTS idx_episodes_type
-                ON episodes(content_type);
-            CREATE INDEX IF NOT EXISTS idx_episodes_deleted
-                ON episodes(deleted);
-
-            CREATE TABLE IF NOT EXISTS knowledge_topics (
+            )""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_episodes_consolidated ON episodes(consolidated)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_episodes_created ON episodes(created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_episodes_type ON episodes(content_type)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_episodes_deleted ON episodes(deleted)"
+        )
+        conn.execute("""CREATE TABLE IF NOT EXISTS knowledge_topics (
                 id              TEXT PRIMARY KEY,
                 filename        TEXT NOT NULL UNIQUE,
                 title           TEXT NOT NULL,
@@ -145,12 +148,11 @@ def ensure_schema() -> None:
                 fact_count      INTEGER NOT NULL DEFAULT 0,
                 access_count    INTEGER NOT NULL DEFAULT 0,
                 confidence      REAL NOT NULL DEFAULT 0.8
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_knowledge_filename
-                ON knowledge_topics(filename);
-
-            CREATE TABLE IF NOT EXISTS consolidation_runs (
+            )""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_filename ON knowledge_topics(filename)"
+        )
+        conn.execute("""CREATE TABLE IF NOT EXISTS consolidation_runs (
                 id                  TEXT PRIMARY KEY,
                 started_at          TEXT NOT NULL,
                 completed_at        TEXT,
@@ -161,13 +163,11 @@ def ensure_schema() -> None:
                 episodes_pruned     INTEGER NOT NULL DEFAULT 0,
                 status              TEXT NOT NULL DEFAULT 'running',
                 error_message       TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS schema_version (
+            )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS schema_version (
                 version     INTEGER NOT NULL,
                 applied_at  TEXT NOT NULL
-            );
-        """)
+            )""")
 
         # Check and apply migrations
         _check_and_migrate(conn)
@@ -330,6 +330,19 @@ def soft_delete_episode(episode_id: str) -> bool:
     return cursor.rowcount > 0
 
 
+def hard_delete_episode(episode_id: str) -> bool:
+    """Permanently delete an episode from the database.
+
+    Used for rollback when FAISS add fails — soft-delete would leave an orphan
+    that dedup checks still find.
+    """
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM episodes WHERE id = ?", (episode_id,)
+        )
+    return cursor.rowcount > 0
+
+
 def get_prunable_episodes(days: int = 30) -> list[dict[str, Any]]:
     """Episodes that are consolidated and older than `days`."""
     from datetime import timedelta
@@ -356,16 +369,13 @@ def upsert_knowledge_topic(
     now = _now()
     with get_connection() as conn:
         existing = conn.execute(
-            "SELECT id FROM knowledge_topics WHERE filename = ?", (filename,)
+            "SELECT id, source_episodes FROM knowledge_topics WHERE filename = ?",
+            (filename,),
         ).fetchone()
 
         if existing:
             topic_id = existing["id"]
-            old_row = conn.execute(
-                "SELECT source_episodes FROM knowledge_topics WHERE id = ?",
-                (topic_id,),
-            ).fetchone()
-            old_sources = json.loads(old_row["source_episodes"])
+            old_sources = json.loads(existing["source_episodes"])
             merged = list(set(old_sources + source_episodes))
             conn.execute(
                 """UPDATE knowledge_topics
@@ -377,14 +387,34 @@ def upsert_knowledge_topic(
             )
         else:
             topic_id = str(uuid.uuid4())
-            conn.execute(
-                """INSERT INTO knowledge_topics
-                   (id, filename, title, summary, created_at, updated_at,
-                    source_episodes, fact_count, confidence)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (topic_id, filename, title, summary, now, now,
-                 json.dumps(source_episodes), fact_count, confidence),
-            )
+            try:
+                conn.execute(
+                    """INSERT INTO knowledge_topics
+                       (id, filename, title, summary, created_at, updated_at,
+                        source_episodes, fact_count, confidence)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (topic_id, filename, title, summary, now, now,
+                     json.dumps(source_episodes), fact_count, confidence),
+                )
+            except sqlite3.IntegrityError:
+                # Race: concurrent insert won — fall back to update
+                existing = conn.execute(
+                    "SELECT id, source_episodes FROM knowledge_topics WHERE filename = ?",
+                    (filename,),
+                ).fetchone()
+                if existing is None:
+                    raise
+                topic_id = existing["id"]
+                old_sources = json.loads(existing["source_episodes"])
+                merged = list(set(old_sources + source_episodes))
+                conn.execute(
+                    """UPDATE knowledge_topics
+                       SET title = ?, summary = ?, updated_at = ?,
+                           source_episodes = ?, fact_count = ?, confidence = ?
+                       WHERE id = ?""",
+                    (title, summary, now, json.dumps(merged),
+                     fact_count, confidence, topic_id),
+                )
     return topic_id
 
 
@@ -638,8 +668,10 @@ def search_episodes(
     params: list[Any] = []
 
     if query:
-        conditions.append("content LIKE ?")
-        params.append(f"%{query}%")
+        # Escape LIKE wildcards in user input to prevent unintended pattern matching
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions.append("content LIKE ? ESCAPE '\\'")
+        params.append(f"%{escaped}%")
 
     if content_types:
         placeholders = ",".join("?" for _ in content_types)

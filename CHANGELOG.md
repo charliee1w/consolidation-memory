@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.0 — 2026-02-28
+
+### Bug Fixes
+
+- **Fix `executescript()` breaking transaction atomicity** — `ensure_schema()` now uses individual `execute()` calls instead of `executescript()`, which implicitly commits before running
+- **Fix upsert race condition in knowledge topics** — `upsert_knowledge_topic()` catches `IntegrityError` from concurrent inserts and falls back to update
+- **Fix LIKE injection in keyword search** — `search_episodes()` now escapes `%`, `_`, and `\` in user input with proper `ESCAPE` clause
+- **Fix store rollback leaving dedup-visible orphans** — `store()` now uses `hard_delete_episode()` instead of soft-delete when FAISS add fails, preventing dedup from finding rolled-back episodes
+- **Fix `store_batch()` issuing per-item FAISS adds** — batch now collects embeddings and calls `add_batch()` once, with proper rollback on failure
+- **Fix ThreadPoolExecutor timeout in `_call_llm()` and `_consolidation_loop()`** — no longer uses context manager (whose `__exit__` calls `shutdown(wait=True)`, blocking until thread finishes even after timeout)
+- **Fix knowledge filename collision** — `_process_cluster()` now appends counter suffix when target filename already exists
+- **Fix `_parse_tags()` crash on malformed JSON** — catches `ValueError` alongside `JSONDecodeError`
+- **Fix recency decay returning >1.0 for future-dated episodes** — clamps `age_days` to non-negative
+- **Fix variable shadowing of `tags` parameter in recall** — renamed local to `ep_parsed_tags`
+
+### Security
+
+- **Path traversal guard in `correct()`** — validates that resolved filepath stays within `KNOWLEDGE_DIR`
+- **Path traversal guard in `export()`** — skips knowledge files whose resolved path escapes `KNOWLEDGE_DIR`
+- **Path traversal guard in CLI `import`** — skips imported knowledge files with directory traversal in filename
+
+### Robustness
+
+- **Null-guard all MCP server tool functions** — returns error JSON instead of `AttributeError` if client not initialized
+- **Null-guard all REST API endpoints** — returns 503 instead of crashing if client not initialized
+- **Added `hard_delete_episode()` to database layer** — permanent delete for rollback scenarios
+
+### Internal
+
+- Removed redundant `import json` inside `search()` method
+
 ## 0.3.0 — 2026-02-28
 
 ### Bug Fixes

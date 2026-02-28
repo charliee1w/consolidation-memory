@@ -100,10 +100,16 @@ def create_app() -> FastAPI:
         """Health check."""
         return {"status": "ok", "version": __version__}
 
+    def _require_client() -> MemoryClient:
+        if _client is None:
+            raise HTTPException(status_code=503, detail="Memory system not initialized")
+        return _client
+
     @app.post("/memory/store")
     async def store(req: StoreRequest):
         """Store a memory episode."""
-        result = _client.store(
+        client = _require_client()
+        result = client.store(
             content=req.content,
             content_type=req.content_type,
             tags=req.tags,
@@ -114,13 +120,13 @@ def create_app() -> FastAPI:
     @app.post("/memory/store/batch")
     async def store_batch(req: BatchStoreRequest):
         """Store multiple memory episodes in a single operation."""
-        result = _client.store_batch(episodes=req.episodes)
+        result = _require_client().store_batch(episodes=req.episodes)
         return dataclasses.asdict(result)
 
     @app.post("/memory/recall")
     async def recall(req: RecallRequest):
         """Retrieve relevant memories by semantic similarity."""
-        result = _client.recall(
+        result = _require_client().recall(
             query=req.query,
             n_results=req.n_results,
             include_knowledge=req.include_knowledge,
@@ -134,7 +140,7 @@ def create_app() -> FastAPI:
     @app.post("/memory/search")
     async def search(req: SearchRequest):
         """Keyword/metadata search over episodes (no embedding needed)."""
-        result = _client.search(
+        result = _require_client().search(
             query=req.query,
             content_types=req.content_types,
             tags=req.tags,
@@ -147,13 +153,13 @@ def create_app() -> FastAPI:
     @app.get("/memory/status")
     async def status():
         """Get memory system statistics."""
-        result = _client.status()
+        result = _require_client().status()
         return dataclasses.asdict(result)
 
     @app.delete("/memory/episodes/{episode_id}")
     async def forget(episode_id: str):
         """Soft-delete an episode."""
-        result = _client.forget(episode_id)
+        result = _require_client().forget(episode_id)
         if result.status == "not_found":
             raise HTTPException(status_code=404, detail="Episode not found")
         return dataclasses.asdict(result)
@@ -161,12 +167,12 @@ def create_app() -> FastAPI:
     @app.post("/memory/consolidate")
     async def consolidate():
         """Run consolidation manually."""
-        return _client.consolidate()
+        return _require_client().consolidate()
 
     @app.post("/memory/correct")
     async def correct(req: CorrectRequest):
         """Correct a knowledge document."""
-        result = _client.correct(
+        result = _require_client().correct(
             topic_filename=req.topic_filename,
             correction=req.correction,
         )
@@ -177,7 +183,7 @@ def create_app() -> FastAPI:
     @app.post("/memory/export")
     async def export():
         """Export all episodes and knowledge to a JSON snapshot."""
-        result = _client.export()
+        result = _require_client().export()
         return dataclasses.asdict(result)
 
     return app

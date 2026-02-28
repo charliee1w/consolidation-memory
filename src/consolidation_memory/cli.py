@@ -376,9 +376,13 @@ def cmd_import(path: str):
     # Import knowledge
     KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     k_imported = 0
+    knowledge_resolved = KNOWLEDGE_DIR.resolve()
     for topic in data.get("knowledge_topics", []):
         if topic.get("file_content"):
-            filepath = KNOWLEDGE_DIR / topic["filename"]
+            filepath = (KNOWLEDGE_DIR / topic["filename"]).resolve()
+            if not filepath.is_relative_to(knowledge_resolved):
+                print(f"  Skipping {topic['filename']!r}: path traversal detected")
+                continue
             filepath.write_text(topic["file_content"], encoding="utf-8")
 
         source_eps = json.loads(topic["source_episodes"]) if isinstance(topic["source_episodes"], str) else topic["source_episodes"]

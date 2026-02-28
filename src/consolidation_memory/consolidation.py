@@ -132,10 +132,13 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
 
     last_err = None
     for attempt in range(max_retries):
+        # Don't use ThreadPoolExecutor as context manager — its __exit__ calls
+        # shutdown(wait=True), blocking until the thread finishes even after
+        # a timeout, which defeats the timeout's purpose.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(llm.generate, _LLM_SYSTEM_PROMPT, prompt)
-                result = future.result(timeout=LLM_CALL_TIMEOUT)
+            future = executor.submit(llm.generate, _LLM_SYSTEM_PROMPT, prompt)
+            result = future.result(timeout=LLM_CALL_TIMEOUT)
             cb.record_success()
             return result
         except concurrent.futures.TimeoutError:
@@ -144,6 +147,8 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
         except Exception as e:
             last_err = e
             logger.warning("LLM attempt %d/%d failed: %s", attempt + 1, max_retries, e)
+        finally:
+            executor.shutdown(wait=False)
         if attempt < max_retries - 1:
             time.sleep(2.0 * (attempt + 1))
 
@@ -670,9 +675,15 @@ def _process_cluster(
             increment_consolidation_attempts(cluster_ep_ids)
             return {"status": "failed", "api_calls": api_calls, "failed_ep_ids": cluster_ep_ids}
     else:
-        filename = _slugify(title) + ".md"
+        base_slug = _slugify(title)
+        filename = base_slug + ".md"
         filepath = KNOWLEDGE_DIR / filename
-        _version_knowledge_file(filepath)
+        # Avoid filename collisions from different titles that slugify identically
+        counter = 2
+        while filepath.exists():
+            filename = f"{base_slug}_{counter}.md"
+            filepath = KNOWLEDGE_DIR / filename
+            counter += 1
         filepath.write_text(response_text, encoding="utf-8")
         upsert_knowledge_topic(
             filename=filename,

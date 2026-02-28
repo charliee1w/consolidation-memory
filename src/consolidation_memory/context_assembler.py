@@ -36,8 +36,11 @@ logger = logging.getLogger(__name__)
 def _parse_tags(tags_value: str | list) -> list:
     """Parse tags from DB storage format (JSON string or already-parsed list)."""
     if isinstance(tags_value, str):
-        return json.loads(tags_value)
-    return tags_value
+        try:
+            return json.loads(tags_value)
+        except (json.JSONDecodeError, ValueError):
+            return []
+    return tags_value if tags_value is not None else []
 
 
 def invalidate_topic_cache() -> None:
@@ -54,6 +57,8 @@ def _recency_decay(created_at_iso: str, half_life_days: float = RECENCY_HALF_LIF
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
         age_days = (datetime.now(timezone.utc) - created).total_seconds() / 86400.0
+        # Clamp to non-negative to prevent >1.0 scores from future-dated episodes
+        age_days = max(0.0, age_days)
         return math.exp(-age_days / half_life_days)
     except Exception:
         return 0.5
@@ -148,12 +153,12 @@ def recall(
 
     episodes = []
     for ep, score, sim in top:
-        tags = _parse_tags(ep["tags"])
+        ep_parsed_tags = _parse_tags(ep["tags"])
         episodes.append({
             "id": ep["id"],
             "content": ep["content"],
             "content_type": ep["content_type"],
-            "tags": tags,
+            "tags": ep_parsed_tags,
             "created_at": ep["created_at"],
             "score": round(score, 4),
             "similarity": round(sim, 4),

@@ -126,7 +126,7 @@ class MemoryClient:
         Returns:
             StoreResult with status 'stored' or 'duplicate_detected'.
         """
-        from consolidation_memory.database import insert_episode, get_episode, soft_delete_episode
+        from consolidation_memory.database import insert_episode, get_episode, hard_delete_episode
         from consolidation_memory.backends import encode_documents
         from consolidation_memory.config import DEDUP_SIMILARITY_THRESHOLD, DEDUP_ENABLED
 
@@ -177,8 +177,8 @@ class MemoryClient:
         try:
             self._vector_store.add(episode_id, embedding[0])
         except Exception as e:
-            # Rollback: remove the DB record if FAISS add fails to prevent orphans
-            soft_delete_episode(episode_id)
+            # Hard-delete (not soft-delete) so dedup checks don't still find this orphan
+            hard_delete_episode(episode_id)
             logger.error("FAISS add failed for %s, rolled back DB insert: %s", episode_id, e)
             raise
 
@@ -212,9 +212,10 @@ class MemoryClient:
         Returns:
             BatchStoreResult with per-episode status.
         """
-        from consolidation_memory.database import insert_episode, get_episode, soft_delete_episode
+        from consolidation_memory.database import insert_episode, get_episode, hard_delete_episode
         from consolidation_memory.backends import encode_documents
         from consolidation_memory.config import DEDUP_SIMILARITY_THRESHOLD, DEDUP_ENABLED
+        import numpy as np
 
         if not episodes:
             return BatchStoreResult(status="stored", stored=0, duplicates=0)
@@ -248,6 +249,9 @@ class MemoryClient:
         results = []
         stored = 0
         duplicates = 0
+        # Collect non-duplicate items for a single FAISS batch add
+        pending_ids: list[str] = []
+        pending_embs: list[np.ndarray] = []
 
         for i, item in enumerate(items):
             emb = embeddings[i]
@@ -280,20 +284,29 @@ class MemoryClient:
                 surprise_score=item["surprise"],
             )
 
-            try:
-                self._vector_store.add(episode_id, emb)
-            except Exception as e:
-                soft_delete_episode(episode_id)
-                logger.error("FAISS add failed for %s in batch, rolled back: %s", episode_id, e)
-                results.append({"status": "error", "message": str(e)})
-                continue
-
+            pending_ids.append(episode_id)
+            pending_embs.append(emb)
             stored += 1
             results.append({
                 "status": "stored",
                 "id": episode_id,
                 "content_type": item["content_type"],
             })
+
+        # Single FAISS batch add instead of per-item add()
+        if pending_ids:
+            try:
+                emb_matrix = np.stack(pending_embs)
+                self._vector_store.add_batch(pending_ids, emb_matrix)
+            except Exception as e:
+                # Rollback all DB inserts from this batch
+                for eid in pending_ids:
+                    hard_delete_episode(eid)
+                logger.error("FAISS batch add failed, rolled back %d DB inserts: %s",
+                             len(pending_ids), e)
+                stored = 0
+                results = [r for r in results if r.get("status") != "stored"]
+                results.append({"status": "error", "message": str(e)})
 
         logger.info("Batch store: %d stored, %d duplicates out of %d", stored, duplicates, len(items))
         return BatchStoreResult(status="stored", stored=stored, duplicates=duplicates, results=results)
@@ -385,7 +398,6 @@ class MemoryClient:
         Returns:
             SearchResult with matching episodes.
         """
-        import json
         from consolidation_memory.database import search_episodes
 
         results = search_episodes(
@@ -512,10 +524,12 @@ class MemoryClient:
 
         topics = get_all_knowledge_topics()
         knowledge = []
+        knowledge_resolved = KNOWLEDGE_DIR.resolve()
         for topic in topics:
-            filepath = KNOWLEDGE_DIR / topic["filename"]
+            filepath = (KNOWLEDGE_DIR / topic["filename"]).resolve()
             content = ""
-            if filepath.exists():
+            # Path traversal guard: skip files that resolve outside KNOWLEDGE_DIR
+            if filepath.is_relative_to(knowledge_resolved) and filepath.exists():
                 content = filepath.read_text(encoding="utf-8")
             knowledge.append({**topic, "file_content": content})
 
@@ -571,7 +585,14 @@ class MemoryClient:
         )
         from consolidation_memory.backends import get_llm_backend
 
-        filepath = KNOWLEDGE_DIR / topic_filename
+        # Validate filename doesn't escape KNOWLEDGE_DIR (path traversal)
+        filepath = (KNOWLEDGE_DIR / topic_filename).resolve()
+        if not filepath.is_relative_to(KNOWLEDGE_DIR.resolve()):
+            return CorrectResult(
+                status="error",
+                filename=topic_filename,
+                message="Invalid filename: path traversal detected.",
+            )
         if not filepath.exists():
             return CorrectResult(status="not_found", filename=topic_filename)
 
@@ -834,20 +855,25 @@ class MemoryClient:
                 continue
             try:
                 from consolidation_memory.consolidation import run_consolidation
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(run_consolidation, vector_store=self._vector_store)
-                    try:
-                        result = future.result(timeout=max_duration)
-                        logger.info(
-                            "Background consolidation completed: %s",
-                            result.get("status", result),
-                        )
-                    except FuturesTimeoutError:
-                        logger.error(
-                            "Background consolidation timed out after %ds; "
-                            "releasing lock. The worker thread will be abandoned.",
-                            max_duration,
-                        )
+                # Don't use ThreadPoolExecutor as context manager — its __exit__
+                # calls shutdown(wait=True), blocking until the thread finishes
+                # even after a timeout, defeating the timeout's purpose.
+                pool = ThreadPoolExecutor(max_workers=1)
+                future = pool.submit(run_consolidation, vector_store=self._vector_store)
+                try:
+                    result = future.result(timeout=max_duration)
+                    logger.info(
+                        "Background consolidation completed: %s",
+                        result.get("status", result),
+                    )
+                except FuturesTimeoutError:
+                    logger.error(
+                        "Background consolidation timed out after %ds; "
+                        "releasing lock. The worker thread will be abandoned.",
+                        max_duration,
+                    )
+                finally:
+                    pool.shutdown(wait=False)
             except Exception:
                 logger.exception("Background consolidation failed")
             finally:

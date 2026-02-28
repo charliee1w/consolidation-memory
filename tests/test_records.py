@@ -89,6 +89,25 @@ class TestRecordCRUD:
         ids = insert_knowledge_records("nonexistent", [])
         assert ids == []
 
+    def test_insert_procedure_record(self, tmp_data_dir):
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="proc.md", title="Proc", summary="S", source_episodes=[],
+        )
+        ids = insert_knowledge_records(tid, [{
+            "record_type": "procedure",
+            "content": {
+                "type": "procedure",
+                "trigger": "before committing code",
+                "steps": "run tests, then lint, then commit",
+            },
+            "embedding_text": "Procedure: before committing code -> run tests, then lint, then commit",
+        }])
+        assert len(ids) == 1
+        recs = get_records_by_topic(tid)
+        assert len(recs) == 1
+        assert recs[0]["record_type"] == "procedure"
+
     def test_stats_include_records(self, tmp_data_dir):
         ensure_schema()
         tid = upsert_knowledge_topic(
@@ -98,13 +117,15 @@ class TestRecordCRUD:
             {"record_type": "fact", "content": {}, "embedding_text": "a"},
             {"record_type": "solution", "content": {}, "embedding_text": "b"},
             {"record_type": "preference", "content": {}, "embedding_text": "c"},
+            {"record_type": "procedure", "content": {}, "embedding_text": "d"},
         ])
         stats = get_stats()
         kb = stats["knowledge_base"]
-        assert kb["total_records"] == 3
+        assert kb["total_records"] == 4
         assert kb["records_by_type"]["facts"] == 1
         assert kb["records_by_type"]["solutions"] == 1
         assert kb["records_by_type"]["preferences"] == 1
+        assert kb["records_by_type"]["procedures"] == 1
 
 
 # ── Types ────────────────────────────────────────────────────────────────────
@@ -114,6 +135,7 @@ class TestRecordTypes:
         assert RecordType.FACT.value == "fact"
         assert RecordType.SOLUTION.value == "solution"
         assert RecordType.PREFERENCE.value == "preference"
+        assert RecordType.PROCEDURE.value == "procedure"
 
     def test_recall_result_has_records(self):
         from consolidation_memory.types import RecallResult
@@ -180,6 +202,30 @@ class TestExtractionValidation:
         assert not valid
         assert any("vague" in f.lower() for f in failures)
 
+    def test_valid_procedure_record(self):
+        from consolidation_memory.consolidation import _validate_extraction_output
+        data = {
+            "title": "Deploy Workflow",
+            "summary": "Standard deployment uses pytest then docker build",
+            "tags": ["deploy"],
+            "records": [
+                {"type": "procedure", "trigger": "deploying to production",
+                 "steps": "run pytest, build docker image, push to registry"},
+            ],
+        }
+        valid, failures = _validate_extraction_output(data, [])
+        assert valid, failures
+
+    def test_procedure_missing_fields(self):
+        from consolidation_memory.consolidation import _validate_extraction_output
+        data = {
+            "title": "T", "summary": "S",
+            "records": [{"type": "procedure", "trigger": ""}],
+        }
+        valid, failures = _validate_extraction_output(data, [])
+        assert not valid
+        assert any("procedure missing" in f for f in failures)
+
 
 # ── JSON parsing ─────────────────────────────────────────────────────────────
 
@@ -222,6 +268,15 @@ class TestEmbeddingText:
         })
         assert text == "Preference theme: dark"
 
+    def test_procedure_embedding(self):
+        from consolidation_memory.consolidation import _embedding_text_for_record
+        text = _embedding_text_for_record({
+            "type": "procedure",
+            "trigger": "before committing",
+            "steps": "run tests then lint",
+        })
+        assert text == "Procedure: before committing -> run tests then lint"
+
 
 # ── Markdown rendering ──────────────────────────────────────────────────────
 
@@ -232,6 +287,7 @@ class TestMarkdownRendering:
             {"type": "fact", "subject": "Python", "info": "3.12"},
             {"type": "solution", "problem": "Error", "fix": "Fix it", "context": "dev"},
             {"type": "preference", "key": "theme", "value": "dark", "context": "IDE"},
+            {"type": "procedure", "trigger": "deploying", "steps": "test then push", "context": "production"},
         ]
         md = _render_markdown_from_records("Title", "Summary", ["tag1"], 0.85, records)
         assert "## Facts" in md
@@ -240,6 +296,10 @@ class TestMarkdownRendering:
         assert "### Error" in md
         assert "## Preferences" in md
         assert "**theme**: dark (IDE)" in md
+        assert "## Procedures" in md
+        assert "### deploying" in md
+        assert "test then push" in md
+        assert "*Context: production*" in md
         assert "confidence: 0.85" in md
 
     def test_omits_empty_sections(self):
@@ -251,6 +311,7 @@ class TestMarkdownRendering:
         assert "## Facts" in md
         assert "## Solutions" not in md
         assert "## Preferences" not in md
+        assert "## Procedures" not in md
 
 
 # ── Record cache ─────────────────────────────────────────────────────────────

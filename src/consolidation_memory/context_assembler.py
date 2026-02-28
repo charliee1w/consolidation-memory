@@ -292,6 +292,11 @@ def _search_records(
     query_lower = query.lower()
     query_words = set(query_lower.split())
 
+    # Detect task-oriented queries that benefit from procedure records
+    _task_indicators = {"how", "workflow", "steps", "process", "deploy", "build",
+                        "test", "commit", "release", "setup", "configure", "run"}
+    _is_task_query = bool(query_words & _task_indicators)
+
     scored_records = []
     for i, rec in enumerate(records):
         sem_score = float(sims[i]) if sims is not None else 0.0
@@ -301,6 +306,10 @@ def _search_records(
         kw_score = kw_hits / len(query_words) if query_words else 0
 
         relevance = sem_score * RECORDS_SEMANTIC_WEIGHT + kw_score * RECORDS_KEYWORD_WEIGHT
+
+        # Boost procedure records for task-oriented queries
+        if _is_task_query and rec.get("record_type") == "procedure":
+            relevance *= 1.15
 
         if relevance < RECORDS_RELEVANCE_THRESHOLD:
             continue

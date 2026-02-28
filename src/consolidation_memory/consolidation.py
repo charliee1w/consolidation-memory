@@ -448,6 +448,7 @@ def _render_markdown_from_records(
     facts = [r for r in records if r.get("type") == "fact"]
     solutions = [r for r in records if r.get("type") == "solution"]
     preferences = [r for r in records if r.get("type") == "preference"]
+    procedures = [r for r in records if r.get("type") == "procedure"]
 
     if facts:
         lines.append("## Facts")
@@ -470,6 +471,15 @@ def _render_markdown_from_records(
             ctx = f" ({p['context']})" if p.get("context") else ""
             lines.append(f"- **{p.get('key', '?')}**: {p.get('value', '')}{ctx}")
         lines.append("")
+
+    if procedures:
+        lines.append("## Procedures")
+        for pr in procedures:
+            lines.append(f"### {pr.get('trigger', 'Trigger')}")
+            lines.append(f"{pr.get('steps', '')}")
+            if pr.get("context"):
+                lines.append(f"*Context: {pr['context']}*")
+            lines.append("")
 
     return "\n".join(lines)
 
@@ -764,8 +774,9 @@ STRICT RULES:
 - A "fact" is a static piece of information (what exists, what is configured, what version).
 - A "solution" is a problem->fix pair. Always state WHAT PROBLEM it solves, then the fix steps. If multiple distinct problems exist, use separate subsections.
 - A "preference" is an explicitly stated user choice or workflow habit. Do NOT invent preferences from facts.
+- A "procedure" is a repeated workflow or behavioral pattern showing HOW the user approaches a task. Extract procedures when episodes show the same sequence of steps being followed multiple times or the user describes their standard workflow. Do NOT invent procedures from one-off actions.
 - The summary must be a dense factual statement, not a description of the document. BAD: "Discusses VR setup." GOOD: "VR stack uses SteamVR with SpaceCalibrator for multi-tracker calibration and VRCFaceTracking for face tracking."
-- Omit any section (Facts, Solutions, Preferences) that would be empty.
+- Omit any section (Facts, Solutions, Preferences, Procedures) that would be empty.
 - Do NOT wrap output in code fences. Output raw markdown only.
 
 Common tags: {tag_summary}
@@ -791,7 +802,12 @@ confidence: {confidence}
 2. Next step
 
 ## Preferences
-- Explicitly stated user preference"""
+- Explicitly stated user preference
+
+## Procedures
+### When/trigger for this workflow
+1. Step in the workflow
+2. Next step"""
 
 
 def _build_contradiction_prompt(pairs: list[tuple[dict, dict]]) -> str:

@@ -38,7 +38,7 @@ openai = ["openai>=1.0.0"]
 rest = ["fastapi>=0.115.0", "uvicorn[standard]>=0.34.0"]
 dashboard = ["textual>=1.0.0"]
 all = ["consolidation-memory[fastembed,openai,rest,dashboard]"]
-dev = ["pytest>=8.0.0", "ruff>=0.7.0", "httpx>=0.28.0", "mypy>=1.0.0"]
+dev = ["pytest>=8.0.0", "ruff>=0.7.0", "mypy>=1.0.0"]
 
 [project.scripts]
 consolidation-memory = "consolidation_memory.cli:main"
@@ -47,6 +47,10 @@ consolidation-memory = "consolidation_memory.cli:main"
 Homepage = "https://github.com/charliee1w/consolidation-memory"
 Repository = "https://github.com/charliee1w/consolidation-memory"
 Issues = "https://github.com/charliee1w/consolidation-memory/issues"
+Changelog = "https://github.com/charliee1w/consolidation-memory/blob/main/CHANGELOG.md"
+
+[tool.setuptools.package-data]
+consolidation_memory = ["py.typed"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -150,8 +150,8 @@ file's mtime and reload the index if it's newer than their load timestamp.
 └── logs/                        # Application logs
 ```
 
-Config file: `~/.config/consolidation-memory/config.toml` (XDG), or
-`%APPDATA%/consolidation-memory/config.toml` (Windows).
+Config file: `~/.config/consolidation_memory/config.toml` (XDG), or
+`%APPDATA%/consolidation_memory/config.toml` (Windows).
 
 ### SQLite Schema (v6)
 

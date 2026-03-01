@@ -143,19 +143,23 @@ class VectorStore:
 
     # ── Index upgrade ────────────────────────────────────────────────────────
 
-    def _maybe_upgrade_index(self) -> bool:
+    def _maybe_upgrade_index(self, force: bool = False) -> bool:
         """Upgrade from IndexFlatIP to IndexIVFFlat when index exceeds threshold.
 
         Must be called with ``self._lock`` held. Extracts all vectors from the
         current flat index, trains an IVF index, adds the vectors, enables
         direct map for reconstruct support, and atomically saves to disk.
 
+        Args:
+            force: If True, skip the threshold check (used after compaction
+                   to restore an IVF index that was temporarily flattened).
+
         Returns True if upgrade was performed, False otherwise.
         If training fails, keeps the existing IndexFlatIP and logs a warning.
         """
         if not isinstance(self._index, faiss.IndexFlatIP):
             return False
-        if self._index.ntotal < get_config().FAISS_IVF_UPGRADE_THRESHOLD:
+        if not force and self._index.ntotal < get_config().FAISS_IVF_UPGRADE_THRESHOLD:
             return False
 
         n = self._index.ntotal
@@ -344,6 +348,8 @@ class VectorStore:
                 return 0
             removed = len(self._tombstones)
             cfg = get_config()
+            # Remember if the index was IVF before compaction so we can restore it
+            was_ivf = not isinstance(self._index, faiss.IndexFlatIP)
 
             keep_positions = [
                 i for i, uid in enumerate(self._id_map)
@@ -374,7 +380,11 @@ class VectorStore:
             self._save()
             self._save_tombstones()
             logger.info("Compacted FAISS index: removed %d tombstoned vectors", removed)
-            self._maybe_upgrade_index()
+            # If the index was IVF before, force upgrade regardless of threshold
+            if was_ivf and len(keep_positions) >= 100:
+                self._maybe_upgrade_index(force=True)
+            else:
+                self._maybe_upgrade_index()
             return removed
 
     @property

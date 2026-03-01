@@ -240,9 +240,9 @@ model = "qwen2.5-7b-instruct"
 [consolidation]
 auto_run = true
 interval_hours = 6
-cluster_threshold = 0.72
+cluster_threshold = 0.72  # default: 0.78
 prune_enabled = true
-prune_after_days = 60
+prune_after_days = 60  # default: 30
 ```
 
 </details>
@@ -313,6 +313,8 @@ env:
 | `consolidation-memory export` | Export to JSON |
 | `consolidation-memory import PATH` | Import from JSON |
 | `consolidation-memory reindex` | Re-embed everything (after switching backends) |
+| `consolidation-memory test` | Run post-install verification |
+| `consolidation-memory dashboard` | Open TUI dashboard |
 
 ## Multi-Project Support
 

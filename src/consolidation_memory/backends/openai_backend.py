@@ -9,6 +9,7 @@ import logging
 import numpy as np
 
 from consolidation_memory.backends import retry_with_backoff
+from consolidation_memory.backends.base import normalize_l2
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +30,6 @@ class OpenAIEmbeddingBackend:
         self._model_name = model_name
         self._dim = dimension
 
-    def _normalize(self, vecs: np.ndarray) -> np.ndarray:
-        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        normalized: np.ndarray = vecs / norms
-        return normalized
-
     def _get_transient_exceptions(self) -> tuple:
         """Return OpenAI SDK transient exception types (import-time safe)."""
         try:
@@ -54,7 +49,7 @@ class OpenAIEmbeddingBackend:
         vecs = retry_with_backoff(
             _do, transient_exceptions=transient, context="OpenAI embedding",
         )
-        return self._normalize(vecs)
+        return normalize_l2(vecs)
 
     def encode_query(self, text: str) -> np.ndarray:
         return self.encode_documents([text])

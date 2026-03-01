@@ -147,7 +147,7 @@ class TestRecordTypes:
 
 class TestExtractionValidation:
     def test_valid_output(self):
-        from consolidation_memory.consolidation import _validate_extraction_output
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
         data = {
             "title": "Python Setup",
             "summary": "Python 3.12 installed with pip and venv on Ubuntu",
@@ -160,21 +160,21 @@ class TestExtractionValidation:
         assert valid, failures
 
     def test_missing_title(self):
-        from consolidation_memory.consolidation import _validate_extraction_output
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
         data = {"summary": "x", "records": [{"type": "fact", "subject": "a", "info": "b"}]}
         valid, failures = _validate_extraction_output(data, [])
         assert not valid
         assert any("title" in f.lower() for f in failures)
 
     def test_no_records(self):
-        from consolidation_memory.consolidation import _validate_extraction_output
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
         data = {"title": "T", "summary": "S", "records": []}
         valid, failures = _validate_extraction_output(data, [])
         assert not valid
         assert any("No records" in f for f in failures)
 
     def test_invalid_record_type(self):
-        from consolidation_memory.consolidation import _validate_extraction_output
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
         data = {
             "title": "T", "summary": "S",
             "records": [{"type": "invalid", "subject": "a"}],
@@ -184,7 +184,7 @@ class TestExtractionValidation:
         assert any("invalid type" in f for f in failures)
 
     def test_fact_missing_fields(self):
-        from consolidation_memory.consolidation import _validate_extraction_output
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
         data = {
             "title": "T", "summary": "S",
             "records": [{"type": "fact", "subject": ""}],
@@ -193,7 +193,7 @@ class TestExtractionValidation:
         assert not valid
 
     def test_vague_summary(self):
-        from consolidation_memory.consolidation import _validate_extraction_output
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
         data = {
             "title": "T", "summary": "This document discusses things",
             "records": [{"type": "fact", "subject": "a", "info": "b"}],
@@ -203,7 +203,7 @@ class TestExtractionValidation:
         assert any("vague" in f.lower() for f in failures)
 
     def test_valid_procedure_record(self):
-        from consolidation_memory.consolidation import _validate_extraction_output
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
         data = {
             "title": "Deploy Workflow",
             "summary": "Standard deployment uses pytest then docker build",
@@ -217,7 +217,7 @@ class TestExtractionValidation:
         assert valid, failures
 
     def test_procedure_missing_fields(self):
-        from consolidation_memory.consolidation import _validate_extraction_output
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
         data = {
             "title": "T", "summary": "S",
             "records": [{"type": "procedure", "trigger": ""}],
@@ -231,18 +231,18 @@ class TestExtractionValidation:
 
 class TestJsonParsing:
     def test_parse_clean_json(self):
-        from consolidation_memory.consolidation import _parse_llm_json
+        from consolidation_memory.consolidation.prompting import _parse_llm_json
         data = _parse_llm_json('{"title": "Test", "records": []}')
         assert data == {"title": "Test", "records": []}
 
     def test_parse_with_code_fences(self):
-        from consolidation_memory.consolidation import _parse_llm_json
+        from consolidation_memory.consolidation.prompting import _parse_llm_json
         raw = '```json\n{"title": "Test"}\n```'
         data = _parse_llm_json(raw)
         assert data == {"title": "Test"}
 
     def test_parse_invalid_returns_none(self):
-        from consolidation_memory.consolidation import _parse_llm_json
+        from consolidation_memory.consolidation.prompting import _parse_llm_json
         assert _parse_llm_json("not json at all") is None
 
 
@@ -250,26 +250,26 @@ class TestJsonParsing:
 
 class TestEmbeddingText:
     def test_fact_embedding(self):
-        from consolidation_memory.consolidation import _embedding_text_for_record
+        from consolidation_memory.consolidation.prompting import _embedding_text_for_record
         text = _embedding_text_for_record({"type": "fact", "subject": "Python", "info": "3.12"})
         assert text == "Python: 3.12"
 
     def test_solution_embedding(self):
-        from consolidation_memory.consolidation import _embedding_text_for_record
+        from consolidation_memory.consolidation.prompting import _embedding_text_for_record
         text = _embedding_text_for_record({
             "type": "solution", "problem": "crash", "fix": "restart"
         })
         assert text == "Problem: crash. Fix: restart"
 
     def test_preference_embedding(self):
-        from consolidation_memory.consolidation import _embedding_text_for_record
+        from consolidation_memory.consolidation.prompting import _embedding_text_for_record
         text = _embedding_text_for_record({
             "type": "preference", "key": "theme", "value": "dark"
         })
         assert text == "Preference theme: dark"
 
     def test_procedure_embedding(self):
-        from consolidation_memory.consolidation import _embedding_text_for_record
+        from consolidation_memory.consolidation.prompting import _embedding_text_for_record
         text = _embedding_text_for_record({
             "type": "procedure",
             "trigger": "before committing",
@@ -282,7 +282,7 @@ class TestEmbeddingText:
 
 class TestMarkdownRendering:
     def test_renders_all_sections(self):
-        from consolidation_memory.consolidation import _render_markdown_from_records
+        from consolidation_memory.consolidation.prompting import _render_markdown_from_records
         records = [
             {"type": "fact", "subject": "Python", "info": "3.12"},
             {"type": "solution", "problem": "Error", "fix": "Fix it", "context": "dev"},
@@ -303,7 +303,7 @@ class TestMarkdownRendering:
         assert "confidence: 0.85" in md
 
     def test_omits_empty_sections(self):
-        from consolidation_memory.consolidation import _render_markdown_from_records
+        from consolidation_memory.consolidation.prompting import _render_markdown_from_records
         md = _render_markdown_from_records(
             "Title", "Summary", [], 0.8,
             [{"type": "fact", "subject": "X", "info": "Y"}],

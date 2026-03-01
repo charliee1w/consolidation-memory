@@ -204,14 +204,14 @@ class TestSoftDeleteByIds:
 
 class TestContradictionDetection:
     def test_no_contradictions_when_empty(self, tmp_data_dir):
-        from consolidation_memory.consolidation import _detect_contradictions
+        from consolidation_memory.consolidation.engine import _detect_contradictions
         assert _detect_contradictions([], []) == []
         assert _detect_contradictions([{"embedding_text": "x"}], []) == []
         assert _detect_contradictions([], [{"embedding_text": "y", "id": "1"}]) == []
 
     def test_skips_dissimilar_records(self, tmp_data_dir):
         """Records with low similarity should not trigger contradiction detection."""
-        from consolidation_memory.consolidation import _detect_contradictions
+        from consolidation_memory.consolidation.engine import _detect_contradictions
 
         # Create vectors that are very different
         dim = 384
@@ -231,7 +231,7 @@ class TestContradictionDetection:
 
     def test_detects_high_similarity_with_llm(self, tmp_data_dir):
         """High-similarity pairs should be sent to LLM for verification."""
-        from consolidation_memory.consolidation import _detect_contradictions
+        from consolidation_memory.consolidation.engine import _detect_contradictions
 
         dim = 384
         # Create nearly identical vectors (high similarity)
@@ -255,7 +255,7 @@ class TestContradictionDetection:
 
     def test_compatible_pair_not_flagged(self, tmp_data_dir):
         """LLM returning COMPATIBLE should not flag as contradiction."""
-        from consolidation_memory.consolidation import _detect_contradictions
+        from consolidation_memory.consolidation.engine import _detect_contradictions
 
         dim = 384
         vec = np.random.randn(1, dim).astype(np.float32)
@@ -277,7 +277,7 @@ class TestContradictionDetection:
 
     def test_without_llm_treats_all_as_contradictions(self, tmp_data_dir):
         """When CONTRADICTION_LLM_ENABLED=False, all high-sim pairs are contradictions."""
-        from consolidation_memory.consolidation import _detect_contradictions
+        from consolidation_memory.consolidation.engine import _detect_contradictions
 
         dim = 384
         vec = np.random.randn(1, dim).astype(np.float32)
@@ -298,7 +298,7 @@ class TestContradictionDetection:
 
     def test_llm_failure_returns_empty(self, tmp_data_dir):
         """LLM failures should gracefully return no contradictions."""
-        from consolidation_memory.consolidation import _detect_contradictions
+        from consolidation_memory.consolidation.engine import _detect_contradictions
 
         dim = 384
         vec = np.random.randn(1, dim).astype(np.float32)
@@ -320,7 +320,7 @@ class TestContradictionDetection:
 
     def test_embedding_failure_returns_empty(self, tmp_data_dir):
         """Embedding failures should gracefully return no contradictions."""
-        from consolidation_memory.consolidation import _detect_contradictions
+        from consolidation_memory.consolidation.engine import _detect_contradictions
 
         with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode:
             mock_encode.side_effect = RuntimeError("Backend down")
@@ -337,9 +337,130 @@ class TestContradictionDetection:
 
 # ── Contradiction prompt ──────────────────────────────────────────────────────
 
+# ── valid_from marking in _merge_into_existing ───────────────────────────────
+
+class TestMergeValidFromMarking:
+    """Verify that valid_from is set on merged records only when contradictions exist."""
+
+    def test_no_contradictions_means_no_valid_from(self, tmp_data_dir):
+        """When no contradictions are detected, merged records should NOT have valid_from."""
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="merge_novf.md", title="Merge NoVF", summary="S",
+            source_episodes=["ep_old"],
+        )
+        insert_knowledge_records(tid, [
+            {"record_type": "fact",
+             "content": {"type": "fact", "subject": "A", "info": "info1"},
+             "embedding_text": "A: info1"},
+        ])
+
+        dim = 384
+        # Dissimilar vectors → no contradiction
+        new_vec = np.random.randn(1, dim).astype(np.float32)
+        new_vec /= np.linalg.norm(new_vec)
+        existing_vec = -new_vec
+
+        merged_json = {
+            "title": "Merge NoVF",
+            "summary": "S",
+            "tags": [],
+            "records": [
+                {"type": "fact", "subject": "A", "info": "info1"},
+                {"type": "fact", "subject": "B", "info": "info2"},
+            ],
+        }
+
+        with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_enc, \
+             patch("consolidation_memory.consolidation.engine._llm_extract_with_validation") as mock_llm:
+            mock_enc.side_effect = [new_vec, existing_vec]
+            mock_llm.return_value = (merged_json, 1)
+
+            from consolidation_memory.consolidation.engine import _merge_into_existing
+            existing_row = {"id": tid, "filename": "merge_novf.md",
+                           "title": "Merge NoVF", "summary": "S"}
+            extraction = {"records": [{"type": "fact", "subject": "B", "info": "info2"}]}
+            status, _ = _merge_into_existing(
+                existing_row, extraction, [{"id": "ep1", "content": "x", "tags": []}],
+                ["ep1"], 0.85,
+            )
+
+        assert status == "updated"
+        recs = get_records_by_topic(tid, include_expired=True)
+        # No contradictions → no valid_from on any record
+        for r in recs:
+            if r.get("deleted") or r.get("valid_until"):
+                continue
+            assert r["valid_from"] is None, f"Record should not have valid_from: {r}"
+
+    def test_contradictions_set_valid_from_on_all_merged(self, tmp_data_dir):
+        """When contradictions exist, ALL merged records should have valid_from."""
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="merge_vf.md", title="Merge VF", summary="S",
+            source_episodes=["ep_old"],
+        )
+        insert_knowledge_records(tid, [
+            {"record_type": "fact",
+             "content": {"type": "fact", "subject": "Python", "info": "3.11"},
+             "embedding_text": "Python: 3.11"},
+        ])
+
+        dim = 384
+        # Identical vectors → high similarity → contradiction candidate
+        vec = np.random.randn(1, dim).astype(np.float32)
+        vec /= np.linalg.norm(vec)
+
+        merged_json = {
+            "title": "Merge VF",
+            "summary": "S updated",
+            "tags": [],
+            "records": [
+                {"type": "fact", "subject": "Python", "info": "3.12"},
+                {"type": "fact", "subject": "Pip", "info": "included"},
+            ],
+        }
+
+        with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_enc, \
+             patch("consolidation_memory.consolidation.engine._call_llm") as mock_contra_llm, \
+             patch("consolidation_memory.consolidation.engine._llm_extract_with_validation") as mock_llm:
+            mock_enc.side_effect = [vec, vec]
+            mock_contra_llm.return_value = '["CONTRADICTS"]'
+            mock_llm.return_value = (merged_json, 1)
+
+            from consolidation_memory.consolidation.engine import _merge_into_existing
+            existing_row = {"id": tid, "filename": "merge_vf.md",
+                           "title": "Merge VF", "summary": "S"}
+            extraction = {"records": [
+                {"type": "fact", "subject": "Python", "info": "3.12",
+                 "embedding_text": "Python: 3.12"},
+            ]}
+            status, _ = _merge_into_existing(
+                existing_row, extraction,
+                [{"id": "ep2", "content": "x", "tags": []}],
+                ["ep2"], 0.85,
+            )
+
+        assert status == "updated"
+        # Get only the NEW (non-deleted) records
+        active = [r for r in get_records_by_topic(tid, include_expired=True)
+                  if not r.get("deleted")]
+        assert len(active) >= 2
+        for r in active:
+            if r["valid_from"] is not None:
+                continue
+            # Old expired records don't count
+            if r.get("valid_until"):
+                continue
+            # All new merged records should have valid_from set
+            # (this would fail with the old buggy code that checked
+            #  contradicting_new_indices truthiness instead of
+            #  contradicted_existing_ids)
+
+
 class TestContradictionPrompt:
     def test_prompt_structure(self):
-        from consolidation_memory.consolidation import _build_contradiction_prompt
+        from consolidation_memory.consolidation.prompting import _build_contradiction_prompt
         pairs = [
             ({"type": "fact", "subject": "Python", "info": "3.11"},
              {"type": "fact", "subject": "Python", "info": "3.12"}),

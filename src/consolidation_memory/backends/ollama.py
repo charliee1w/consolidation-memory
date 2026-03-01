@@ -10,6 +10,7 @@ import httpx
 import numpy as np
 
 from consolidation_memory.backends import retry_with_backoff
+from consolidation_memory.backends.base import normalize_l2
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +26,6 @@ class OllamaEmbeddingBackend:
         self._api_base = base
         self._model_name = model_name
         self._dim = dimension
-
-    def _normalize(self, vecs: np.ndarray) -> np.ndarray:
-        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        normalized: np.ndarray = vecs / norms
-        return normalized
 
     def _embed_single(self, text: str) -> list[float]:
         response = httpx.post(
@@ -59,7 +54,7 @@ class OllamaEmbeddingBackend:
         vecs = np.array(data["embeddings"], dtype=np.float32)
         if self._dim == 0:
             self._dim = vecs.shape[1]
-        return self._normalize(vecs)
+        return normalize_l2(vecs)
 
     def encode_query(self, text: str) -> np.ndarray:
         return self.encode_documents([text])

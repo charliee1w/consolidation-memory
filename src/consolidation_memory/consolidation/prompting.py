@@ -18,6 +18,33 @@ from consolidation_memory.config import get_config
 
 logger = logging.getLogger(__name__)
 
+# ── Shared LLM thread pool ────────────────────────────────────────────────────
+
+_llm_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_llm_executor_lock = threading.Lock()
+
+
+def _get_llm_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Return a shared executor for LLM calls, creating it lazily."""
+    global _llm_executor
+    if _llm_executor is None:
+        with _llm_executor_lock:
+            if _llm_executor is None:
+                _llm_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=2, thread_name_prefix="llm-call"
+                )
+    return _llm_executor
+
+
+def shutdown_llm_executor() -> None:
+    """Shut down the shared LLM executor (for cleanup/testing)."""
+    global _llm_executor
+    with _llm_executor_lock:
+        if _llm_executor is not None:
+            _llm_executor.shutdown(wait=False)
+            _llm_executor = None
+
+
 # ── LLM circuit breaker ──────────────────────────────────────────────────────
 
 _llm_circuit: CircuitBreaker | None = None
@@ -63,10 +90,15 @@ def _sanitize_for_prompt(text: str) -> str:
 
 
 def _slugify(text: str) -> str:
+    original = text
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
     text = re.sub(r"[^\w\s-]", "", text.lower())
     text = re.sub(r"[-\s]+", "_", text).strip("_")
-    return text[:60]
+    slug = text[:60]
+    if not slug:
+        import hashlib
+        slug = "topic_" + hashlib.md5(original.encode()).hexdigest()[:8]
+    return slug
 
 
 # ── LLM calling ──────────────────────────────────────────────────────────────
@@ -84,11 +116,8 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
         raise RuntimeError("LLM backend is disabled")
 
     last_err: Exception | None = None
+    executor = _get_llm_executor()
     for attempt in range(max_retries):
-        # Don't use ThreadPoolExecutor as context manager — its __exit__ calls
-        # shutdown(wait=True), blocking until the thread finishes even after
-        # a timeout, which defeats the timeout's purpose.
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
             future = executor.submit(llm.generate, _LLM_SYSTEM_PROMPT, prompt)
             result = future.result(timeout=get_config().LLM_CALL_TIMEOUT)
@@ -102,8 +131,6 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
         except Exception as e:
             last_err = e
             logger.warning("LLM attempt %d/%d failed: %s", attempt + 1, max_retries, e)
-        finally:
-            executor.shutdown(wait=False)
         if attempt < max_retries - 1:
             time.sleep(2.0 * (attempt + 1))
 
@@ -273,62 +300,6 @@ Output this exact JSON structure:
 {{"title": "Short Descriptive Title", "summary": "Dense factual summary with key specifics.", "tags": ["tag1", "tag2"], "records": [{{"type": "fact", "subject": "...", "info": "..."}}, {{"type": "solution", "problem": "...", "fix": "...", "context": "..."}}, {{"type": "preference", "key": "...", "value": "...", "context": "..."}}, {{"type": "procedure", "trigger": "...", "steps": "...", "context": "..."}}]}}"""
 
 
-def _build_distillation_prompt(
-    cluster_episodes: list[dict],
-    confidence: float,
-    tag_summary: str,
-) -> str:
-    """Build the LLM prompt for distilling a cluster of episodes."""
-    episode_texts = []
-    for ep in cluster_episodes:
-        episode_texts.append(
-            f"<episode>\n[{ep['created_at']}] [{ep['content_type']}] {_sanitize_for_prompt(ep['content'])}\n</episode>"
-        )
-
-    return f"""Distill {len(cluster_episodes)} episodes into a reference document. This document will be retrieved months later to avoid re-learning the same information.
-
-STRICT RULES:
-- Extract ONLY information explicitly stated in the episodes. NEVER add advice, recommendations, or inferences not directly present in the source text.
-- Preserve specific details: file paths, version numbers, line numbers, command syntax, error messages. These are the most valuable parts. Vague summaries are worthless.
-- A "fact" is a static piece of information (what exists, what is configured, what version).
-- A "solution" is a problem->fix pair. Always state WHAT PROBLEM it solves, then the fix steps. If multiple distinct problems exist, use separate subsections.
-- A "preference" is an explicitly stated user choice or workflow habit. Do NOT invent preferences from facts.
-- A "procedure" is a repeated workflow or behavioral pattern showing HOW the user approaches a task. Extract procedures when episodes show the same sequence of steps being followed multiple times or the user describes their standard workflow. Do NOT invent procedures from one-off actions.
-- The summary must be a dense factual statement, not a description of the document. BAD: "Discusses VR setup." GOOD: "VR stack uses SteamVR with SpaceCalibrator for multi-tracker calibration and VRCFaceTracking for face tracking."
-- Omit any section (Facts, Solutions, Preferences, Procedures) that would be empty.
-- Do NOT wrap output in code fences. Output raw markdown only.
-
-Common tags: {tag_summary}
-
-Episodes:
-{chr(10).join(episode_texts)}
-
-Output format (raw markdown, no code fences):
-
----
-title: Short Descriptive Title
-summary: Dense factual summary with key specifics.
-tags: [tag1, tag2]
-confidence: {confidence}
----
-
-## Facts
-- Specific fact with concrete details preserved
-
-## Solutions
-### Problem Name
-1. Step with exact commands/paths
-2. Next step
-
-## Preferences
-- Explicitly stated user preference
-
-## Procedures
-### When/trigger for this workflow
-1. Step in the workflow
-2. Next step"""
-
-
 def _build_merge_extraction_prompt(
     existing_records: list[dict],
     new_records: list[dict],
@@ -385,6 +356,32 @@ def _build_contradiction_prompt(pairs: list[tuple[dict, dict]]) -> str:
     return "\n".join(lines)
 
 
+# ── Validation helpers ────────────────────────────────────────────────────────
+
+
+def _check_specifics_preservation(
+    source_episodes: list[dict], output_text: str, threshold: float = 0.3
+) -> str | None:
+    """Return a failure message if specifics preservation is below threshold, else None."""
+    source_specifics: set[str] = set()
+    for ep in source_episodes:
+        content = ep.get("content", "")
+        paths = re.findall(r"[A-Z]:\\[\w\\./\-]+|/[\w./\-]{5,}|~/[\w./\-]+", content)
+        source_specifics.update(paths[:5])
+        versions = re.findall(r"\d+\.\d+(?:\.\d+)+", content)
+        source_specifics.update(versions[:3])
+
+    if source_specifics:
+        preserved = sum(1 for s in source_specifics if s in output_text)
+        ratio = preserved / len(source_specifics)
+        if ratio < threshold:
+            return (
+                f"Low specifics preservation: {preserved}/{len(source_specifics)} "
+                f"key details from source episodes found in output"
+            )
+    return None
+
+
 # ── Validation ────────────────────────────────────────────────────────────────
 
 
@@ -432,24 +429,9 @@ def _validate_extraction_output(
             elif rtype == "procedure" and (not rec.get("trigger") or not rec.get("steps")):
                 failures.append(f"Record {i}: procedure missing trigger or steps")
 
-    # Check specifics preservation
-    source_specifics = set()
-    for ep in cluster_episodes:
-        content = ep.get("content", "")
-        paths = re.findall(r"[A-Z]:\\[\w\\./\-]+|/[\w./\-]{5,}|~/[\w./\-]+", content)
-        source_specifics.update(paths[:5])
-        versions = re.findall(r"\d+\.\d+(?:\.\d+)+", content)
-        source_specifics.update(versions[:3])
-
-    if source_specifics:
-        output_text = json.dumps(data)
-        preserved = sum(1 for s in source_specifics if s in output_text)
-        preservation_ratio = preserved / len(source_specifics)
-        if preservation_ratio < 0.3:
-            failures.append(
-                f"Low specifics preservation: {preserved}/{len(source_specifics)} "
-                f"key details from source episodes found in output"
-            )
+    specifics_failure = _check_specifics_preservation(cluster_episodes, json.dumps(data))
+    if specifics_failure:
+        failures.append(specifics_failure)
 
     return (len(failures) == 0, failures)
 
@@ -482,22 +464,9 @@ def _validate_llm_output(text: str, cluster_episodes: list[dict]) -> tuple[bool,
     if fact_count == 0:
         failures.append("No bullet points or numbered items found in body")
 
-    source_specifics = set()
-    for ep in cluster_episodes:
-        content = ep.get("content", "")
-        paths = re.findall(r"[A-Z]:\\[\w\\./\-]+|/[\w./\-]{5,}|~/[\w./\-]+", content)
-        source_specifics.update(paths[:5])
-        versions = re.findall(r"\d+\.\d+(?:\.\d+)+", content)
-        source_specifics.update(versions[:3])
-
-    if source_specifics:
-        preserved = sum(1 for s in source_specifics if s in text)
-        preservation_ratio = preserved / len(source_specifics)
-        if preservation_ratio < 0.3:
-            failures.append(
-                f"Low specifics preservation: {preserved}/{len(source_specifics)} "
-                f"key details from source episodes found in output"
-            )
+    specifics_failure = _check_specifics_preservation(cluster_episodes, text)
+    if specifics_failure:
+        failures.append(specifics_failure)
 
     return (len(failures) == 0, failures)
 

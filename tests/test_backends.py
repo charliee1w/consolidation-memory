@@ -86,25 +86,15 @@ class TestOllamaEmbeddingBackend:
         assert backend._api_base == "http://localhost:11434"
 
     def test_normalize(self):
-        from consolidation_memory.backends.ollama import OllamaEmbeddingBackend
-        backend = OllamaEmbeddingBackend(
-            api_base="http://localhost:11434",
-            model_name="test",
-            dimension=3,
-        )
+        from consolidation_memory.backends.base import normalize_l2
         vecs = np.array([[3.0, 4.0, 0.0]], dtype=np.float32)
-        result = backend._normalize(vecs)
+        result = normalize_l2(vecs)
         assert abs(np.linalg.norm(result[0]) - 1.0) < 1e-5
 
     def test_normalize_zero_vector(self):
-        from consolidation_memory.backends.ollama import OllamaEmbeddingBackend
-        backend = OllamaEmbeddingBackend(
-            api_base="http://localhost:11434",
-            model_name="test",
-            dimension=3,
-        )
+        from consolidation_memory.backends.base import normalize_l2
         vecs = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
-        result = backend._normalize(vecs)
+        result = normalize_l2(vecs)
         # Zero vector stays zero, no division by zero
         assert np.allclose(result[0], [0.0, 0.0, 0.0])
 
@@ -178,9 +168,9 @@ class TestOpenAIEmbeddingBackend:
             return mod.OpenAIEmbeddingBackend(**defaults), mock_openai_cls
 
     def test_normalize(self):
-        backend, _ = self._make_backend()
+        from consolidation_memory.backends.base import normalize_l2
         vecs = np.array([[3.0, 4.0, 0.0]], dtype=np.float32)
-        result = backend._normalize(vecs)
+        result = normalize_l2(vecs)
         assert abs(np.linalg.norm(result[0]) - 1.0) < 1e-5
 
     def test_with_api_base(self):

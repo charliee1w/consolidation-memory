@@ -8,6 +8,8 @@ import logging
 
 import numpy as np
 
+from consolidation_memory.backends.base import normalize_l2
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,25 +27,19 @@ class FastEmbedEmbeddingBackend:
         self._model_name = model_name
         self._dim: int | None = None
 
-    def _normalize(self, vecs: np.ndarray) -> np.ndarray:
-        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        normalized: np.ndarray = vecs / norms
-        return normalized
-
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         embeddings = list(self._model.embed(texts))
         vecs = np.array(embeddings, dtype=np.float32)
         if self._dim is None:
             self._dim = vecs.shape[1]
-        return self._normalize(vecs)
+        return normalize_l2(vecs)
 
     def encode_query(self, text: str) -> np.ndarray:
         embeddings = list(self._model.query_embed(text))
         vecs = np.array(embeddings, dtype=np.float32)
         if self._dim is None:
             self._dim = vecs.shape[1]
-        return self._normalize(vecs)
+        return normalize_l2(vecs)
 
     @property
     def dimension(self) -> int:

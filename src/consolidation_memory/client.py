@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 
 from consolidation_memory import __version__
@@ -69,6 +70,7 @@ class MemoryClient:
         self._consolidation_lock = threading.Lock()
         self._consolidation_stop = threading.Event()
         self._consolidation_thread: threading.Thread | None = None
+        self._consolidation_pool: ThreadPoolExecutor | None = None
 
         # Cached backend probe result: (is_reachable, timestamp)
         self._probe_cache: tuple[bool, float] | None = None
@@ -96,6 +98,9 @@ class MemoryClient:
                     "it will terminate when the process exits (daemon thread)."
                 )
             self._consolidation_thread = None
+        if self._consolidation_pool is not None:
+            self._consolidation_pool.shutdown(wait=False)
+            self._consolidation_pool = None
 
     def __enter__(self) -> MemoryClient:
         return self
@@ -590,8 +595,9 @@ class MemoryClient:
         """
         from consolidation_memory.config import get_config
         from consolidation_memory.database import get_all_knowledge_topics, upsert_knowledge_topic
-        from consolidation_memory.consolidation import (
-            _version_knowledge_file, _parse_frontmatter, _count_facts, _normalize_output,
+        from consolidation_memory.consolidation.engine import _version_knowledge_file
+        from consolidation_memory.consolidation.prompting import (
+            _parse_frontmatter, _count_facts, _normalize_output,
         )
         from consolidation_memory.backends import get_llm_backend
 
@@ -625,8 +631,6 @@ class MemoryClient:
             f"Do NOT wrap in code fences. Output raw markdown starting with --- frontmatter."
         )
 
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-
         try:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(llm.generate, system_prompt, user_prompt)
@@ -649,10 +653,9 @@ class MemoryClient:
             )
         parsed_check = _parse_frontmatter(corrected)
         if not parsed_check["meta"].get("title"):
-            logger.warning(
-                "LLM correction output missing frontmatter title for %s; "
-                "writing anyway but this may indicate a bad generation.",
-                topic_filename,
+            return CorrectResult(
+                status="error",
+                message="LLM output missing frontmatter structure; original document preserved.",
             )
 
         _version_knowledge_file(filepath)
@@ -852,7 +855,6 @@ class MemoryClient:
 
     def _consolidation_loop(self) -> None:
         """Background consolidation thread target."""
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
         from consolidation_memory.config import get_config
 
         cfg = get_config()
@@ -864,6 +866,13 @@ class MemoryClient:
             cfg.CONSOLIDATION_INTERVAL_HOURS, max_duration,
         )
 
+        # Use a single shared pool for consolidation runs instead of creating
+        # a new ThreadPoolExecutor on every cycle (prevents zombie threads on timeout).
+        if self._consolidation_pool is None:
+            self._consolidation_pool = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="consolidation"
+            )
+
         while not self._consolidation_stop.wait(timeout=interval):
             if self._consolidation_stop.is_set():
                 break
@@ -872,11 +881,9 @@ class MemoryClient:
                 continue
             try:
                 from consolidation_memory.consolidation import run_consolidation
-                # Don't use ThreadPoolExecutor as context manager — its __exit__
-                # calls shutdown(wait=True), blocking until the thread finishes
-                # even after a timeout, defeating the timeout's purpose.
-                pool = ThreadPoolExecutor(max_workers=1)
-                future = pool.submit(run_consolidation, vector_store=self._vector_store)
+                future = self._consolidation_pool.submit(
+                    run_consolidation, vector_store=self._vector_store
+                )
                 try:
                     result = future.result(timeout=max_duration)
                     logger.info(
@@ -889,8 +896,6 @@ class MemoryClient:
                         "releasing lock. The worker thread will be abandoned.",
                         max_duration,
                     )
-                finally:
-                    pool.shutdown(wait=False)
             except Exception:
                 logger.exception("Background consolidation failed")
             finally:

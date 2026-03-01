@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Callable, TypeVar
 
+import httpx
 import numpy as np
 
 from consolidation_memory.backends.base import EmbeddingBackend, LLMBackend
@@ -189,9 +190,15 @@ def reset_backends() -> None:
         _embedding_backend = None
         _llm_backend = None
         _embed_circuit = None
+    # Also reset the shared LLM executor to prevent thread leaks in tests
+    from consolidation_memory.consolidation.prompting import shutdown_llm_executor
+    shutdown_llm_executor()
 
 
 # ── Drop-in compatibility functions ──────────────────────────────────────────
+
+_TRANSIENT_EMBED = (ConnectionError, TimeoutError, OSError, httpx.HTTPError)
+
 
 def encode_documents(texts: list[str]) -> np.ndarray:
     """Encode texts for storage. Drop-in replacement for old embeddings.py."""
@@ -204,9 +211,10 @@ def encode_documents(texts: list[str]) -> np.ndarray:
     except ConnectionError:
         cb.record_failure()
         raise
-    except Exception as e:
+    except _TRANSIENT_EMBED as e:
         cb.record_failure()
         raise ConnectionError(str(e)) from e
+    # Let programming errors (ValueError, KeyError, etc.) propagate uncaught
 
 
 def encode_query(text: str) -> np.ndarray:
@@ -220,9 +228,10 @@ def encode_query(text: str) -> np.ndarray:
     except ConnectionError:
         cb.record_failure()
         raise
-    except Exception as e:
+    except _TRANSIENT_EMBED as e:
         cb.record_failure()
         raise ConnectionError(str(e)) from e
+    # Let programming errors (ValueError, KeyError, etc.) propagate uncaught
 
 
 def get_dimension() -> int:

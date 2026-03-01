@@ -285,7 +285,6 @@ def _merge_into_existing(
 
     contradictions = _detect_contradictions(new_for_detection, existing_db_records)
     contradicted_existing_ids = {ex_id for _, ex_id in contradictions}
-    contradicting_new_indices = {new_idx for new_idx, _ in contradictions}
 
     now_ts = datetime.now(timezone.utc).isoformat()
 
@@ -301,16 +300,22 @@ def _merge_into_existing(
     if non_contradicted_ids:
         soft_delete_records_by_ids(non_contradicted_ids)
 
-    # Build merged record rows, marking those that contradict with valid_from
+    # Build merged record rows.
+    # When contradictions were detected, mark ALL merged records with valid_from.
+    # Rationale: the LLM rewrites and deduplicates records during merge, so there
+    # is no reliable 1:1 mapping between new_records indices and merged_records.
+    # Marking all merged records timestamps when this version of the topic was
+    # established, which is the correct conservative approach for temporal tracking.
+    has_contradictions = len(contradicted_existing_ids) > 0
     record_rows = []
-    for i, rec in enumerate(merged_records):
+    for rec in merged_records:
         row = {
             "record_type": rec.get("type", "fact"),
             "content": rec,
             "embedding_text": _embedding_text_for_record(rec),
             "confidence": confidence,
         }
-        if contradicting_new_indices:
+        if has_contradictions:
             row["valid_from"] = now_ts
         record_rows.append(row)
     insert_knowledge_records(existing["id"], record_rows, source_episodes=cluster_ep_ids)
@@ -391,7 +396,7 @@ def _process_cluster(
     try:
         extraction_data, calls = _llm_extract_with_validation(prompt, cluster_episodes)
         api_calls += calls
-    except (Exception, ValueError) as e:
+    except Exception as e:
         logger.error(
             "LLM extraction failed for cluster %d: %s", cluster_id, e, exc_info=True
         )

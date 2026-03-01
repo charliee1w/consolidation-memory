@@ -249,3 +249,12 @@ class ProtectResult:
     status: Literal["protected", "not_found", "error"]
     protected_count: int = 0
     message: str = ""
+
+
+@dataclass
+class ContradictionResult:
+    """Result of querying the contradiction audit log."""
+
+    contradictions: list[dict[str, Any]] = field(default_factory=list)
+    total: int = 0
+    topic: str | None = None

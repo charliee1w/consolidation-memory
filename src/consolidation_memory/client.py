@@ -25,6 +25,7 @@ from consolidation_memory import __version__
 from consolidation_memory.types import (
     ContentType,
     ConsolidationReport,
+    ContradictionResult,
     HealthStatus,
     StoreResult,
     BatchStoreResult,
@@ -924,6 +925,40 @@ class MemoryClient:
             query=topic,
             entries=entries,
             total=len(entries),
+        )
+
+    def contradictions(self, topic: str | None = None) -> ContradictionResult:
+        """List contradictions from the audit log, optionally filtered by topic.
+
+        Args:
+            topic: Optional topic filename or title to filter by.
+
+        Returns:
+            ContradictionResult with logged contradictions.
+        """
+        from consolidation_memory.database import (
+            get_contradictions as db_get_contradictions,
+            get_all_knowledge_topics,
+        )
+
+        topic_id = None
+        if topic:
+            topics = get_all_knowledge_topics()
+            for t in topics:
+                if topic in (t["filename"], t["title"]):
+                    topic_id = t["id"]
+                    break
+            else:
+                # Topic specified but not found — return empty
+                return ContradictionResult(
+                    contradictions=[], total=0, topic=topic,
+                )
+
+        rows = db_get_contradictions(topic_id=topic_id)
+        return ContradictionResult(
+            contradictions=rows,
+            total=len(rows),
+            topic=topic,
         )
 
     def decay_report(self) -> DecayReportResult:

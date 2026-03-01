@@ -29,6 +29,7 @@ from consolidation_memory.database import (
     get_unconsolidated_episodes,
     increment_consolidation_attempts,
     insert_consolidation_metrics,
+    insert_contradiction,
     insert_knowledge_records,
     mark_consolidated,
     mark_pruned,
@@ -297,6 +298,30 @@ def _merge_into_existing(
     contradicted_existing_ids = {ex_id for _, ex_id in contradictions}
 
     now_ts = datetime.now(timezone.utc).isoformat()
+
+    # Log contradictions to audit log before expiring
+    existing_by_id = {r["id"]: r for r in existing_db_records}
+    for new_idx, ex_id in contradictions:
+        old_rec = existing_by_id.get(ex_id, {})
+        old_content = old_rec.get("content", "")
+        if isinstance(old_content, dict):
+            old_content = json.dumps(old_content)
+        new_content = json.dumps(new_for_detection[new_idx])
+        try:
+            insert_contradiction(
+                topic_id=existing["id"],
+                old_record_id=ex_id,
+                new_record_id=None,
+                old_content=old_content,
+                new_content=new_content,
+                resolution="expired_old",
+            )
+        except Exception as e:
+            logger.warning("Failed to log contradiction: %s", e)
+
+    # Reduce confidence by 10% when contradictions are detected
+    if contradicted_existing_ids:
+        confidence = confidence * 0.9
 
     # Expire contradicted records instead of soft-deleting them
     for ex_id in contradicted_existing_ids:

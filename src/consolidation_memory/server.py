@@ -330,6 +330,23 @@ async def memory_timeline(topic: str) -> str:
 
 
 @mcp.tool()
+async def memory_contradictions(topic: str | None = None) -> str:
+    """List detected contradictions from the audit log.
+
+    Shows cases where knowledge records contradicted each other during
+    consolidation, including both the old and new content and how it
+    was resolved. Use this to review belief changes over time.
+
+    Args:
+        topic: Optional topic filename or title to filter results.
+    """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
+    result = await asyncio.to_thread(_client.contradictions, topic)
+    return json.dumps(dataclasses.asdict(result), default=str)
+
+
+@mcp.tool()
 async def memory_browse() -> str:
     """Browse all knowledge topics with summaries and metadata.
 

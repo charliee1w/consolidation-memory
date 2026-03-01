@@ -23,7 +23,7 @@ _conn_list_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -77,6 +77,21 @@ MIGRATIONS: dict[int, list[str]] = {
     ],
     7: [
         "ALTER TABLE episodes ADD COLUMN protected INTEGER NOT NULL DEFAULT 0",
+    ],
+    8: [
+        """CREATE TABLE IF NOT EXISTS contradiction_log (
+            id              TEXT PRIMARY KEY,
+            topic_id        TEXT,
+            old_record_id   TEXT,
+            new_record_id   TEXT,
+            old_content     TEXT NOT NULL,
+            new_content     TEXT NOT NULL,
+            resolution      TEXT NOT NULL DEFAULT 'expired_old',
+            reason          TEXT,
+            detected_at     TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_contradiction_topic ON contradiction_log(topic_id)",
+        "CREATE INDEX IF NOT EXISTS idx_contradiction_detected ON contradiction_log(detected_at)",
     ],
 }
 
@@ -560,6 +575,63 @@ def expire_record(record_id: str, valid_until: str | None = None) -> bool:
             (ts, _now(), record_id),
         )
     return bool(cursor.rowcount and cursor.rowcount > 0)
+
+
+def insert_contradiction(
+    topic_id: str | None,
+    old_record_id: str,
+    new_record_id: str | None,
+    old_content: str,
+    new_content: str,
+    resolution: str = "expired_old",
+    reason: str | None = None,
+) -> str:
+    """Log a detected contradiction between knowledge records."""
+    contradiction_id = str(uuid.uuid4())
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO contradiction_log
+               (id, topic_id, old_record_id, new_record_id,
+                old_content, new_content, resolution, reason, detected_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (contradiction_id, topic_id, old_record_id, new_record_id,
+             old_content, new_content, resolution, reason, _now()),
+        )
+    return contradiction_id
+
+
+def get_contradictions(
+    topic_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Retrieve logged contradictions, optionally filtered by topic.
+
+    Args:
+        topic_id: If provided, filter to contradictions for this topic.
+        limit: Max results (default 50).
+
+    Returns:
+        List of contradiction dicts, newest first.
+    """
+    with get_connection() as conn:
+        if topic_id:
+            rows = conn.execute(
+                """SELECT cl.*, kt.title as topic_title, kt.filename as topic_filename
+                   FROM contradiction_log cl
+                   LEFT JOIN knowledge_topics kt ON cl.topic_id = kt.id
+                   WHERE cl.topic_id = ?
+                   ORDER BY cl.detected_at DESC LIMIT ?""",
+                (topic_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT cl.*, kt.title as topic_title, kt.filename as topic_filename
+                   FROM contradiction_log cl
+                   LEFT JOIN knowledge_topics kt ON cl.topic_id = kt.id
+                   ORDER BY cl.detected_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_all_active_records(include_expired: bool = False) -> list[dict[str, Any]]:

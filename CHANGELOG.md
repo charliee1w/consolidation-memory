@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.8.3 — 2026-02-28
+
+### Bug Fixes
+
+- **valid_from marking** — contradiction metadata was silently skipped due to checking set truthiness instead of contradiction count
+- **ThreadPoolExecutor leak** — LLM timeout retries created a new executor each attempt, leaking zombie threads; now uses a shared module-level pool
+- **correct() quality check bypass** — `correct()` overwrote knowledge files even when the LLM output failed frontmatter validation; now returns an error
+- **_slugify empty for non-ASCII** — pure CJK/emoji topic names produced an empty slug, causing file errors; falls back to hash-based slug
+- **compact() IVF downgrade** — compaction rebuilt the FAISS index as flat even when it was previously IVF; now re-upgrades after rebuild
+
+### Refactoring
+
+- Extract shared `normalize_l2` to `backends/base.py` (was duplicated in 4 backends)
+- LM Studio backend uses shared `retry_with_backoff` instead of hand-rolled retry
+- Extract `_check_specifics_preservation` helper (was duplicated in 2 validators)
+- Narrow exception catching in `encode_documents`/`encode_query` to transient errors only
+- Remove dead `_build_distillation_prompt` function
+- Clean up `consolidation/__init__.py` to only export `run_consolidation`
+
+### Docs
+
+- Add `test` and `dashboard` CLI commands to README
+- Fix config path in ARCHITECTURE.md (`consolidation-memory` → `consolidation_memory`)
+- Add default value comments to TOML config example
+- Add Changelog URL to pyproject.toml
+
+### Internal
+
+- 299 tests (up from 292)
+
 ## 0.8.2 — 2026-02-28
 
 ### Features

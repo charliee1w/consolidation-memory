@@ -276,6 +276,16 @@ def _merge_into_existing(
         increment_consolidation_attempts(cluster_ep_ids)
         return "failed", merge_calls
 
+    # Guard: reject merge if LLM drastically reduced record count
+    if len(existing_db_records) >= 4 and len(merged_records) < len(existing_db_records) * 0.5:
+        logger.error(
+            "LLM merge for %s dropped too many records (%d -> %d); "
+            "rejecting merge to prevent data loss.",
+            existing["filename"], len(existing_db_records), len(merged_records),
+        )
+        increment_consolidation_attempts(cluster_ep_ids)
+        return "failed", merge_calls
+
     # Detect contradictions between new extraction and existing records
     new_for_detection = []
     for rec in new_records:
@@ -362,11 +372,21 @@ def _process_cluster(
     """
     cfg = get_config()
     if len(cluster_items) > cfg.CONSOLIDATION_MAX_CLUSTER_SIZE:
-        cluster_items = sorted(
+        sorted_items = sorted(
             cluster_items,
             key=lambda item: item[0].get("surprise_score", 0.5),
             reverse=True,
-        )[:cfg.CONSOLIDATION_MAX_CLUSTER_SIZE]
+        )
+        kept = sorted_items[:cfg.CONSOLIDATION_MAX_CLUSTER_SIZE]
+        dropped = sorted_items[cfg.CONSOLIDATION_MAX_CLUSTER_SIZE:]
+        dropped_ids = [ep["id"] for ep, _ in dropped]
+        increment_consolidation_attempts(dropped_ids)
+        logger.warning(
+            "Cluster %d truncated from %d to %d episodes; %d dropped episodes "
+            "had consolidation_attempts incremented",
+            cluster_id, len(cluster_items), len(kept), len(dropped_ids),
+        )
+        cluster_items = kept
 
     cluster_episodes = [ep for ep, _ in cluster_items]
     cluster_indices = [idx for _, idx in cluster_items]

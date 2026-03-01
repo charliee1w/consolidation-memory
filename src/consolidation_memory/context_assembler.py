@@ -23,6 +23,11 @@ from consolidation_memory.vector_store import VectorStore
 from consolidation_memory import topic_cache
 from consolidation_memory import record_cache
 
+_TASK_INDICATORS: frozenset[str] = frozenset({
+    "how", "workflow", "steps", "process", "deploy", "build",
+    "test", "commit", "release", "setup", "configure", "run",
+})
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,7 +65,7 @@ def _recency_decay(created_at_iso: str, half_life_days: float | None = None) -> 
         age_days = (datetime.now(timezone.utc) - created).total_seconds() / 86400.0
         # Clamp to non-negative to prevent >1.0 scores from future-dated episodes
         age_days = max(0.0, age_days)
-        return math.exp(-age_days / half_life_days)
+        return math.exp(-age_days * math.log(2) / half_life_days)
     except Exception:
         return 0.5
 
@@ -287,9 +292,7 @@ def _search_records(
     query_words = set(query_lower.split())
 
     # Detect task-oriented queries that benefit from procedure records
-    _task_indicators = {"how", "workflow", "steps", "process", "deploy", "build",
-                        "test", "commit", "release", "setup", "configure", "run"}
-    _is_task_query = bool(query_words & _task_indicators)
+    _is_task_query = bool(query_words & _TASK_INDICATORS)
 
     scored_records = []
     for i, rec in enumerate(records):

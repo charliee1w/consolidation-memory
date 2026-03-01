@@ -77,13 +77,22 @@ _SANITIZE_RE = re.compile(
     r"(?i)(system\s*:?\s*prompt|you\s+are\b|you\s+must\b|ignore\s+(previous|above)"
     r"|forget\s+(your|all)|override|disregard"
     r"|important\s*:|new\s+instructions|assistant\s*:"
-    r"|\[system\]|<\/?system>)",
+    r"|\[system\]|<\/?system>"
+    r"|<\/?episode>|<\|im_start\|>|<\|im_end\|>"
+    r"|\[INST\]|<<SYS>>|Human\s*:|User\s*:|Assistant\s*:)",
 )
 
 
 def _sanitize_for_prompt(text: str) -> str:
-    """Strip common prompt injection patterns from episode content."""
-    return _SANITIZE_RE.sub("[REDACTED]", text)
+    """Strip common prompt injection patterns from episode content.
+
+    Also replaces angle brackets inside content with fullwidth equivalents
+    to prevent structural tag injection (the surrounding <episode> tags are
+    added by the prompt builder, not the content).
+    """
+    sanitized = _SANITIZE_RE.sub("[REDACTED]", text)
+    sanitized = sanitized.replace("<", "\uff1c").replace(">", "\uff1e")
+    return sanitized
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -124,6 +133,7 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
             cb.record_success()
             return result
         except concurrent.futures.TimeoutError:
+            future.cancel()
             last_err = TimeoutError(f"LLM call timed out after {get_config().LLM_CALL_TIMEOUT}s")
             logger.warning(
                 "LLM attempt %d/%d timed out after %.0fs", attempt + 1, max_retries, get_config().LLM_CALL_TIMEOUT
@@ -436,41 +446,6 @@ def _validate_extraction_output(
     return (len(failures) == 0, failures)
 
 
-def _validate_llm_output(text: str, cluster_episodes: list[dict]) -> tuple[bool, list[str]]:
-    failures = []
-    parsed = _parse_frontmatter(text)
-    meta = parsed["meta"]
-    body = parsed["body"]
-
-    if not meta.get("title"):
-        failures.append("Missing or empty title in frontmatter")
-    if not meta.get("summary"):
-        failures.append("Missing or empty summary in frontmatter")
-
-    summary = meta.get("summary", "")
-    vague_patterns = [
-        r"^(this document |discusses |describes |covers |details |provides )",
-        r"^(a document about|an overview of|information about)",
-    ]
-    for pattern in vague_patterns:
-        if re.match(pattern, summary.lower()):
-            failures.append(f"Summary is vague/meta-descriptive: '{summary[:80]}'")
-            break
-
-    if "##" not in body:
-        failures.append("No section headings (## Facts, ## Solutions, etc.) found in body")
-
-    fact_count = _count_facts(body)
-    if fact_count == 0:
-        failures.append("No bullet points or numbered items found in body")
-
-    specifics_failure = _check_specifics_preservation(cluster_episodes, text)
-    if specifics_failure:
-        failures.append(specifics_failure)
-
-    return (len(failures) == 0, failures)
-
-
 # ── LLM + validation orchestration ───────────────────────────────────────────
 
 
@@ -528,35 +503,6 @@ def _llm_extract_with_validation(
     return data, api_calls
 
 
-def _llm_with_validation(prompt: str, cluster_episodes: list[dict]) -> tuple[str, int]:
-    """Call LLM and validate output, retrying once on validation failure.
-
-    Returns:
-        Tuple of (response_text, api_call_count).
-    """
-    response_text = _normalize_output(_call_llm(prompt))
-    api_calls = 1
-
-    is_valid, failures = _validate_llm_output(response_text, cluster_episodes)
-    if not is_valid and get_config().LLM_VALIDATION_RETRY:
-        logger.warning("Output failed validation: %s. Retrying...", "; ".join(failures))
-        retry_addendum = (
-            "\n\nPREVIOUS ATTEMPT FAILED VALIDATION. Fix these issues:\n"
-            + "\n".join(f"- {f}" for f in failures)
-            + "\n\nOutput the corrected document:"
-        )
-        try:
-            response_text = _normalize_output(_call_llm(prompt + retry_addendum))
-            api_calls += 1
-            is_valid_2, failures_2 = _validate_llm_output(response_text, cluster_episodes)
-            if not is_valid_2:
-                logger.warning(
-                    "Retry still failed: %s. Using best-effort output.", "; ".join(failures_2)
-                )
-        except Exception as e:
-            logger.error("LLM retry failed: %s", e)
-
-    return response_text, api_calls
 
 
 # ── Markdown rendering ────────────────────────────────────────────────────────

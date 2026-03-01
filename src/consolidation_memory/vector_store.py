@@ -49,16 +49,30 @@ class VectorStore:
             self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
 
             if self._index.ntotal != len(self._id_map):
-                logger.error(
-                    "FAISS/id_map mismatch: %d vectors vs %d ids. Rebuilding empty index.",
-                    self._index.ntotal, len(self._id_map),
-                )
-                self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
-                self._id_map = []
-                self._uuid_to_pos = {}
-                self._tombstones = set()
-                self._save()
-                self._save_tombstones()
+                if len(self._id_map) > self._index.ntotal:
+                    # More IDs than vectors — likely a crash between id-map
+                    # and index renames. Truncate the id-map to match.
+                    logger.warning(
+                        "FAISS/id_map mismatch: %d vectors vs %d ids. "
+                        "Truncating id-map to match index (safe recovery).",
+                        self._index.ntotal, len(self._id_map),
+                    )
+                    self._id_map = self._id_map[:self._index.ntotal]
+                    self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
+                    self._save()
+                else:
+                    # Fewer IDs than vectors — data loss, rebuild empty.
+                    logger.error(
+                        "FAISS/id_map mismatch: %d vectors vs %d ids. "
+                        "Rebuilding empty index.",
+                        self._index.ntotal, len(self._id_map),
+                    )
+                    self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
+                    self._id_map = []
+                    self._uuid_to_pos = {}
+                    self._tombstones = set()
+                    self._save()
+                    self._save_tombstones()
             else:
                 logger.info("Loaded %d vectors", self._index.ntotal)
                 if (
@@ -102,11 +116,20 @@ class VectorStore:
         self._last_load_time = time.time()
 
     def _save(self) -> None:
-        """Atomic save: write to temp files, then rename over originals."""
+        """Atomic save: write to temp files, then rename over originals.
+
+        Rename order matters for crash safety: the id-map is renamed first
+        because it is the source of truth. If a crash occurs between the two
+        renames, the mismatch detector in ``_load_or_create`` will find more
+        IDs than vectors, which is recoverable (extra IDs are harmless —
+        they map to positions that don't exist and are skipped). The reverse
+        (fewer IDs than vectors) would silently lose mappings.
+        """
         cfg = get_config()
         parent = cfg.FAISS_INDEX_PATH.parent
         parent.mkdir(parents=True, exist_ok=True)
 
+        # Write both files to temp paths first, then rename in safe order.
         idx_fd, idx_tmp = tempfile.mkstemp(dir=str(parent), suffix=".faiss.tmp")
         os.close(idx_fd)
         try:
@@ -124,8 +147,9 @@ class VectorStore:
             os.unlink(map_tmp)
             raise
 
-        os.replace(idx_tmp, str(cfg.FAISS_INDEX_PATH))
+        # Rename id-map first (source of truth), then index.
         os.replace(map_tmp, str(cfg.FAISS_ID_MAP_PATH))
+        os.replace(idx_tmp, str(cfg.FAISS_INDEX_PATH))
 
     def _save_tombstones(self) -> None:
         """Atomic save of tombstone set."""
@@ -173,10 +197,9 @@ class VectorStore:
         )
 
         try:
-            # Extract all vectors from the flat index
-            vectors = np.zeros((n, dim), dtype=np.float32)
-            for i in range(n):
-                vectors[i] = self._index.reconstruct(i)
+            # Bulk extract all vectors from flat index via internal storage pointer.
+            # This is O(1) vs O(n) individual reconstruct() calls.
+            vectors = faiss.rev_swig_ptr(self._index.get_xb(), n * dim).reshape(n, dim).copy()
 
             # Create and train IVF index
             quantizer = faiss.IndexFlatIP(dim)
@@ -365,11 +388,19 @@ class VectorStore:
                 self._save_tombstones()
                 return removed
 
-            kept_vectors = np.zeros(
-                (len(keep_positions), cfg.EMBEDDING_DIMENSION), dtype=np.float32
-            )
-            for new_i, old_i in enumerate(keep_positions):
-                kept_vectors[new_i] = self._index.reconstruct(old_i)
+            if isinstance(self._index, faiss.IndexFlatIP):
+                # Bulk extract from flat index, then select kept positions
+                n = self._index.ntotal
+                dim = self._index.d
+                all_vectors = faiss.rev_swig_ptr(self._index.get_xb(), n * dim).reshape(n, dim)
+                kept_vectors = all_vectors[keep_positions].copy()
+            else:
+                # IVF index: reconstruct individually (no get_xb)
+                kept_vectors = np.zeros(
+                    (len(keep_positions), cfg.EMBEDDING_DIMENSION), dtype=np.float32
+                )
+                for new_i, old_i in enumerate(keep_positions):
+                    kept_vectors[new_i] = self._index.reconstruct(old_i)
 
             new_id_map = [self._id_map[i] for i in keep_positions]
             self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
@@ -406,9 +437,15 @@ class VectorStore:
                     positions.append(self._uuid_to_pos[uid])
             if not positions:
                 return None
-            vectors = np.zeros((len(positions), get_config().EMBEDDING_DIMENSION), dtype=np.float32)
-            for i, pos in enumerate(positions):
-                vectors[i] = self._index.reconstruct(pos)
+            if isinstance(self._index, faiss.IndexFlatIP):
+                n = self._index.ntotal
+                dim = self._index.d
+                all_vectors = faiss.rev_swig_ptr(self._index.get_xb(), n * dim).reshape(n, dim)
+                vectors = all_vectors[positions].copy()
+            else:
+                vectors = np.zeros((len(positions), get_config().EMBEDDING_DIMENSION), dtype=np.float32)
+                for i, pos in enumerate(positions):
+                    vectors[i] = self._index.reconstruct(pos)
             return found_ids, vectors
 
     @property

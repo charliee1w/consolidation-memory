@@ -63,6 +63,9 @@ def _find_config_path() -> Path | None:
         p = Path(env).expanduser().resolve()
         if p.exists():
             return p
+        raise FileNotFoundError(
+            f"Config file specified by CONSOLIDATION_MEMORY_CONFIG does not exist: {p}"
+        )
 
     platform_path = Path(user_config_dir(APP_NAME)) / "config.toml"
     if platform_path.exists():
@@ -228,6 +231,22 @@ class Config:
     CIRCUIT_BREAKER_THRESHOLD: int = 3
     CIRCUIT_BREAKER_COOLDOWN: float = 60.0
 
+    _REDACT_FIELDS: frozenset[str] = field(
+        default=frozenset({"EMBEDDING_API_KEY", "LLM_API_KEY"}), repr=False,
+    )
+
+    def __repr__(self) -> str:
+        import dataclasses as _dc
+        parts = []
+        for f in _dc.fields(self):
+            if not f.repr:
+                continue
+            val = getattr(self, f.name)
+            if f.name in self._REDACT_FIELDS and val:
+                val = "***"
+            parts.append(f"{f.name}={val!r}")
+        return f"Config({', '.join(parts)})"
+
     def _recompute_paths(self) -> None:
         """Recalculate all derived paths from _base_data_dir + active_project."""
         self.DATA_DIR = self._base_data_dir / "projects" / self.active_project
@@ -315,6 +334,7 @@ def _build_config(
     _recall = cfg.get("recall", {})
     _retrieval = cfg.get("retrieval", {})
     _cb = cfg.get("circuit_breaker", {})
+    _storage = cfg.get("storage", {})
 
     # Base data dir
     _data_dir_str = _paths.get("data_dir", "")
@@ -347,6 +367,8 @@ def _build_config(
         EMBEDDING_API_BASE=_embed.get("api_base", "http://127.0.0.1:1234/v1"),
         EMBEDDING_API_KEY=_embed.get("api_key", ""),
         # FAISS
+        FAISS_SIZE_WARNING_THRESHOLD=int(_faiss.get("size_warning_threshold", 10_000)),
+        FAISS_COMPACTION_THRESHOLD=float(_faiss.get("compaction_threshold", 0.2)),
         FAISS_SEARCH_FETCH_K_PADDING=int(_faiss.get("search_fetch_k_padding", 0)),
         FAISS_IVF_UPGRADE_THRESHOLD=int(_faiss.get("ivf_upgrade_threshold", 10_000)),
         # LLM
@@ -377,6 +399,11 @@ def _build_config(
         CONTRADICTION_SIMILARITY_THRESHOLD=float(_consol.get("contradiction_similarity_threshold", 0.7)),
         CONTRADICTION_LLM_ENABLED=bool(_consol.get("contradiction_llm_enabled", True)),
         CONSOLIDATION_STOPWORDS=stopwords,
+        CONSOLIDATION_PRIORITY_WEIGHTS=_consol.get(
+            "priority_weights",
+            {"surprise": 0.4, "recency": 0.35, "access_frequency": 0.25},
+        ),
+        KNOWLEDGE_MAX_VERSIONS=int(_consol.get("knowledge_max_versions", 5)),
         RENDER_MARKDOWN=bool(_consol.get("render_markdown", True)),
         # Dedup
         DEDUP_SIMILARITY_THRESHOLD=float(_dedup.get("similarity_threshold", 0.95)),
@@ -387,6 +414,8 @@ def _build_config(
         SURPRISE_DECAY_RATE=float(_scoring.get("surprise_decay_rate", 0.05)),
         SURPRISE_MIN=float(_scoring.get("surprise_min", 0.1)),
         SURPRISE_MAX=float(_scoring.get("surprise_max", 1.0)),
+        # Storage
+        MAX_BACKUPS=int(_storage.get("max_backups", 5)),
         # Recall
         RECALL_DEFAULT_N=int(_recall.get("default_n", 10)),
         RECALL_MAX_N=int(_recall.get("max_n", 50)),
@@ -491,12 +520,14 @@ class override_config:
         for k, v in self._overrides.items():
             self._originals[k] = getattr(cfg, k)
             object.__setattr__(cfg, k, v)
+        cfg._recompute_paths()
         return cfg
 
     def __exit__(self, *exc: object) -> None:
         cfg = get_config()
         for k, v in self._originals.items():
             object.__setattr__(cfg, k, v)
+        cfg._recompute_paths()
 
 
 # ── Project switching ────────────────────────────────────────────────────────
@@ -619,6 +650,26 @@ def _validate_config(c: Config) -> None:
             f"dedup.similarity_threshold = {c.DEDUP_SIMILARITY_THRESHOLD}, "
             f"must be in (0, 1]"
         )
+
+    if c.CONSOLIDATION_INTERVAL_HOURS <= 0:
+        errors.append(f"consolidation.interval_hours = {c.CONSOLIDATION_INTERVAL_HOURS}, must be > 0")
+    if c.CONSOLIDATION_MAX_DURATION <= 0:
+        errors.append(f"consolidation.max_duration = {c.CONSOLIDATION_MAX_DURATION}, must be > 0")
+    if c.LLM_CALL_TIMEOUT <= 0:
+        errors.append(f"llm.call_timeout = {c.LLM_CALL_TIMEOUT}, must be > 0")
+    if c.CONSOLIDATION_MIN_CLUSTER_SIZE < 2:
+        errors.append(f"consolidation.min_cluster_size = {c.CONSOLIDATION_MIN_CLUSTER_SIZE}, must be >= 2")
+    if c.CONSOLIDATION_MAX_CLUSTER_SIZE < c.CONSOLIDATION_MIN_CLUSTER_SIZE:
+        errors.append(
+            f"consolidation.max_cluster_size = {c.CONSOLIDATION_MAX_CLUSTER_SIZE}, "
+            f"must be >= min_cluster_size ({c.CONSOLIDATION_MIN_CLUSTER_SIZE})"
+        )
+    if c.SURPRISE_MIN >= c.SURPRISE_MAX:
+        errors.append(
+            f"surprise_min = {c.SURPRISE_MIN} must be < surprise_max = {c.SURPRISE_MAX}"
+        )
+    if c.CIRCUIT_BREAKER_THRESHOLD < 1:
+        errors.append(f"circuit_breaker.threshold = {c.CIRCUIT_BREAKER_THRESHOLD}, must be >= 1")
 
     if errors:
         raise ValueError(

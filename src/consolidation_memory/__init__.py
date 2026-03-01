@@ -21,6 +21,9 @@ _LAZY_IMPORTS = {
     "KnowledgeBaseStats": "consolidation_memory.types",
     "HealthStatus": "consolidation_memory.types",
     "StatsDict": "consolidation_memory.types",
+    "CompactResult": "consolidation_memory.types",
+    "ContentType": "consolidation_memory.types",
+    "RecordType": "consolidation_memory.types",
 }
 
 __all__ = ["__version__", *_LAZY_IMPORTS]

@@ -47,6 +47,7 @@ class TestConcurrentStore:
             t.start()
         for t in threads:
             t.join(timeout=10)
+            assert not t.is_alive(), f"Thread {t.name} still alive (possible deadlock)"
 
         assert not errors, f"Store errors: {errors}"
         stats = get_stats()
@@ -86,6 +87,7 @@ class TestConcurrentRecall:
             t.start()
         for t in threads:
             t.join(timeout=10)
+            assert not t.is_alive(), f"Thread {t.name} still alive (possible deadlock)"
 
         assert not errors, f"Recall errors: {errors}"
         client.close()
@@ -137,6 +139,7 @@ class TestStoreDuringRecall:
             t.start()
         for t in threads:
             t.join(timeout=15)
+            assert not t.is_alive(), f"Thread {t.name} still alive (possible deadlock)"
 
         assert not errors, f"Errors: {errors}"
         client.close()

@@ -153,6 +153,24 @@ class TestSearchDB:
         results = search_episodes(content_types=["solution"])
         assert all(r["content_type"] == "solution" for r in results)
 
+    def test_search_episodes_tag_filter_returns_full_limit(self, client):
+        """Tag filtering should not reduce result count below limit.
+
+        Regression test: previously, SQL LIMIT was applied before Python
+        tag filtering, so requesting limit=10 with tags could return fewer
+        results than available.
+        """
+        # Store 10 episodes with tag "a" and 10 with tag "b"
+        for i in range(10):
+            client.store(f"episode a{i}", content_type="fact", tags=["a"])
+        for i in range(10):
+            client.store(f"episode b{i}", content_type="fact", tags=["b"])
+        results = search_episodes(tags=["a"], limit=10)
+        assert len(results) == 10
+        for r in results:
+            ep_tags = json.loads(r["tags"]) if isinstance(r["tags"], str) else r["tags"]
+            assert "a" in ep_tags
+
 
 # ── Forget ───────────────────────────────────────────────────────────────────
 

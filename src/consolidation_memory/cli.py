@@ -499,16 +499,23 @@ def cmd_import(path: str):
     ensure_schema()
     vs = VectorStore()
 
-    # Import episodes
+    # Import episodes — collect new ones first, then batch-embed
     imported = 0
     skipped = 0
+    new_episodes: list[dict] = []
     for ep in data.get("episodes", []):
         existing = get_episode(ep["id"])
         if existing:
             skipped += 1
             continue
 
-        tags = json.loads(ep["tags"]) if isinstance(ep["tags"], str) else ep["tags"]
+        raw_tags = ep.get("tags")
+        if raw_tags is None:
+            tags = []
+        elif isinstance(raw_tags, str):
+            tags = json.loads(raw_tags)
+        else:
+            tags = raw_tags
         episode_id = insert_episode(
             content=ep["content"],
             content_type=ep.get("content_type", "exchange"),
@@ -516,15 +523,20 @@ def cmd_import(path: str):
             surprise_score=ep.get("surprise_score", 0.5),
             episode_id=ep["id"],
         )
-
-        # Re-embed with current backend
-        try:
-            embedding = encode_documents([ep["content"]])
-            vs.add(episode_id, embedding[0])
-        except Exception as e:
-            print(f"  Warning: Failed to embed episode {episode_id}: {e}")
-
+        new_episodes.append({"id": episode_id, "content": ep["content"]})
         imported += 1
+
+    # Batch-embed in chunks of 50
+    BATCH_SIZE = 50
+    for i in range(0, len(new_episodes), BATCH_SIZE):
+        batch = new_episodes[i : i + BATCH_SIZE]
+        texts = [ep["content"] for ep in batch]
+        try:
+            embeddings = encode_documents(texts)
+            for ep, emb in zip(batch, embeddings):
+                vs.add(ep["id"], emb)
+        except Exception as e:
+            print(f"  Warning: Failed to embed episode batch {i}-{i + len(batch)}: {e}")
 
     print(f"\nEpisodes: {imported} imported, {skipped} skipped (already exist)")
 

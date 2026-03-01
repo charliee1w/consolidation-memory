@@ -174,10 +174,6 @@ class TestProjectIsolation:
             result = client_b.recall("secret alpha fact", n_results=10)
             assert len(result.episodes) == 0
 
-        # Clean up: switch back to default
-        database.close_all_connections()
-        config.set_active_project("default")
-
     @patch("consolidation_memory.backends.encode_documents")
     @patch("consolidation_memory.backends.encode_query")
     def test_store_in_a_visible_in_a(self, mock_query, mock_embed, tmp_data_dir):
@@ -200,10 +196,6 @@ class TestProjectIsolation:
             assert len(result.episodes) > 0
             assert "visible alpha fact" in result.episodes[0]["content"]
 
-        # Clean up
-        database.close_all_connections()
-        config.set_active_project("default")
-
     @patch("consolidation_memory.backends.encode_documents")
     def test_default_project_works(self, mock_embed, tmp_data_dir):
         from consolidation_memory.client import MemoryClient
@@ -216,10 +208,6 @@ class TestProjectIsolation:
         with MemoryClient(auto_consolidate=False) as client:
             store_result = client.store("default project fact", content_type="fact")
             assert store_result.status == "stored"
-
-        # Clean up
-        database.close_all_connections()
-        config.set_active_project("default")
 
 
 # ── Migration from flat layout ──────────────────────────────────────────────

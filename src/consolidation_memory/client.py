@@ -257,6 +257,8 @@ class MemoryClient:
         # Collect non-duplicate items for a single FAISS batch add
         pending_ids: list[str] = []
         pending_embs: list[np.ndarray] = []
+        # Track accepted embeddings within this batch for intra-batch dedup
+        accepted_embs: list[np.ndarray] = []
 
         for i, item in enumerate(items):
             emb = embeddings[i]
@@ -282,6 +284,20 @@ class MemoryClient:
                 if is_dup:
                     continue
 
+            # Intra-batch dedup: check against already-accepted items in this batch
+            if cfg.DEDUP_ENABLED and accepted_embs:
+                emb_norm = emb.reshape(1, -1).astype(np.float32)
+                batch_matrix = np.stack(accepted_embs)
+                sims = (emb_norm @ batch_matrix.T).flatten()
+                if float(sims.max()) >= cfg.DEDUP_SIMILARITY_THRESHOLD:
+                    duplicates += 1
+                    results.append({
+                        "status": "duplicate_detected",
+                        "existing_id": pending_ids[int(sims.argmax())],
+                        "similarity": round(float(sims.max()), 4),
+                    })
+                    continue
+
             episode_id = insert_episode(
                 content=item["content"],
                 content_type=item["content_type"],
@@ -291,6 +307,7 @@ class MemoryClient:
 
             pending_ids.append(episode_id)
             pending_embs.append(emb)
+            accepted_embs.append(emb.reshape(-1).astype(np.float32))
             stored += 1
             results.append({
                 "status": "stored",

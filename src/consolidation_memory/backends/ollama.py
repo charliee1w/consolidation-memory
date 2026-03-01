@@ -27,22 +27,18 @@ class OllamaEmbeddingBackend:
         self._model_name = model_name
         self._dim = dimension
 
-    def _embed_single(self, text: str) -> list[float]:
-        response = httpx.post(
-            f"{self._api_base}/api/embed",
-            json={"model": self._model_name, "input": text},
-            timeout=30.0,
-        )
-        response.raise_for_status()
-        data = response.json()
-        result: list[float] = data["embeddings"][0]
-        return result
+    @property
+    def _is_nomic(self) -> bool:
+        return "nomic" in self._model_name.lower()
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
+        # nomic models require task-specific prefixes for best quality
+        prefixed = [f"search_document: {t}" for t in texts] if self._is_nomic else texts
+
         def _do():
             response = httpx.post(
                 f"{self._api_base}/api/embed",
-                json={"model": self._model_name, "input": texts},
+                json={"model": self._model_name, "input": prefixed},
                 timeout=60.0,
             )
             response.raise_for_status()
@@ -57,7 +53,8 @@ class OllamaEmbeddingBackend:
         return normalize_l2(vecs)
 
     def encode_query(self, text: str) -> np.ndarray:
-        return self.encode_documents([text])
+        prefixed = f"search_query: {text}" if self._is_nomic else text
+        return self.encode_documents([prefixed])
 
     @property
     def dimension(self) -> int:

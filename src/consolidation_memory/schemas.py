@@ -317,6 +317,39 @@ MEMORY_SEARCH_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_COMPACT_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_compact",
+        "description": (
+            "Compact the FAISS index by removing tombstoned vectors. "
+            "Call when memory_status shows high tombstone count or ratio."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
+MEMORY_CONSOLIDATE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_consolidate",
+        "description": (
+            "Manually trigger a consolidation run. "
+            "Clusters unconsolidated episodes, synthesizes knowledge, "
+            "prunes old episodes, and compacts FAISS. Can take several minutes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
 # Convenience list of all tool schemas
 openai_tools: list[dict[str, Any]] = [
     MEMORY_STORE_SCHEMA,
@@ -327,6 +360,8 @@ openai_tools: list[dict[str, Any]] = [
     MEMORY_FORGET_SCHEMA,
     MEMORY_EXPORT_SCHEMA,
     MEMORY_CORRECT_SCHEMA,
+    MEMORY_COMPACT_SCHEMA,
+    MEMORY_CONSOLIDATE_SCHEMA,
 ]
 
 
@@ -414,6 +449,14 @@ def dispatch_tool_call(
             correction=arguments["correction"],
         )
         return dataclasses.asdict(correct_result)
+
+    elif name == "memory_compact":
+        compact_result = client.compact()
+        return dataclasses.asdict(compact_result)
+
+    elif name == "memory_consolidate":
+        consolidate_result = client.consolidate()
+        return dict(consolidate_result)
 
     else:
         raise ValueError(f"Unknown tool: {name}")

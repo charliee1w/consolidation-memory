@@ -22,6 +22,8 @@ class TestSchemaStructure:
             "memory_forget",
             "memory_export",
             "memory_correct",
+            "memory_compact",
+            "memory_consolidate",
         }
 
     def test_schemas_have_required_fields(self):

@@ -32,6 +32,11 @@ def tmp_data_dir(tmp_path):
     from consolidation_memory.backends import reset_backends
     reset_backends()
 
+    # Reset module-level caches so state doesn't leak between tests
+    from consolidation_memory import topic_cache, record_cache
+    topic_cache.invalidate()
+    record_cache.invalidate()
+
     yield tmp_path
 
     # Close ALL connections (including those from spawned threads)

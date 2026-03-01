@@ -4,16 +4,16 @@ Embedding: Uses nomic-embed-text-v1.5 with task-specific prefixes.
 LLM: Uses chat completions for consolidation summarization.
 """
 
-import json
 import logging
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 
+import httpx
 import numpy as np
 
 from consolidation_memory.backends.base import normalize_l2
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT = (httpx.HTTPError, httpx.TimeoutException, ConnectionError, TimeoutError, OSError)
 
 
 class LMStudioEmbeddingBackend:
@@ -28,18 +28,19 @@ class LMStudioEmbeddingBackend:
     def _embed(self, texts: list[str]) -> np.ndarray:
         from consolidation_memory.backends import retry_with_backoff
 
-        payload = json.dumps({"input": texts, "model": self._model_name}).encode()
-        req = Request(self._embed_url, data=payload, headers={"Content-Type": "application/json"})
-
         def _do() -> list[dict]:  # type: ignore[type-arg]
-            with urlopen(req, timeout=30) as resp:
-                body = json.loads(resp.read())
-            result: list[dict] = body["data"]  # type: ignore[type-arg]
+            response = httpx.post(
+                self._embed_url,
+                json={"input": texts, "model": self._model_name},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            result: list[dict] = response.json()["data"]  # type: ignore[type-arg]
             return result
 
         data = retry_with_backoff(
             _do,
-            transient_exceptions=(URLError, ConnectionError, TimeoutError, OSError),
+            transient_exceptions=_TRANSIENT,
             context="LM Studio embedding",
         )
         data.sort(key=lambda x: x["index"])
@@ -77,7 +78,6 @@ class LMStudioLLMBackend:
         self._min_p = min_p
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
-        import httpx
         from consolidation_memory.backends import retry_with_backoff
 
         def _do() -> str:
@@ -92,7 +92,6 @@ class LMStudioLLMBackend:
                     "max_tokens": self._max_tokens,
                     "temperature": self._temperature,
                     "min_p": self._min_p,
-                    "stop": ["<|im_end|>"],
                 },
                 timeout=120.0,
             )
@@ -101,7 +100,7 @@ class LMStudioLLMBackend:
 
         result: str = retry_with_backoff(
             _do,
-            transient_exceptions=(httpx.HTTPError, httpx.TimeoutException, ConnectionError, TimeoutError, OSError),
+            transient_exceptions=_TRANSIENT,
             context="LM Studio LLM",
         )
         return result

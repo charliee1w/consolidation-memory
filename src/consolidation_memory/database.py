@@ -888,8 +888,11 @@ def search_episodes(
         params.append(before)
 
     where = " AND ".join(conditions)
+    # Over-fetch when tag filtering is needed, since tags are stored as JSON
+    # and filtered in Python after the SQL query.
+    fetch_limit = limit * 5 if tags else limit
     sql = f"SELECT * FROM episodes WHERE {where} ORDER BY created_at DESC LIMIT ?"
-    params.append(limit)
+    params.append(fetch_limit)
 
     with get_connection() as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -903,6 +906,8 @@ def search_episodes(
             if not set(tags).intersection(ep_tags):
                 continue
         results.append(ep)
+        if len(results) >= limit:
+            break
 
     return results
 

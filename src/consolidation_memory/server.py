@@ -4,6 +4,7 @@ Thin wrapper over MemoryClient — exposes memory tools to Claude Desktop
 via stdio transport.  All business logic lives in client.py.
 """
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -77,7 +78,9 @@ async def memory_store(
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.store(content, content_type, tags, surprise)
+    if len(content) > 50_000:
+        return json.dumps({"error": "Content exceeds maximum length of 50KB"})
+    result = await asyncio.to_thread(_client.store, content, content_type, tags, surprise)
     return json.dumps(dataclasses.asdict(result), default=str)
 
 
@@ -111,10 +114,13 @@ async def memory_recall(
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.recall(
-        query, n_results, include_knowledge,
-        content_types=content_types, tags=tags, after=after, before=before,
-        include_expired=include_expired,
+    n_results = min(n_results, 50)
+    result = await asyncio.to_thread(
+        lambda: _client.recall(
+            query, n_results, include_knowledge,
+            content_types=content_types, tags=tags, after=after, before=before,
+            include_expired=include_expired,
+        )
     )
     return json.dumps(dataclasses.asdict(result), default=str)
 
@@ -137,7 +143,7 @@ async def memory_store_batch(
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.store_batch(episodes)
+    result = await asyncio.to_thread(_client.store_batch, episodes)
     return json.dumps(dataclasses.asdict(result), default=str)
 
 
@@ -166,13 +172,15 @@ async def memory_search(
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.search(
-        query=query,
-        content_types=content_types,
-        tags=tags,
-        after=after,
-        before=before,
-        limit=min(limit, 50),
+    result = await asyncio.to_thread(
+        lambda: _client.search(
+            query=query,
+            content_types=content_types,
+            tags=tags,
+            after=after,
+            before=before,
+            limit=min(limit, 50),
+        )
     )
     return json.dumps(dataclasses.asdict(result), default=str)
 
@@ -185,7 +193,7 @@ async def memory_status() -> str:
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.status()
+    result = await asyncio.to_thread(_client.status)
     return json.dumps(dataclasses.asdict(result), default=str)
 
 
@@ -201,7 +209,7 @@ async def memory_forget(episode_id: str) -> str:
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.forget(episode_id)
+    result = await asyncio.to_thread(_client.forget, episode_id)
     return json.dumps(dataclasses.asdict(result), default=str)
 
 
@@ -215,7 +223,7 @@ async def memory_export() -> str:
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.export()
+    result = await asyncio.to_thread(_client.export)
     return json.dumps(dataclasses.asdict(result), default=str)
 
 
@@ -232,7 +240,7 @@ async def memory_correct(topic_filename: str, correction: str) -> str:
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.correct(topic_filename, correction)
+    result = await asyncio.to_thread(_client.correct, topic_filename, correction)
     return json.dumps(dataclasses.asdict(result), default=str)
 
 
@@ -246,7 +254,7 @@ async def memory_compact() -> str:
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.compact()
+    result = await asyncio.to_thread(_client.compact)
     return json.dumps(dataclasses.asdict(result), default=str)
 
 
@@ -262,7 +270,7 @@ async def memory_consolidate() -> str:
     """
     if _client is None:
         return json.dumps({"error": "Memory system not initialized"})
-    result = _client.consolidate()
+    result = await asyncio.to_thread(_client.consolidate)
     if result.get("status") == "already_running":
         return json.dumps({"status": "already_running", "message": "A consolidation run is already in progress"})
     return json.dumps({"status": "completed", "report": result}, default=str)

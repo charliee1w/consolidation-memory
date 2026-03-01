@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.9.0 — 2026-02-28
+
+Comprehensive code review: 30 fixes across correctness, security, performance, and code quality.
+
+### Critical Fixes
+
+- **Non-atomic two-file save** — reversed rename order in vector_store so id-map (source of truth) is written first; added graceful recovery on mismatch
+- **Half-life formula** — `_recency_decay` now uses correct `exp(-age * ln2 / half_life)` instead of `exp(-age / half_life)`
+- **Tag filter after SQL LIMIT** — over-fetch 5x when tags specified so post-filter doesn't silently truncate results
+
+### Bug Fixes
+
+- **Surprise boost cumulative** — switched from additive to absolute-max approach so repeated access doesn't inflate indefinitely
+- **5 config fields not loaded from TOML** — `FAISS_SIZE_WARNING_THRESHOLD`, `FAISS_COMPACTION_THRESHOLD`, `CONSOLIDATION_PRIORITY_WEIGHTS`, `KNOWLEDGE_MAX_VERSIONS`, `MAX_BACKUPS`
+- **Truncated cluster episodes silently abandoned** — dropped episodes now get consolidation_attempts incremented
+- **No guard against LLM dropping records during merge** — reject merge if merged records < 50% of existing (when >= 4 exist)
+- **store_batch intra-batch duplicates** — compare new embeddings against already-accepted batch entries via dot product
+- **openai_backend generate() None** — raise ValueError instead of returning None
+- **cmd_import crashes on None tags** — handle `None` tags gracefully
+- **memory_compact/consolidate missing from OpenAI schemas** — added schemas and dispatch handlers
+- **override_config doesn't recompute paths** — call `_recompute_paths()` on enter and exit
+- **Silent fallthrough for missing config file** — raise FileNotFoundError when env var points to nonexistent file
+
+### Security & Robustness
+
+- **Prompt injection sanitization** — extended patterns with `<episode>`, `<|im_start|>`, `[INST]`, `<<SYS>>`, `Human:`, `Assistant:`, plus fullwidth char replacement
+- **API keys visible in __repr__** — custom `__repr__` redacts `EMBEDDING_API_KEY` and `LLM_API_KEY`
+- **Async tools calling blocking I/O** — all MCP tool functions now use `asyncio.to_thread()`
+- **Timed-out LLM futures never cancelled** — added `future.cancel()` after TimeoutError
+- **Ollama nomic query/document prefixes** — nomic models get correct `search_document:`/`search_query:` prefixes
+
+### Performance
+
+- **FAISS bulk vector extraction** — replaced Python-loop `reconstruct()` with `faiss.rev_swig_ptr()` for IndexFlatIP
+- **record_cache dual slots** — two cache slots (all/unexpired) so `include_expired=True` doesn't bypass cache
+- **cmd_import batch embed** — embed in batches of 50 instead of one-by-one
+
+### Code Quality
+
+- Remove dead code: `_embed_single` (ollama), `_validate_llm_output`/`_llm_with_validation` (prompting)
+- Literal types for all status fields, Optional for StatusResult fields
+- Export `CompactResult`, `ContentType`, `RecordType` from package
+- LM Studio embedding backend switched from urllib to httpx
+- Remove hardcoded `<|im_end|>` stop token from LM Studio LLM
+- Add `n_results` clamping (max 50) and content length validation (max 50KB) in MCP server
+- Move `_task_indicators` to module-level frozenset
+- 7 new config validations (interval, duration, timeout, cluster sizes, surprise range, circuit breaker)
+
+### Tests
+
+- New `test_circuit_breaker.py` — 14 tests covering all state transitions and thread safety
+- New `test_context_assembler.py` — 11 tests for recency decay, priority scoring, task indicators
+- Thread alive assertions in all concurrency tests
+- Reset topic_cache and record_cache in conftest autouse fixture
+- 320 tests (up from 299)
+
+### CI
+
+- Add Python 3.12 to test matrix
+- Add pytest-cov with XML coverage report
+- Add pip caching via actions/cache
+
 ## 0.8.3 — 2026-02-28
 
 ### Bug Fixes

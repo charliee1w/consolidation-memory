@@ -103,7 +103,10 @@ class OpenAILLMBackend:
                 max_tokens=self._max_tokens,
                 temperature=self._temperature,
             )
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
+            if content is None:
+                raise ValueError("LLM returned empty response (message.content is None)")
+            return content
 
         result: str = retry_with_backoff(
             _do, transient_exceptions=transient, context="OpenAI LLM",

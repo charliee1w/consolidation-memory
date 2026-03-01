@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 
 class ContentType(str, Enum):
@@ -58,7 +58,7 @@ class StatsDict(TypedDict):
 
 class HealthStatus(TypedDict):
     """Health assessment of the memory system."""
-    status: str  # "healthy" | "degraded" | "error"
+    status: str  # "healthy" | "degraded" | "error" — dynamically computed
     issues: list[str]
     backend_reachable: bool
 
@@ -106,7 +106,7 @@ class ConsolidationReport(TypedDict, total=False):
 class StoreResult:
     """Result of a memory store operation."""
 
-    status: str  # "stored" | "duplicate_detected"
+    status: Literal["stored", "duplicate_detected", "backend_unavailable"]
     id: str | None = None
     content_type: str | None = None
     tags: list[str] = field(default_factory=list)
@@ -132,7 +132,7 @@ class RecallResult:
 class ForgetResult:
     """Result of a memory forget operation."""
 
-    status: str  # "forgotten" | "not_found"
+    status: Literal["forgotten", "not_found"]
     id: str = ""
 
 
@@ -140,8 +140,8 @@ class ForgetResult:
 class StatusResult:
     """Result of a memory status query."""
 
-    episodic_buffer: EpisodicBufferStats | dict[str, Any] = field(default_factory=dict)
-    knowledge_base: KnowledgeBaseStats | dict[str, Any] = field(default_factory=dict)
+    episodic_buffer: EpisodicBufferStats | None = None
+    knowledge_base: KnowledgeBaseStats | None = None
     last_consolidation: dict[str, Any] | None = None
     embedding_backend: str = ""
     embedding_model: str = ""
@@ -149,16 +149,16 @@ class StatusResult:
     faiss_tombstones: int = 0
     db_size_mb: float = 0.0
     version: str = ""
-    health: HealthStatus | dict[str, Any] = field(default_factory=dict)
+    health: HealthStatus | None = None
     consolidation_metrics: list[dict[str, Any]] = field(default_factory=list)
-    consolidation_quality: ConsolidationQuality | dict[str, Any] = field(default_factory=dict)
+    consolidation_quality: ConsolidationQuality | dict[str, Any] | None = None
 
 
 @dataclass
 class ExportResult:
     """Result of a memory export operation."""
 
-    status: str  # "exported"
+    status: Literal["exported"]
     path: str = ""
     episodes: int = 0
     knowledge_topics: int = 0
@@ -168,7 +168,7 @@ class ExportResult:
 class CorrectResult:
     """Result of a knowledge correction operation."""
 
-    status: str  # "corrected" | "not_found" | "error"
+    status: Literal["corrected", "not_found", "error"]
     filename: str | None = None
     title: str | None = None
     message: str | None = None
@@ -188,7 +188,7 @@ class SearchResult:
 class BatchStoreResult:
     """Result of a batch memory store operation."""
 
-    status: str  # "stored"
+    status: Literal["stored", "backend_unavailable"]
     stored: int = 0
     duplicates: int = 0
     results: list[dict[str, Any]] = field(default_factory=list)
@@ -198,6 +198,6 @@ class BatchStoreResult:
 class CompactResult:
     """Result of a FAISS compaction operation."""
 
-    status: str  # "compacted" | "no_tombstones"
+    status: Literal["compacted", "no_tombstones"]
     tombstones_removed: int = 0
     index_size: int = 0

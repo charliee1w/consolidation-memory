@@ -43,8 +43,10 @@ def _adjust_surprise_scores() -> int:
 
             if access > median_access and median_access > 0:
                 excess = access - median_access
-                boost = min(excess * cfg.SURPRISE_BOOST_PER_ACCESS, 0.15)
-                new_score += boost
+                # Absolute target rather than additive boost — prevents
+                # cumulative inflation across repeated consolidation runs.
+                target = original + min(excess * cfg.SURPRISE_BOOST_PER_ACCESS, 0.15)
+                new_score = max(new_score, target)
 
             try:
                 last_update = datetime.fromisoformat(ep["updated_at"])

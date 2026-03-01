@@ -735,6 +735,66 @@ def cmd_browse():
         print()
 
 
+def cmd_setup_claude():
+    """Append recommended CLAUDE.md snippet for proactive memory use."""
+    from pathlib import Path
+
+    snippet = """\
+## Memory
+
+**Recall**: At the start of every new conversation, call `memory_recall`
+with a query matching the user's opening message topic. This is your
+persistent memory — always check it before responding.
+
+**Store**: Proactively call `memory_store` whenever you:
+- Learn something new about the user's setup, environment, or projects
+- Solve a non-trivial problem (store both the problem AND the solution)
+- Discover a user preference or workflow pattern
+- Complete a significant task (summarize what was done and where)
+- Encounter something surprising or noteworthy
+
+Write each memory as a self-contained note that future-you can understand
+without context. Use appropriate `content_type` (fact, solution, preference,
+exchange) and add `tags` for organization. Do NOT store trivial exchanges
+like greetings or simple Q&A.
+"""
+
+    claude_md_path = Path.home() / ".claude" / "CLAUDE.md"
+
+    if claude_md_path.exists():
+        existing = claude_md_path.read_text(encoding="utf-8")
+        if "memory_recall" in existing:
+            print(f"Memory instructions already present in {claude_md_path}")
+            print("No changes made.")
+            return
+
+        print(f"Found existing CLAUDE.md at {claude_md_path}")
+        print("\nWill append this snippet:\n")
+        print(snippet)
+        resp = input("Append to existing CLAUDE.md? [y/N] ").strip().lower()
+        if resp != "y":
+            print("No changes made.")
+            return
+
+        with open(claude_md_path, "a", encoding="utf-8") as f:
+            f.write("\n" + snippet)
+        print(f"Snippet appended to {claude_md_path}")
+    else:
+        print(f"No CLAUDE.md found at {claude_md_path}")
+        print("\nWill create it with this content:\n")
+        print(snippet)
+        resp = input("Create CLAUDE.md? [y/N] ").strip().lower()
+        if resp != "y":
+            print("No changes made.")
+            return
+
+        claude_md_path.parent.mkdir(parents=True, exist_ok=True)
+        claude_md_path.write_text(snippet, encoding="utf-8")
+        print(f"Created {claude_md_path}")
+
+    print("\nClaude Code will now proactively use memory tools in every conversation.")
+
+
 def cmd_dashboard():
     """Launch the TUI dashboard."""
     try:
@@ -772,6 +832,7 @@ def main():
     p_import.add_argument("path", help="Path to export JSON file")
     sub.add_parser("reindex", help="Re-embed all episodes with current backend")
     sub.add_parser("browse", help="Browse knowledge topics")
+    sub.add_parser("setup-claude", help="Add memory instructions to CLAUDE.md")
     sub.add_parser("dashboard", help="Launch TUI dashboard")
 
     args = parser.parse_args()
@@ -798,6 +859,8 @@ def main():
         cmd_reindex()
     elif args.command == "browse":
         cmd_browse()
+    elif args.command == "setup-claude":
+        cmd_setup_claude()
     elif args.command == "dashboard":
         cmd_dashboard()
 

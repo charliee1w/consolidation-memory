@@ -14,9 +14,10 @@ Agents store episodes (conversations, facts, solutions). A background thread per
 ```bash
 pip install consolidation-memory[fastembed]
 consolidation-memory init
+consolidation-memory setup-claude  # Add memory instructions to CLAUDE.md
 ```
 
-FastEmbed runs locally. No API keys needed.
+FastEmbed runs locally. No API keys needed. The `setup-claude` command adds instructions to your `~/.claude/CLAUDE.md` so Claude Code proactively uses memory tools.
 
 ## MCP Server
 
@@ -170,6 +171,8 @@ Priority: defaults < TOML < env vars < `reset_config()` (tests).
 | `consolidation-memory export` | Export to JSON |
 | `consolidation-memory import PATH` | Import from JSON |
 | `consolidation-memory reindex` | Re-embed everything (after switching backends) |
+| `consolidation-memory browse` | Browse knowledge topics |
+| `consolidation-memory setup-claude` | Add memory instructions to CLAUDE.md |
 | `consolidation-memory test` | Post-install verification |
 | `consolidation-memory dashboard` | TUI dashboard |
 

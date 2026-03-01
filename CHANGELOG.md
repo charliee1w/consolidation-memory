@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.0 — 2026-02-28
+
+### Features
+
+- **Procedure record type** — fourth knowledge record type capturing learned workflow patterns (trigger, steps, context); 1.15x relevance boost for task-oriented recall queries
+- **Temporal fact tracking** — knowledge records now carry `valid_from` / `valid_until` fields; recall can filter expired records via `include_expired` parameter
+- **Contradiction detection** — during consolidation, new records are compared against existing ones (semantic similarity >= 0.7); optional LLM verification marks contradicting records as expired and replaces them
+- **FAISS IVF auto-migration** — when the index exceeds 10,000 vectors, it is automatically rebuilt as `IndexIVFFlat` with `nlist=sqrt(n)` and `nprobe=nlist/4` for faster approximate search; configurable via `faiss.ivf_upgrade_threshold`
+
+### Refactoring
+
+- **Config dataclass singleton** — replaced ~60 module-level constants with a `@dataclass Config` accessed via `get_config()`; test fixtures use `reset_config()` instead of 40+ `mock.patch` calls
+- **Consolidation package split** — split 1,400-line `consolidation.py` monolith into `consolidation/` package: `clustering.py`, `prompting.py`, `scoring.py`, `engine.py`
+
+### Tooling
+
+- **mypy type checking** — added `py.typed` marker and fixed all type errors; mypy overrides for `tomli`, `fastapi`, `uvicorn`
+
+### Documentation
+
+- **Architecture overview** — `docs/ARCHITECTURE.md` with Mermaid diagrams covering data flow, threading model, storage layout, consolidation internals, retrieval pipeline, and security
+
+### Internal
+
+- 275 tests (up from 237)
+
 ## 0.7.0 — 2026-02-28
 
 ### Features

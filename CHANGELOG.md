@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1 — 2026-02-28
+
+### Features
+
+- **`consolidation-memory test` CLI command** — end-to-end smoke test verifying store, embed, recall, forget, and LLM connectivity after install; prints colored pass/fail summary and always cleans up test data
+
+### Internal
+
+- 281 tests (up from 275)
+
 ## 0.8.0 — 2026-02-28
 
 ### Features

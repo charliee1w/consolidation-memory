@@ -42,3 +42,9 @@ backups/
 
 # Config (user-specific)
 config.toml
+
+# Benchmark data and results (user-provided)
+benchmarks/data/*.json
+benchmarks/results/*.json
+!benchmarks/data/.gitkeep
+!benchmarks/results/.gitkeep

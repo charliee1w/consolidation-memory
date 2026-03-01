@@ -35,9 +35,10 @@ dependencies = [
 [project.optional-dependencies]
 fastembed = ["fastembed>=0.4.0"]
 openai = ["openai>=1.0.0"]
+benchmark = ["openai>=1.0.0"]
 rest = ["fastapi>=0.115.0", "uvicorn[standard]>=0.34.0"]
 dashboard = ["textual>=1.0.0"]
-all = ["consolidation-memory[fastembed,openai,rest,dashboard]"]
+all = ["consolidation-memory[fastembed,openai,rest,dashboard,benchmark]"]
 dev = ["pytest>=8.0.0", "ruff>=0.7.0", "mypy>=1.0.0"]
 
 [project.scripts]

@@ -1,0 +1,4 @@
+{
+  "command": "consolidation-memory",
+  "transport": "stdio"
+}

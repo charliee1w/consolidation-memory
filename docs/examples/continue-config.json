@@ -1,0 +1,8 @@
+{
+  "mcpServers": [
+    {
+      "name": "consolidation_memory",
+      "command": "consolidation-memory"
+    }
+  ]
+}

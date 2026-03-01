@@ -30,7 +30,7 @@ FastEmbed runs locally. No API keys needed.
 }
 ```
 
-Tools: `memory_store`, `memory_store_batch`, `memory_recall`, `memory_search`, `memory_status`, `memory_forget`, `memory_export`, `memory_correct`, `memory_compact`, `memory_consolidate`
+Tools: `memory_store`, `memory_store_batch`, `memory_recall`, `memory_search`, `memory_status`, `memory_forget`, `memory_export`, `memory_correct`, `memory_compact`, `memory_consolidate`, `memory_browse`, `memory_read_topic`, `memory_timeline`, `memory_decay_report`, `memory_protect`
 
 ## Python API
 
@@ -200,6 +200,74 @@ MCP config for multiple projects:
 ```
 
 Each project gets its own database, vector index, and knowledge files.
+
+## Cross-Client Memory
+
+One consolidation-memory instance serves every MCP client on your machine. Claude Code, Cursor, Windsurf, VS Code + Continue — all share the same SQLite database and FAISS index. A fact stored from Cursor is recalled in Claude Code. No cloud sync needed.
+
+This is the local-first alternative to cloud-based memory passports. Your data never leaves your machine.
+
+<details>
+<summary>Example configs for each client</summary>
+
+**Claude Code** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "consolidation_memory": {
+      "command": "consolidation-memory"
+    }
+  }
+}
+```
+
+**Cursor** (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "consolidation_memory": {
+      "command": "consolidation-memory"
+    }
+  }
+}
+```
+
+**VS Code + Continue** (`.continue/config.json`):
+
+```json
+{
+  "mcpServers": [
+    {
+      "name": "consolidation_memory",
+      "command": "consolidation-memory"
+    }
+  ]
+}
+```
+
+**Generic MCP client** (any client supporting stdio transport):
+
+```json
+{
+  "command": "consolidation-memory",
+  "transport": "stdio"
+}
+```
+
+All configs above point at the default data directory. To share memories across clients with a specific project:
+
+```json
+{
+  "command": "consolidation-memory",
+  "env": { "CONSOLIDATION_MEMORY_PROJECT": "my-project" }
+}
+```
+
+Every client using the same project name reads and writes to the same database.
+
+</details>
 
 ## Data Storage
 

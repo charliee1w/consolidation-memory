@@ -191,6 +191,14 @@ class MemoryClient:
             logger.error("FAISS add failed for %s, rolled back DB insert: %s", episode_id, e)
             raise
 
+        # Update tag co-occurrence graph
+        if tags and len(tags) >= 2:
+            from consolidation_memory.database import update_tag_cooccurrence
+            try:
+                update_tag_cooccurrence(tags)
+            except Exception as e:
+                logger.warning("Failed to update tag co-occurrence: %s", e)
+
         logger.info(
             "Stored episode %s (type=%s, surprise=%.2f, tags=%s)",
             episode_id, content_type, surprise, tags,

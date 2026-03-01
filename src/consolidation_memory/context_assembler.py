@@ -14,6 +14,7 @@ import numpy as np
 from consolidation_memory.config import get_config
 from consolidation_memory.database import (
     get_episodes_batch,
+    get_tag_pairs_in_set,
     increment_access,
     increment_record_access,
     increment_topic_access,
@@ -83,6 +84,53 @@ def _priority_score(similarity: float, episode: dict) -> float:
         * access_factor
     )
     return similarity * metadata_boost
+
+
+def _apply_cooccurrence_boost(
+    scored: list[tuple[dict, float, float]],
+) -> list[tuple[dict, float, float]]:
+    """Boost scores for episodes whose tags co-occur with those of other candidates.
+
+    Queries the tag_cooccurrence table for pairs where both tags appear among the
+    scored candidates. Episodes whose tags participate in these co-occurrence
+    connections get a 10% score boost, clustering results around intent motifs
+    (e.g., "diet" + "exercise" + "weight" form a fitness cluster).
+    """
+    # Collect all tags across candidates
+    all_tags: set[str] = set()
+    episode_tags: list[list[str]] = []
+    for ep, _, _ in scored:
+        ep_tags = _parse_tags(ep.get("tags", "[]"))
+        episode_tags.append(ep_tags)
+        all_tags.update(ep_tags)
+
+    if len(all_tags) < 2:
+        return scored
+
+    # Find co-occurrence pairs where both tags are in the candidate set
+    try:
+        pairs = get_tag_pairs_in_set(list(all_tags), min_count=2)
+    except Exception:
+        return scored
+
+    if not pairs:
+        return scored
+
+    # Build set of tags involved in co-occurrence connections
+    connected_tags: set[str] = set()
+    for tag_a, tag_b, _count in pairs:
+        connected_tags.add(tag_a)
+        connected_tags.add(tag_b)
+
+    # Boost episodes that have at least one connected tag
+    boosted = []
+    for i, (ep, score, sim) in enumerate(scored):
+        ep_tags = set(episode_tags[i])
+        if ep_tags & connected_tags:
+            score *= 1.10  # 10% boost
+        boosted.append((ep, score, sim))
+
+    return boosted
 
 
 # ── Main retrieval ────────────────────────────────────────────────────────────
@@ -157,6 +205,11 @@ def recall(
         "recall: db_matches=%d, scored_after_priority=%d",
         len(episodes_by_id), len(scored),
     )
+
+    # Tag co-occurrence boost: episodes whose tags co-occur with tags
+    # from other high-scoring candidates get a 10% boost.
+    if len(scored) >= 2:
+        scored = _apply_cooccurrence_boost(scored)
 
     scored.sort(key=lambda x: x[1], reverse=True)
     top = scored[:n_results]

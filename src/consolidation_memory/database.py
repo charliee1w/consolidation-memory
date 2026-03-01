@@ -23,7 +23,7 @@ _conn_list_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 9
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -92,6 +92,17 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_contradiction_topic ON contradiction_log(topic_id)",
         "CREATE INDEX IF NOT EXISTS idx_contradiction_detected ON contradiction_log(detected_at)",
+    ],
+    9: [
+        """CREATE TABLE IF NOT EXISTS tag_cooccurrence (
+            tag_a       TEXT NOT NULL,
+            tag_b       TEXT NOT NULL,
+            count       INTEGER NOT NULL DEFAULT 1,
+            last_seen   TEXT NOT NULL,
+            UNIQUE(tag_a, tag_b)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_cooccurrence_tag_a ON tag_cooccurrence(tag_a)",
+        "CREATE INDEX IF NOT EXISTS idx_cooccurrence_tag_b ON tag_cooccurrence(tag_b)",
     ],
 }
 
@@ -632,6 +643,93 @@ def get_contradictions(
                 (limit,),
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+def update_tag_cooccurrence(tags: list[str]) -> None:
+    """Update co-occurrence counts for all tag pairs in a set.
+
+    Maintains the invariant tag_a < tag_b for consistent pair ordering.
+    """
+    if len(tags) < 2:
+        return
+    now = _now()
+    # Generate unique sorted pairs
+    unique_tags = sorted(set(tags))
+    pairs = []
+    for i in range(len(unique_tags)):
+        for j in range(i + 1, len(unique_tags)):
+            pairs.append((unique_tags[i], unique_tags[j]))
+
+    with get_connection() as conn:
+        for tag_a, tag_b in pairs:
+            conn.execute(
+                """INSERT INTO tag_cooccurrence (tag_a, tag_b, count, last_seen)
+                   VALUES (?, ?, 1, ?)
+                   ON CONFLICT(tag_a, tag_b)
+                   DO UPDATE SET count = count + 1, last_seen = ?""",
+                (tag_a, tag_b, now, now),
+            )
+
+
+def get_cooccurring_tags(tags: list[str], min_count: int = 2) -> dict[str, int]:
+    """Find tags that frequently co-occur with the given tags.
+
+    Args:
+        tags: Tags to find co-occurrences for.
+        min_count: Minimum co-occurrence count to include.
+
+    Returns:
+        Dict mapping co-occurring tag to total co-occurrence count.
+    """
+    if not tags:
+        return {}
+    with get_connection() as conn:
+        placeholders_a = ",".join("?" for _ in tags)
+        placeholders_b = ",".join("?" for _ in tags)
+        rows = conn.execute(
+            f"""SELECT tag_b as tag, SUM(count) as total
+                FROM tag_cooccurrence
+                WHERE tag_a IN ({placeholders_a}) AND count >= ?
+                GROUP BY tag_b
+                UNION ALL
+                SELECT tag_a as tag, SUM(count) as total
+                FROM tag_cooccurrence
+                WHERE tag_b IN ({placeholders_b}) AND count >= ?
+                GROUP BY tag_a""",
+            [*tags, min_count, *tags, min_count],
+        ).fetchall()
+
+    # Aggregate results and exclude the input tags themselves
+    tag_set = set(tags)
+    result: dict[str, int] = {}
+    for row in rows:
+        tag = row["tag"]
+        if tag not in tag_set:
+            result[tag] = result.get(tag, 0) + row["total"]
+    return result
+
+
+def get_tag_pairs_in_set(tags: list[str], min_count: int = 2) -> list[tuple[str, str, int]]:
+    """Find co-occurrence pairs where both tags are within the given set.
+
+    Used to discover intra-candidate tag clusters during recall.
+
+    Returns:
+        List of (tag_a, tag_b, count) tuples.
+    """
+    if len(tags) < 2:
+        return []
+    with get_connection() as conn:
+        placeholders_a = ",".join("?" for _ in tags)
+        placeholders_b = ",".join("?" for _ in tags)
+        rows = conn.execute(
+            f"""SELECT tag_a, tag_b, count FROM tag_cooccurrence
+                WHERE tag_a IN ({placeholders_a})
+                  AND tag_b IN ({placeholders_b})
+                  AND count >= ?""",
+            [*tags, *tags, min_count],
+        ).fetchall()
+    return [(row["tag_a"], row["tag_b"], row["count"]) for row in rows]
 
 
 def get_all_active_records(include_expired: bool = False) -> list[dict[str, Any]]:

@@ -277,6 +277,41 @@ async def memory_consolidate() -> str:
 
 
 @mcp.tool()
+async def memory_decay_report() -> str:
+    """Show what would be forgotten if pruning ran right now.
+
+    Reports prunable episodes (consolidated and older than threshold),
+    low-confidence records, and protected episode counts.
+    Does NOT actually delete anything — just reports.
+    """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
+    result = await asyncio.to_thread(_client.decay_report)
+    return json.dumps(dataclasses.asdict(result), default=str)
+
+
+@mcp.tool()
+async def memory_protect(
+    episode_id: str | None = None,
+    tag: str | None = None,
+) -> str:
+    """Mark episodes as immune to pruning.
+
+    Protect specific episodes or all episodes with a given tag from
+    being pruned during consolidation. Use this for important memories
+    that should never be forgotten.
+
+    Args:
+        episode_id: Protect a specific episode by its UUID.
+        tag: Protect all episodes with this tag.
+    """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
+    result = await asyncio.to_thread(_client.protect, episode_id, tag)
+    return json.dumps(dataclasses.asdict(result), default=str)
+
+
+@mcp.tool()
 async def memory_timeline(topic: str) -> str:
     """Show how understanding of a topic has changed over time.
 

@@ -152,6 +152,7 @@ class StatusResult:
     health: HealthStatus | None = None
     consolidation_metrics: list[dict[str, Any]] = field(default_factory=list)
     consolidation_quality: ConsolidationQuality | dict[str, Any] | None = None
+    recent_activity: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -228,4 +229,23 @@ class TimelineResult:
     query: str = ""
     entries: list[dict[str, Any]] = field(default_factory=list)
     total: int = 0
+    message: str = ""
+
+
+@dataclass
+class DecayReportResult:
+    """Result of a decay/pruning report."""
+
+    prunable_episodes: int = 0
+    low_confidence_records: int = 0
+    protected_episodes: int = 0
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ProtectResult:
+    """Result of protecting episodes from pruning."""
+
+    status: Literal["protected", "not_found", "error"]
+    protected_count: int = 0
     message: str = ""

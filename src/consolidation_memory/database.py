@@ -23,7 +23,7 @@ _conn_list_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -74,6 +74,9 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE knowledge_records ADD COLUMN valid_from TEXT",
         "ALTER TABLE knowledge_records ADD COLUMN valid_until TEXT",
         "CREATE INDEX IF NOT EXISTS idx_records_valid_until ON knowledge_records(valid_until)",
+    ],
+    7: [
+        "ALTER TABLE episodes ADD COLUMN protected INTEGER NOT NULL DEFAULT 0",
     ],
 }
 
@@ -369,14 +372,56 @@ def hard_delete_episode(episode_id: str) -> bool:
 
 
 def get_prunable_episodes(days: int = 30) -> list[dict[str, Any]]:
-    """Episodes that are consolidated and older than `days`."""
+    """Episodes that are consolidated and older than `days`, excluding protected ones."""
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT * FROM episodes
-               WHERE consolidated = 1 AND consolidated_at < ? AND deleted = 0""",
+               WHERE consolidated = 1 AND consolidated_at < ? AND deleted = 0
+                 AND protected = 0""",
             (cutoff,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def protect_episode(episode_id: str) -> bool:
+    """Mark an episode as protected from pruning. Returns True if found."""
+    now = _now()
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE episodes SET protected = 1, updated_at = ? WHERE id = ? AND deleted = 0",
+            (now, episode_id),
+        )
+    return bool(cursor.rowcount and cursor.rowcount > 0)
+
+
+def protect_by_tag(tag: str) -> int:
+    """Mark all episodes with a given tag as protected. Returns count updated."""
+    now = _now()
+    # Tags are stored as JSON arrays, use LIKE with the tag value
+    pattern = f'%"{tag}"%'
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE episodes SET protected = 1, updated_at = ? WHERE tags LIKE ? AND deleted = 0 AND protected = 0",
+            (now, pattern),
+        )
+    return cursor.rowcount or 0
+
+
+def get_low_confidence_records(threshold: float = 0.5) -> list[dict[str, Any]]:
+    """Return active records below the confidence threshold."""
+    now = _now()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
+               FROM knowledge_records kr
+               JOIN knowledge_topics kt ON kr.topic_id = kt.id
+               WHERE kr.deleted = 0
+                 AND (kr.valid_until IS NULL OR kr.valid_until > ?)
+                 AND kr.confidence < ?
+               ORDER BY kr.confidence ASC""",
+            (now, threshold),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -665,6 +710,20 @@ def get_last_consolidation_run() -> dict[str, Any] | None:
                ORDER BY started_at DESC LIMIT 1"""
         ).fetchone()
     return dict(row) if row else None
+
+
+def get_recent_consolidation_runs(limit: int = 5) -> list[dict[str, Any]]:
+    """Return recent consolidation runs as activity summaries."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, started_at, completed_at, status,
+                      episodes_processed, clusters_formed,
+                      topics_created, topics_updated, episodes_pruned
+               FROM consolidation_runs
+               ORDER BY started_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── Export / Bulk queries ────────────────────────────────────────────────────

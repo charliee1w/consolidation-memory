@@ -25,6 +25,8 @@ _LAZY_IMPORTS = {
     "BrowseResult": "consolidation_memory.types",
     "TopicDetailResult": "consolidation_memory.types",
     "TimelineResult": "consolidation_memory.types",
+    "DecayReportResult": "consolidation_memory.types",
+    "ProtectResult": "consolidation_memory.types",
     "ContentType": "consolidation_memory.types",
     "RecordType": "consolidation_memory.types",
 }

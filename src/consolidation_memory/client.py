@@ -38,6 +38,8 @@ from consolidation_memory.types import (
     BrowseResult,
     TopicDetailResult,
     TimelineResult,
+    DecayReportResult,
+    ProtectResult,
 )
 
 logger = logging.getLogger("consolidation_memory")
@@ -468,7 +470,9 @@ class MemoryClient:
         Returns:
             StatusResult with counts, backend info, health, and last consolidation.
         """
-        from consolidation_memory.database import get_stats, get_last_consolidation_run
+        from consolidation_memory.database import (
+            get_stats, get_last_consolidation_run, get_recent_consolidation_runs,
+        )
         from consolidation_memory.config import get_config
 
         cfg = get_config()
@@ -500,6 +504,20 @@ class MemoryClient:
                 "total_episodes_processed": sum(m.get("episodes_processed", 0) for m in metrics),
             }
 
+        recent_runs = get_recent_consolidation_runs(limit=5)
+        recent_activity = []
+        for run in recent_runs:
+            summary = {
+                "timestamp": run.get("completed_at") or run.get("started_at"),
+                "status": run.get("status", "unknown"),
+                "episodes_processed": run.get("episodes_processed", 0),
+                "clusters_formed": run.get("clusters_formed", 0),
+                "topics_created": run.get("topics_created", 0),
+                "topics_updated": run.get("topics_updated", 0),
+                "episodes_pruned": run.get("episodes_pruned", 0),
+            }
+            recent_activity.append(summary)
+
         return StatusResult(
             episodic_buffer=stats["episodic_buffer"],
             knowledge_base=stats["knowledge_base"],
@@ -513,6 +531,7 @@ class MemoryClient:
             health=health,
             consolidation_metrics=metrics,
             consolidation_quality=quality_summary,
+            recent_activity=recent_activity,
         )
 
     def forget(self, episode_id: str) -> ForgetResult:
@@ -905,6 +924,101 @@ class MemoryClient:
             query=topic,
             entries=entries,
             total=len(entries),
+        )
+
+    def decay_report(self) -> DecayReportResult:
+        """Show what would be forgotten if pruning ran right now.
+
+        Reports prunable episodes, low-confidence records, and protected
+        episode counts. Does NOT actually delete anything.
+
+        Returns:
+            DecayReportResult with counts and details.
+        """
+        from consolidation_memory.database import (
+            get_prunable_episodes, get_low_confidence_records,
+        )
+        from consolidation_memory.config import get_config
+
+        cfg = get_config()
+
+        prunable = get_prunable_episodes(days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS)
+        low_conf = get_low_confidence_records(threshold=0.5)
+
+        # Count protected episodes
+        from consolidation_memory.database import get_connection
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as c FROM episodes WHERE protected = 1 AND deleted = 0"
+            ).fetchone()
+        protected_count = row["c"] if row else 0
+
+        details = {
+            "prune_after_days": cfg.CONSOLIDATION_PRUNE_AFTER_DAYS,
+            "prune_enabled": cfg.CONSOLIDATION_PRUNE_ENABLED,
+            "decay_policies": cfg.DECAY_POLICIES,
+            "prunable_episodes": [
+                {
+                    "id": ep["id"],
+                    "content": ep["content"][:100],
+                    "consolidated_at": ep.get("consolidated_at", ""),
+                    "tags": ep.get("tags", "[]"),
+                }
+                for ep in prunable[:20]  # Cap at 20 for readability
+            ],
+            "low_confidence_records": [
+                {
+                    "id": rec["id"],
+                    "record_type": rec.get("record_type", ""),
+                    "confidence": rec.get("confidence", 0),
+                    "topic_title": rec.get("topic_title", ""),
+                    "embedding_text": rec.get("embedding_text", "")[:100],
+                }
+                for rec in low_conf[:20]
+            ],
+        }
+
+        return DecayReportResult(
+            prunable_episodes=len(prunable),
+            low_confidence_records=len(low_conf),
+            protected_episodes=protected_count,
+            details=details,
+        )
+
+    def protect(
+        self, episode_id: str | None = None, tag: str | None = None,
+    ) -> ProtectResult:
+        """Mark episodes as immune to pruning.
+
+        Args:
+            episode_id: Protect a specific episode by UUID.
+            tag: Protect all episodes with this tag.
+
+        Returns:
+            ProtectResult with status and count.
+        """
+        from consolidation_memory.database import protect_episode, protect_by_tag
+
+        if not episode_id and not tag:
+            return ProtectResult(
+                status="error", message="Provide either episode_id or tag."
+            )
+
+        total = 0
+        if episode_id:
+            found = protect_episode(episode_id)
+            if not found:
+                return ProtectResult(status="not_found", message=f"Episode {episode_id} not found.")
+            total += 1
+
+        if tag:
+            count = protect_by_tag(tag)
+            total += count
+
+        return ProtectResult(
+            status="protected",
+            protected_count=total,
+            message=f"Protected {total} episode(s).",
         )
 
     def consolidate(self) -> ConsolidationReport:

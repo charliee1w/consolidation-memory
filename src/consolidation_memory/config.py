@@ -179,6 +179,7 @@ class Config:
     CONSOLIDATION_MAX_CLUSTER_SIZE: int = 20
     CONSOLIDATION_PRUNE_ENABLED: bool = False
     CONSOLIDATION_PRUNE_AFTER_DAYS: int = 30
+    DECAY_POLICIES: dict[str, int] = field(default_factory=dict)  # tag -> days (-1=never)
     CONSOLIDATION_MAX_EPISODES_PER_RUN: int = 200
     CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD: float = 0.75
     CONSOLIDATION_CONFIDENCE_COHERENCE_W: float = 0.6
@@ -390,6 +391,7 @@ def _build_config(
         CONSOLIDATION_MAX_CLUSTER_SIZE=int(_consol.get("max_cluster_size", 20)),
         CONSOLIDATION_PRUNE_ENABLED=bool(_consol.get("prune_enabled", False)),
         CONSOLIDATION_PRUNE_AFTER_DAYS=int(_consol.get("prune_after_days", 30)),
+        DECAY_POLICIES={k: int(v) for k, v in cfg.get("decay_policies", {}).get("overrides", {}).items()},
         CONSOLIDATION_MAX_EPISODES_PER_RUN=int(_consol.get("max_episodes_per_run", 200)),
         CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD=float(_consol.get("topic_semantic_match_threshold", 0.75)),
         CONSOLIDATION_CONFIDENCE_COHERENCE_W=float(_consol.get("cluster_confidence_coherence_weight", 0.6)),

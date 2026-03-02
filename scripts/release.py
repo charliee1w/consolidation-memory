@@ -65,10 +65,17 @@ def main():
     args = parser.parse_args()
 
     new_version = args.version
-    current = get_current_version()
+
+    # Pre-flight checks
+    if not PYPROJECT.exists():
+        sys.exit(f"pyproject.toml not found at {PYPROJECT}")
+    if not CHANGELOG.exists():
+        sys.exit(f"CHANGELOG.md not found at {CHANGELOG}")
 
     if not re.match(r"^\d+\.\d+\.\d+$", new_version):
         sys.exit(f"Invalid version format: {new_version} (expected X.Y.Z)")
+
+    current = get_current_version()
 
     print(f"\nRelease: {current} -> {new_version}")
     print(f"{'(DRY RUN)' if args.dry_run else ''}\n")
@@ -99,8 +106,12 @@ def main():
     print("\n[4/6] Reinstalling and running tests...")
     if not args.dry_run:
         run("pip install -e \".[fastembed,dev]\" --quiet")
-        run("python -m pytest tests/ -v")
-        run("python -m ruff check src/ tests/")
+        result = run("python -m pytest tests/ -v", check=False)
+        if result.returncode != 0:
+            sys.exit("Tests failed — aborting release. Fix failures and re-run.")
+        result = run("python -m ruff check src/ tests/", check=False)
+        if result.returncode != 0:
+            sys.exit("Lint check failed — aborting release. Fix lint errors and re-run.")
 
     # 6. Commit + tag
     print(f"\n[5/6] Committing v{new_version}...")

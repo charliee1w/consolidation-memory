@@ -1267,6 +1267,36 @@ class TestCircuitBreaker:
         assert cb.failure_count == 0
 
 
+# ── Config weight validation tests ──────────────────────────────────────────
+
+class TestConfigWeightValidation:
+    def test_invalid_weight_sum_raises(self):
+        from consolidation_memory.config import _validate_config, Config
+        cfg = Config(
+            HYBRID_SEMANTIC_WEIGHT=0.9,
+            HYBRID_KEYWORD_WEIGHT=0.6,  # sum = 1.5, should fail
+        )
+        with pytest.raises(ValueError, match="should sum to 1.0"):
+            _validate_config(cfg)
+
+    def test_valid_weight_sum_passes(self):
+        from consolidation_memory.config import _validate_config, Config
+        cfg = Config()  # defaults sum to 1.0
+        _validate_config(cfg)  # should not raise
+
+    def test_priority_weights_invalid_sum(self):
+        from consolidation_memory.config import _validate_config, Config
+        cfg = Config(
+            CONSOLIDATION_PRIORITY_WEIGHTS={
+                "recency": 0.5,
+                "surprise": 0.5,
+                "access_count": 0.5,
+            }
+        )
+        with pytest.raises(ValueError, match="priority_weights.*should sum to 1.0"):
+            _validate_config(cfg)
+
+
 # ── Sanitization tests ──────────────────────────────────────────────────────
 
 class TestSanitization:

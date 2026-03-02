@@ -702,6 +702,30 @@ def _validate_config(c: Config) -> None:
             f"retrieval.recency_half_life_days = {c.RECENCY_HALF_LIFE_DAYS}, must be > 0"
         )
 
+    # Weight sum validations
+    weight_pairs = [
+        ("hybrid_semantic_weight", c.HYBRID_SEMANTIC_WEIGHT,
+         "hybrid_keyword_weight", c.HYBRID_KEYWORD_WEIGHT),
+        ("knowledge_semantic_weight", c.KNOWLEDGE_SEMANTIC_WEIGHT,
+         "knowledge_keyword_weight", c.KNOWLEDGE_KEYWORD_WEIGHT),
+        ("records_semantic_weight", c.RECORDS_SEMANTIC_WEIGHT,
+         "records_keyword_weight", c.RECORDS_KEYWORD_WEIGHT),
+        ("consolidation_confidence_coherence_w", c.CONSOLIDATION_CONFIDENCE_COHERENCE_W,
+         "consolidation_confidence_surprise_w", c.CONSOLIDATION_CONFIDENCE_SURPRISE_W),
+    ]
+    for name_a, val_a, name_b, val_b in weight_pairs:
+        total = val_a + val_b
+        if not (0.99 <= total <= 1.01):
+            errors.append(
+                f"{name_a} ({val_a}) + {name_b} ({val_b}) = {total}, should sum to 1.0"
+            )
+
+    pw_sum = sum(c.CONSOLIDATION_PRIORITY_WEIGHTS.values())
+    if not (0.99 <= pw_sum <= 1.01):
+        errors.append(
+            f"consolidation.priority_weights values sum to {pw_sum}, should sum to 1.0"
+        )
+
     if errors:
         raise ValueError(
             "Invalid consolidation_memory config:\n  " + "\n  ".join(errors)

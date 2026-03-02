@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.11.0 — 2026-03-02
+
+Hybrid search and recall quality improvements.
+
+### Features
+
+- **Hybrid BM25 + semantic search** — FTS5 virtual table mirrors episode content; recall now runs both FAISS (cosine similarity) and FTS5 (BM25 keyword) searches, merges candidates, and computes a weighted hybrid score. Fixes recall failures on exact terms, acronyms, and proper nouns (e.g., "CORS bug in AuthService" now ranks correctly)
+- **Schema migration v10** — `episodes_fts` FTS5 table with automatic backfill from existing episodes; gracefully degrades if FTS5 is unavailable
+- **4 new config fields** — `hybrid_search_enabled`, `hybrid_semantic_weight` (0.7), `hybrid_keyword_weight` (0.3), `hybrid_fts_candidates` (50) under `[retrieval]`
+- **Tag co-occurrence graph** — episodes with co-occurring tags get a 10% recall boost, clustering results around intent motifs
+- **Contradiction audit log** — schema v8 `contradiction_log` table tracks when knowledge records contradict each other during consolidation
+- **Plugin system** — entry-point based plugin wiring with `PLUGINS_ENABLED` config
+
+### Bug Fixes
+
+- **mypy type error** in co-occurrence boost resolved
+- **Phase 1 quality fixes** — plugin wiring, API parity, miscellaneous bug fixes
+
+### Documentation
+
+- Public roadmap added to README
+- REST endpoint list updated
+
+### Internal
+
+- 403 tests (24 new for hybrid search)
+
 ## 0.10.0 — 2026-02-28
 
 Knowledge introspection, forgetting transparency, and adoption tooling.

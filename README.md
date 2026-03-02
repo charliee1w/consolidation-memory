@@ -65,7 +65,7 @@ pip install consolidation-memory[rest]
 consolidation-memory serve --rest --port 8080
 ```
 
-`POST /memory/store` | `POST /memory/store/batch` | `POST /memory/recall` | `POST /memory/search` | `GET /memory/status` | `DELETE /memory/episodes/{id}` | `POST /memory/consolidate` | `POST /memory/correct` | `POST /memory/export` | `GET /health`
+`POST /memory/store` | `POST /memory/store/batch` | `POST /memory/recall` | `POST /memory/search` | `GET /memory/status` | `DELETE /memory/episodes/{id}` | `POST /memory/consolidate` | `POST /memory/correct` | `POST /memory/export` | `POST /memory/compact` | `GET /memory/browse` | `GET /memory/topics/{filename}` | `POST /memory/timeline` | `POST /memory/contradictions` | `POST /memory/protect` | `GET /memory/decay-report` | `GET /health`
 
 ## How Consolidation Works
 
@@ -283,6 +283,16 @@ All data stays local.
 | Windows | `%LOCALAPPDATA%\consolidation_memory\projects\<name>\` |
 
 Switching embedding backends? `consolidation-memory reindex`
+
+## Roadmap
+
+- [ ] Hybrid search (BM25 + semantic fusion)
+- [ ] Diff-aware merge validation for consolidation
+- [ ] Query expansion for short/ambiguous recalls
+- [ ] Recall result deduplication
+- [ ] Entity extraction and relationship graph
+- [ ] Entity-aware recall boosting
+- [ ] First-party plugins (git history, project context, Obsidian export)
 
 ## Development
 

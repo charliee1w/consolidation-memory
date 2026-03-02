@@ -110,7 +110,7 @@ Release when a meaningful milestone lands — a feature, a noteworthy bug fix, o
 
 ## Roadmap
 
-See `docs/ROADMAP.md` for the full implementation roadmap.
+See `.claude/ROADMAP.md` for the implementation roadmap.
 **Current focus: Phase 2 (Recall Quality Leap).**
 
 When asked to "continue the roadmap", read that file and implement the next
@@ -121,6 +121,6 @@ incomplete item. Commit after each feature. Run the full test suite before commi
 - `pyproject.toml` — version (single source of truth), all deps and tool config
 - `CHANGELOG.md` — full release history from v0.1.0
 - `docs/ARCHITECTURE.md` — detailed architecture with Mermaid diagrams
-- `docs/ROADMAP.md` — project roadmap and implementation priorities
+- `.claude/ROADMAP.md` — project roadmap (gitignored, internal only)
 - `tests/conftest.py` — test isolation setup (temp dirs, config reset, cache clearing)
 - `scripts/release.py` — automated release script

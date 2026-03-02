@@ -43,6 +43,16 @@ backups/
 # Config (user-specific)
 config.toml
 
+# Internal dev docs (roadmap, plans, prompting guide)
+docs/plans/
+.claude/ROADMAP.md
+.claude/PROMPTING-GUIDE.md
+.claude/settings.local.json
+
+# Temporary output files
+ruff_output.txt
+test_output.txt
+
 # Benchmark data and results (user-provided)
 benchmarks/data/*.json
 benchmarks/results/*.json

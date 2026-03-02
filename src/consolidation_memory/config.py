@@ -236,6 +236,9 @@ class Config:
     RECORDS_RELEVANCE_THRESHOLD: float = 0.3
     RECORDS_MAX_RESULTS: int = 15
 
+    # ── Recall deduplication ──────────────────────────────────────────────
+    RECALL_DEDUP_ENABLED: bool = True
+
     # ── Plugins ───────────────────────────────────────────────────────────
     PLUGINS_ENABLED: list[str] = field(default_factory=list)
 
@@ -450,6 +453,7 @@ def _build_config(
         RECORDS_KEYWORD_WEIGHT=float(_retrieval.get("records_keyword_weight", 0.1)),
         RECORDS_RELEVANCE_THRESHOLD=float(_retrieval.get("records_relevance_threshold", 0.3)),
         RECORDS_MAX_RESULTS=int(_retrieval.get("records_max_results", 15)),
+        RECALL_DEDUP_ENABLED=bool(_retrieval.get("recall_dedup_enabled", True)),
         # Plugins
         PLUGINS_ENABLED=list(_plugins.get("enabled", [])),
         # Circuit breaker

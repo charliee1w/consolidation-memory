@@ -135,6 +135,45 @@ def _apply_cooccurrence_boost(
     return boosted
 
 
+# ── Deduplication ─────────────────────────────────────────────────────────────
+
+def _deduplicate_episodes(
+    episodes: list[dict],
+    records: list[dict],
+) -> list[dict]:
+    """Remove episodes that are already represented by a returned knowledge record.
+
+    When a knowledge record's source_episodes overlap with returned episode IDs,
+    the episode is redundant — the record has higher signal density (structured,
+    consolidated). Prefer the record and drop the overlapping episode.
+    """
+    if not episodes or not records:
+        return episodes
+
+    # Collect all episode IDs that are covered by returned records
+    covered_ids: set[str] = set()
+    for rec in records:
+        src_eps = rec.get("source_episodes", [])
+        if src_eps:
+            covered_ids.update(src_eps)
+
+    if not covered_ids:
+        return episodes
+
+    original_count = len(episodes)
+    filtered = [ep for ep in episodes if ep["id"] not in covered_ids]
+    removed = original_count - len(filtered)
+
+    if removed:
+        logger.debug(
+            "recall dedup: removed %d episodes covered by knowledge records "
+            "(covered_ids=%d)",
+            removed, len(covered_ids),
+        )
+
+    return filtered
+
+
 # ── Main retrieval ────────────────────────────────────────────────────────────
 
 def recall(
@@ -269,6 +308,10 @@ def recall(
         records, rec_warnings = _search_records(query, query_vec, include_expired=include_expired)
         warnings.extend(rec_warnings)
 
+    # Deduplicate: remove episodes already represented by knowledge records
+    if cfg.RECALL_DEDUP_ENABLED and records:
+        episodes = _deduplicate_episodes(episodes, records)
+
     return {
         "episodes": episodes,
         "knowledge": knowledge,
@@ -398,6 +441,16 @@ def _search_records(
         except (json.JSONDecodeError, TypeError):
             content = {}
 
+        # Parse source_episodes for deduplication downstream
+        raw_src = rec.get("source_episodes", "[]")
+        if isinstance(raw_src, str):
+            try:
+                src_eps: list[str] = json.loads(raw_src)
+            except (json.JSONDecodeError, ValueError):
+                src_eps = []
+        else:
+            src_eps = raw_src if raw_src is not None else []
+
         scored_records.append({
             "id": rec["id"],
             "record_type": rec["record_type"],
@@ -407,6 +460,7 @@ def _search_records(
             "topic_filename": rec.get("topic_filename", ""),
             "confidence": rec.get("confidence", 0.8),
             "relevance": round(relevance, 3),
+            "source_episodes": src_eps,
         })
 
     logger.debug(

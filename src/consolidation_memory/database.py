@@ -746,7 +746,7 @@ def expire_record(record_id: str, valid_until: str | None = None) -> bool:
 
 def insert_contradiction(
     topic_id: str | None,
-    old_record_id: str,
+    old_record_id: str | None,
     new_record_id: str | None,
     old_content: str,
     new_content: str,

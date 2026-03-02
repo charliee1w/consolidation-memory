@@ -191,13 +191,19 @@ def _detect_contradictions(
         logger.warning("LLM contradiction verification failed: %s", e)
         return []
 
-    if not isinstance(verdicts, list) or len(verdicts) != len(candidate_pairs):
+    if not isinstance(verdicts, list):
         logger.warning(
-            "LLM returned %d verdicts for %d pairs; expected exact match. Skipping.",
-            len(verdicts) if isinstance(verdicts, list) else 0,
-            len(candidate_pairs),
+            "LLM returned non-list (%s) for contradiction verdicts. Skipping.",
+            type(verdicts).__name__,
         )
         return []
+
+    if len(verdicts) != len(candidate_pairs):
+        logger.warning(
+            "LLM returned %d verdicts for %d pairs; processing available verdicts.",
+            len(verdicts),
+            len(candidate_pairs),
+        )
 
     contradictions = []
     for (new_idx, ex_idx), verdict in zip(candidate_pairs, verdicts):

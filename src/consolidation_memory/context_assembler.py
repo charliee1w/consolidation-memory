@@ -69,7 +69,7 @@ def _recency_decay(created_at_iso: str, half_life_days: float | None = None) -> 
         # Clamp to non-negative to prevent >1.0 scores from future-dated episodes
         age_days = max(0.0, age_days)
         return math.exp(-age_days * math.log(2) / half_life_days)
-    except Exception:
+    except (ValueError, TypeError, OverflowError):
         return 0.5
 
 
@@ -112,7 +112,8 @@ def _apply_cooccurrence_boost(
     # Find co-occurrence pairs where both tags are in the candidate set
     try:
         pairs = get_tag_pairs_in_set(list(all_tags), min_count=2)
-    except Exception:
+    except (OSError, RuntimeError) as exc:
+        logger.warning("Tag co-occurrence lookup failed: %s", exc)
         return scored
 
     if not pairs:

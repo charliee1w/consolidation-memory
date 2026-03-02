@@ -910,6 +910,9 @@ class MemoryClient:
         # Sort by matching record's creation date
         matching.sort(key=lambda x: all_records[x[0]].get("created_at", ""))
 
+        # Build reverse lookup: valid_indices position -> vec position (O(1) vs O(n))
+        valid_idx_to_vec_pos = {idx: pos for pos, idx in enumerate(valid_indices)}
+
         # Build timeline entries, detect supersession
         entries = []
         for rec_idx, sim in matching:
@@ -935,7 +938,8 @@ class MemoryClient:
                 expired_at = rec["valid_until"]
                 expired_text = rec.get("embedding_text", "")
                 if expired_text:
-                    expired_vec = record_vecs[valid_indices.index(rec_idx)] if rec_idx in valid_indices else None
+                    vec_pos = valid_idx_to_vec_pos.get(rec_idx)
+                    expired_vec = record_vecs[vec_pos] if vec_pos is not None else None
                     if expired_vec is not None:
                         # Find the most similar active record created around the same time
                         best_successor = None
@@ -946,11 +950,10 @@ class MemoryClient:
                                 continue  # skip other expired records
                             other_created = other.get("created_at", "")
                             if other_created >= (expired_at or ""):
-                                # Check embedding similarity
-                                other_vec_idx = valid_indices.index(other_idx) if other_idx in valid_indices else None
-                                if other_vec_idx is not None:
+                                other_vec_pos = valid_idx_to_vec_pos.get(other_idx)
+                                if other_vec_pos is not None:
                                     pair_sim = float(
-                                        expired_vec.reshape(1, -1) @ record_vecs[other_vec_idx].reshape(-1, 1)
+                                        expired_vec.reshape(1, -1) @ record_vecs[other_vec_pos].reshape(-1, 1)
                                     )
                                     if pair_sim > best_sim and pair_sim >= 0.5:
                                         best_sim = pair_sim
@@ -1367,8 +1370,6 @@ class MemoryClient:
             )
 
         while not self._consolidation_stop.wait(timeout=interval):
-            if self._consolidation_stop.is_set():
-                break
             if not self._consolidation_lock.acquire(blocking=False):
                 logger.info("Consolidation already running, skipping")
                 continue
@@ -1384,6 +1385,7 @@ class MemoryClient:
                         result.get("status", result),
                     )
                 except FuturesTimeoutError:
+                    future.cancel()
                     logger.error(
                         "Background consolidation timed out after %ds; "
                         "releasing lock. The worker thread will be abandoned.",

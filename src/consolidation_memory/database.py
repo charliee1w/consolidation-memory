@@ -581,11 +581,14 @@ def protect_episode(episode_id: str) -> bool:
 def protect_by_tag(tag: str) -> int:
     """Mark all episodes with a given tag as protected. Returns count updated."""
     now = _now()
-    # Tags are stored as JSON arrays, use LIKE with the tag value
-    pattern = f'%"{tag}"%'
+    # Tags are stored as JSON arrays, use LIKE with the tag value.
+    # Escape LIKE wildcards in the tag to prevent injection (e.g. tag="%" matching all).
+    escaped = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f'%"{escaped}"%'
     with get_connection() as conn:
         cursor = conn.execute(
-            "UPDATE episodes SET protected = 1, updated_at = ? WHERE tags LIKE ? AND deleted = 0 AND protected = 0",
+            "UPDATE episodes SET protected = 1, updated_at = ? "
+            "WHERE tags LIKE ? ESCAPE '\\' AND deleted = 0 AND protected = 0",
             (now, pattern),
         )
     return cursor.rowcount or 0

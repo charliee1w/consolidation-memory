@@ -697,6 +697,10 @@ def _validate_config(c: Config) -> None:
         )
     if c.CIRCUIT_BREAKER_THRESHOLD < 1:
         errors.append(f"circuit_breaker.threshold = {c.CIRCUIT_BREAKER_THRESHOLD}, must be >= 1")
+    if c.RECENCY_HALF_LIFE_DAYS <= 0:
+        errors.append(
+            f"retrieval.recency_half_life_days = {c.RECENCY_HALF_LIFE_DAYS}, must be > 0"
+        )
 
     if errors:
         raise ValueError(

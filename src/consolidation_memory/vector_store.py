@@ -75,6 +75,13 @@ class VectorStore:
                     self._save_tombstones()
             else:
                 logger.info("Loaded %d vectors", self._index.ntotal)
+                # Restore nprobe for IVF indexes (not persisted by faiss)
+                if hasattr(self._index, "nlist"):
+                    self._index.nprobe = max(1, min(self._index.nlist // 4, 64))
+                    logger.info(
+                        "Restored IVF nprobe=%d (nlist=%d)",
+                        self._index.nprobe, self._index.nlist,
+                    )
                 if (
                     isinstance(self._index, faiss.IndexFlatIP)
                     and self._index.ntotal >= cfg.FAISS_SIZE_WARNING_THRESHOLD

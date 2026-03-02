@@ -70,6 +70,19 @@ class CorrectRequest(BaseModel):
     correction: str
 
 
+class ProtectRequest(BaseModel):
+    episode_id: str | None = None
+    tag: str | None = None
+
+
+class TimelineRequest(BaseModel):
+    topic: str
+
+
+class ContradictionsRequest(BaseModel):
+    topic: str | None = None
+
+
 # ── App factory ──────────────────────────────────────────────────────────────
 
 _client: MemoryClient | None = None
@@ -188,6 +201,59 @@ def create_app() -> FastAPI:
     async def export():
         """Export all episodes and knowledge to a JSON snapshot."""
         result = _require_client().export()
+        return dataclasses.asdict(result)
+
+    @app.post("/memory/compact")
+    async def compact():
+        """Compact the FAISS index by removing tombstoned vectors."""
+        result = _require_client().compact()
+        return dataclasses.asdict(result)
+
+    @app.get("/memory/browse")
+    async def browse():
+        """Browse all knowledge topics with summaries and metadata."""
+        result = _require_client().browse()
+        return dataclasses.asdict(result)
+
+    @app.get("/memory/topics/{filename}")
+    async def read_topic(filename: str):
+        """Read the full markdown content of a knowledge topic."""
+        result = _require_client().read_topic(filename)
+        if result.status == "not_found":
+            raise HTTPException(status_code=404, detail="Knowledge topic not found")
+        if result.status == "error":
+            raise HTTPException(status_code=400, detail=result.message)
+        return dataclasses.asdict(result)
+
+    @app.post("/memory/timeline")
+    async def timeline(req: TimelineRequest):
+        """Show how understanding of a topic has changed over time."""
+        result = _require_client().timeline(topic=req.topic)
+        return dataclasses.asdict(result)
+
+    @app.post("/memory/contradictions")
+    async def contradictions(req: ContradictionsRequest):
+        """List detected contradictions from the audit log."""
+        result = _require_client().contradictions(topic=req.topic)
+        return dataclasses.asdict(result)
+
+    @app.post("/memory/protect")
+    async def protect(req: ProtectRequest):
+        """Mark episodes as immune to pruning."""
+        result = _require_client().protect(
+            episode_id=req.episode_id,
+            tag=req.tag,
+        )
+        if result.status == "not_found":
+            raise HTTPException(status_code=404, detail=result.message)
+        if result.status == "error":
+            raise HTTPException(status_code=400, detail=result.message)
+        return dataclasses.asdict(result)
+
+    @app.get("/memory/decay-report")
+    async def decay_report():
+        """Show what would be forgotten if pruning ran right now."""
+        result = _require_client().decay_report()
         return dataclasses.asdict(result)
 
     return app

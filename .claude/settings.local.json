@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__consolidation-memory__memory_recall",
+      "Bash(pip show:*)",
+      "Bash(python:*)",
+      "Bash(claude mcp:*)",
+      "mcp__consolidation-memory__memory_status"
+    ]
+  }
+}

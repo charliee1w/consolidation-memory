@@ -78,6 +78,9 @@ class MemoryClient:
         self._consolidation_thread: threading.Thread | None = None
         self._consolidation_pool: ThreadPoolExecutor | None = None
 
+        # Shared executor for LLM calls (e.g. correct())
+        self._llm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="llm")
+
         # Cached backend probe result: (is_reachable, timestamp)
         self._probe_cache: tuple[bool, float] | None = None
         self._probe_cache_ttl = 30.0  # seconds
@@ -91,10 +94,17 @@ class MemoryClient:
             __version__,
         )
 
+        # Fire plugin startup hook
+        from consolidation_memory.plugins import get_plugin_manager
+        get_plugin_manager().fire("on_startup", client=self)
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def close(self) -> None:
         """Stop background threads. Call when done."""
+        from consolidation_memory.plugins import get_plugin_manager
+        get_plugin_manager().fire("on_shutdown")
+
         self._consolidation_stop.set()
         if self._consolidation_thread is not None:
             self._consolidation_thread.join(timeout=30)
@@ -107,6 +117,7 @@ class MemoryClient:
         if self._consolidation_pool is not None:
             self._consolidation_pool.shutdown(wait=False)
             self._consolidation_pool = None
+        self._llm_executor.shutdown(wait=False)
 
     def __enter__(self) -> MemoryClient:
         return self
@@ -203,6 +214,17 @@ class MemoryClient:
             "Stored episode %s (type=%s, surprise=%.2f, tags=%s)",
             episode_id, content_type, surprise, tags,
         )
+
+        from consolidation_memory.plugins import get_plugin_manager
+        get_plugin_manager().fire(
+            "on_store",
+            episode_id=episode_id,
+            content=content,
+            content_type=content_type,
+            tags=tags or [],
+            surprise=surprise,
+        )
+
         return StoreResult(
             status="stored",
             id=episode_id,
@@ -405,7 +427,7 @@ class MemoryClient:
             query[:80], len(result["episodes"]), len(result["knowledge"]), len(records),
         )
 
-        return RecallResult(
+        recall_result = RecallResult(
             episodes=result["episodes"],
             knowledge=result["knowledge"],
             records=records,
@@ -413,6 +435,11 @@ class MemoryClient:
             total_knowledge_topics=stats["knowledge_base"]["total_topics"],
             warnings=result.get("warnings", []),
         )
+
+        from consolidation_memory.plugins import get_plugin_manager
+        get_plugin_manager().fire("on_recall", query=query, result=recall_result)
+
+        return recall_result
 
     def search(
         self,
@@ -560,6 +587,10 @@ class MemoryClient:
         if deleted:
             self._vector_store.remove(episode_id)
             logger.info("Forgot episode %s", episode_id)
+
+            from consolidation_memory.plugins import get_plugin_manager
+            get_plugin_manager().fire("on_forget", episode_id=episode_id)
+
             return ForgetResult(status="forgotten", id=episode_id)
         else:
             logger.warning("Episode %s not found for deletion", episode_id)
@@ -680,9 +711,8 @@ class MemoryClient:
         )
 
         try:
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(llm.generate, system_prompt, user_prompt)
-                raw = future.result(timeout=cfg.LLM_CORRECTION_TIMEOUT)
+            future = self._llm_executor.submit(llm.generate, system_prompt, user_prompt)
+            raw = future.result(timeout=cfg.LLM_CORRECTION_TIMEOUT)
             corrected = _normalize_output(raw)
         except FuturesTimeoutError:
             return CorrectResult(

@@ -24,6 +24,12 @@ class TestSchemaStructure:
             "memory_correct",
             "memory_compact",
             "memory_consolidate",
+            "memory_protect",
+            "memory_timeline",
+            "memory_contradictions",
+            "memory_browse",
+            "memory_read_topic",
+            "memory_decay_report",
         }
 
     def test_schemas_have_required_fields(self):

@@ -153,7 +153,7 @@ file's mtime and reload the index if it's newer than their load timestamp.
 Config file: `~/.config/consolidation_memory/config.toml` (XDG), or
 `%APPDATA%/consolidation_memory/config.toml` (Windows).
 
-### SQLite Schema (v6)
+### SQLite Schema (v9)
 
 ```mermaid
 erDiagram
@@ -173,6 +173,7 @@ erDiagram
         INTEGER deleted
         INTEGER consolidation_attempts
         TEXT last_consolidation_attempt
+        INTEGER protected "0=no, 1=immune to pruning"
     }
 
     knowledge_topics {
@@ -232,18 +233,40 @@ erDiagram
         INTEGER episodes_pruned
     }
 
+    contradiction_log {
+        TEXT id PK
+        TEXT topic_id FK
+        TEXT old_record_id
+        TEXT new_record_id
+        TEXT old_content
+        TEXT new_content
+        TEXT resolution "expired_old"
+        TEXT reason
+        TEXT detected_at
+    }
+
+    tag_cooccurrence {
+        TEXT tag_a
+        TEXT tag_b
+        INTEGER count
+        TEXT last_seen
+    }
+
     schema_version {
         INTEGER version
         TEXT applied_at
     }
 
     knowledge_topics ||--o{ knowledge_records : "topic_id"
+    knowledge_topics ||--o{ contradiction_log : "topic_id"
     consolidation_runs ||--o{ consolidation_metrics : "run_id"
 ```
 
 Notable indexes: `idx_episodes_consolidated`, `idx_episodes_created`,
-`idx_episodes_type`, `idx_episodes_deleted`, `idx_records_topic`,
-`idx_records_type`, `idx_records_valid_until`.
+`idx_episodes_type`, `idx_episodes_deleted`, `idx_episodes_consolidation_attempts`,
+`idx_records_topic`, `idx_records_type`, `idx_records_deleted`,
+`idx_records_valid_until`, `idx_contradiction_topic`, `idx_contradiction_detected`,
+`idx_cooccurrence_tag_a`, `idx_cooccurrence_tag_b`.
 
 ### FAISS Index
 

@@ -1,0 +1,57 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest *)",
+      "Bash(python -m ruff *)",
+      "Bash(python -m mypy *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git describe*)",
+      "Bash(git rev-list*)",
+      "Bash(git tag*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git pull *)",
+      "Bash(gh release *)",
+      "Bash(gh pr *)",
+      "Bash(pip install *)",
+      "Read",
+      "Edit",
+      "Write",
+      "Grep",
+      "Glob"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git reset --hard*)",
+      "Bash(git push --force*)",
+      "Bash(git clean -f*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"D:\\consolidation-memory\\.claude\\hooks\\ruff-check.ps1\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"D:\\consolidation-memory\\.claude\\hooks\\post-push-check.ps1\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -350,6 +350,134 @@ MEMORY_CONSOLIDATE_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_PROTECT_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_protect",
+        "description": (
+            "Mark episodes as immune to pruning. "
+            "Protect specific episodes or all episodes with a given tag from "
+            "being pruned during consolidation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "episode_id": {
+                    "type": "string",
+                    "description": "Protect a specific episode by its UUID.",
+                },
+                "tag": {
+                    "type": "string",
+                    "description": "Protect all episodes with this tag.",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+MEMORY_TIMELINE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_timeline",
+        "description": (
+            "Show how understanding of a topic has changed over time. "
+            "Returns all knowledge records matching the topic sorted chronologically, "
+            "including expired/superseded records."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "Natural language topic to query "
+                        "(e.g., 'frontend framework preference')."
+                    ),
+                },
+            },
+            "required": ["topic"],
+        },
+    },
+}
+
+MEMORY_CONTRADICTIONS_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_contradictions",
+        "description": (
+            "List detected contradictions from the audit log. "
+            "Shows cases where knowledge records contradicted each other during "
+            "consolidation, including both the old and new content and how it was resolved."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "Optional topic filename or title to filter results.",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+MEMORY_BROWSE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_browse",
+        "description": (
+            "Browse all knowledge topics with summaries and metadata. "
+            "Returns titles, summaries, record counts by type, confidence scores, "
+            "and file paths."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
+MEMORY_READ_TOPIC_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_read_topic",
+        "description": (
+            "Read the full markdown content of a knowledge topic. "
+            "Use memory_browse first to see available topics."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "The filename of the knowledge topic (e.g., 'python_setup.md').",
+                },
+            },
+            "required": ["filename"],
+        },
+    },
+}
+
+MEMORY_DECAY_REPORT_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_decay_report",
+        "description": (
+            "Show what would be forgotten if pruning ran right now. "
+            "Reports prunable episodes, low-confidence records, and protected episode counts. "
+            "Does NOT actually delete anything."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
 # Convenience list of all tool schemas
 openai_tools: list[dict[str, Any]] = [
     MEMORY_STORE_SCHEMA,
@@ -362,6 +490,12 @@ openai_tools: list[dict[str, Any]] = [
     MEMORY_CORRECT_SCHEMA,
     MEMORY_COMPACT_SCHEMA,
     MEMORY_CONSOLIDATE_SCHEMA,
+    MEMORY_PROTECT_SCHEMA,
+    MEMORY_TIMELINE_SCHEMA,
+    MEMORY_CONTRADICTIONS_SCHEMA,
+    MEMORY_BROWSE_SCHEMA,
+    MEMORY_READ_TOPIC_SCHEMA,
+    MEMORY_DECAY_REPORT_SCHEMA,
 ]
 
 
@@ -457,6 +591,35 @@ def dispatch_tool_call(
     elif name == "memory_consolidate":
         consolidate_result = client.consolidate()
         return dict(consolidate_result)
+
+    elif name == "memory_protect":
+        protect_result = client.protect(
+            episode_id=arguments.get("episode_id"),
+            tag=arguments.get("tag"),
+        )
+        return dataclasses.asdict(protect_result)
+
+    elif name == "memory_timeline":
+        timeline_result = client.timeline(topic=arguments["topic"])
+        return dataclasses.asdict(timeline_result)
+
+    elif name == "memory_contradictions":
+        contradictions_result = client.contradictions(
+            topic=arguments.get("topic"),
+        )
+        return dataclasses.asdict(contradictions_result)
+
+    elif name == "memory_browse":
+        browse_result = client.browse()
+        return dataclasses.asdict(browse_result)
+
+    elif name == "memory_read_topic":
+        read_topic_result = client.read_topic(filename=arguments["filename"])
+        return dataclasses.asdict(read_topic_result)
+
+    elif name == "memory_decay_report":
+        decay_report_result = client.decay_report()
+        return dataclasses.asdict(decay_report_result)
 
     else:
         raise ValueError(f"Unknown tool: {name}")

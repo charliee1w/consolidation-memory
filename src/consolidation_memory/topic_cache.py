@@ -71,5 +71,8 @@ def get_topic_vecs() -> tuple[list[dict], np.ndarray | None]:
                 "Topic cache populate discarded: version changed %d -> %d during fetch",
                 fetch_version, _version,
             )
+            # Return cached data if available (consistent pair), else use our fetch
+            if _cache["vecs"] is not None:
+                return _cache["topics"], _cache["vecs"]
 
     return topics, vecs

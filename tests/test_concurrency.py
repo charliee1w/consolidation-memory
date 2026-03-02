@@ -145,6 +145,74 @@ class TestStoreDuringRecall:
         client.close()
 
 
+class TestCacheVersionRace:
+    @patch("consolidation_memory.topic_cache.encode_documents")
+    @patch("consolidation_memory.topic_cache.get_all_knowledge_topics")
+    def test_topic_cache_invalidate_during_fetch(self, mock_topics, mock_embed, tmp_data_dir):
+        """Concurrent invalidate during fetch returns dimensionally consistent data."""
+        import numpy as np
+        from consolidation_memory import topic_cache
+
+        topic_cache.invalidate()
+
+        mock_topics.return_value = [
+            {"title": f"Topic {i}", "summary": f"Summary {i}", "id": i}
+            for i in range(5)
+        ]
+        mock_embed.return_value = np.random.randn(5, 384).astype(np.float32)
+
+        # Populate cache first
+        topics, vecs = topic_cache.get_topic_vecs()
+        assert len(topics) == 5
+        assert vecs.shape[0] == 5
+
+        # Now set up: embed will be slow, and we invalidate mid-fetch
+        original_embed = mock_embed.side_effect
+
+        def slow_embed(texts):
+            # Invalidate while "embedding" is in progress
+            topic_cache.invalidate()
+            return np.random.randn(len(texts), 384).astype(np.float32)
+
+        mock_embed.side_effect = slow_embed
+
+        topics2, vecs2 = topic_cache.get_topic_vecs()
+        # Must be dimensionally consistent
+        assert vecs2 is not None
+        assert len(topics2) == vecs2.shape[0]
+
+    @patch("consolidation_memory.record_cache.encode_documents")
+    @patch("consolidation_memory.record_cache.get_all_active_records")
+    def test_record_cache_invalidate_during_fetch(self, mock_records, mock_embed, tmp_data_dir):
+        """Concurrent invalidate during record fetch returns dimensionally consistent data."""
+        import numpy as np
+        from consolidation_memory import record_cache
+
+        record_cache.invalidate()
+
+        mock_records.return_value = [
+            {"embedding_text": f"Record {i}", "id": i}
+            for i in range(5)
+        ]
+        mock_embed.return_value = np.random.randn(5, 384).astype(np.float32)
+
+        # Populate cache first
+        records, vecs = record_cache.get_record_vecs(include_expired=True)
+        assert len(records) == 5
+        assert vecs.shape[0] == 5
+
+        # Invalidate during embed
+        def slow_embed(texts):
+            record_cache.invalidate()
+            return np.random.randn(len(texts), 384).astype(np.float32)
+
+        mock_embed.side_effect = slow_embed
+
+        records2, vecs2 = record_cache.get_record_vecs(include_expired=True)
+        assert vecs2 is not None
+        assert len(records2) == vecs2.shape[0]
+
+
 class TestStoreDuringConsolidation:
     @patch("consolidation_memory.backends.encode_documents")
     def test_store_while_consolidation_locked(self, mock_embed, tmp_data_dir):

@@ -126,6 +126,9 @@ def get_record_vecs(include_expired: bool = False) -> tuple[list[dict], np.ndarr
                 "Record cache populate discarded: version changed %d -> %d during fetch",
                 fetch_version, _version,
             )
+            # Return cached data if available (consistent pair), else use our fetch
+            if slot["vecs"] is not None:
+                return slot["records"], slot["vecs"]
 
     if not include_expired:
         return records, vecs

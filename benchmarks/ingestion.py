@@ -69,9 +69,15 @@ def ingest_conversation(
         timestamp = f"{session_date} {session_time}".strip() if session_date else ""
 
         turns = session.get("turns", session.get("dialogue", []))
-        for turn in turns:
-            speaker = turn.get("speaker", turn.get("role", "Unknown"))
-            text = turn.get("text", turn.get("content", turn.get("utterance", "")))
+        for i, turn in enumerate(turns):
+            speaker = turn.get("speaker", turn.get("role", None))
+            if speaker is None:
+                logger.warning("Turn %d in session %d missing speaker/role field, defaulting to 'Unknown'", i, session_idx)
+                speaker = "Unknown"
+            text = turn.get("text", turn.get("content", turn.get("utterance", None)))
+            if text is None:
+                logger.warning("Turn %d in session %d missing text/content/utterance field, skipping", i, session_idx)
+                continue
             if not text:
                 continue
 
@@ -108,6 +114,7 @@ def get_qa_pairs(conversation: dict) -> list[dict]:
                     category = k
                     break
             else:
+                logger.warning("Skipping QA pair with unmapped category: %r", category)
                 continue
 
         if category == 5:  # Skip adversarial

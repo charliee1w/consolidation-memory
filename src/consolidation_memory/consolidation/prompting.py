@@ -77,21 +77,21 @@ _SANITIZE_RE = re.compile(
     r"(?i)(system\s*:?\s*prompt|you\s+are\b|you\s+must\b|ignore\s+(previous|above)"
     r"|forget\s+(your|all)|override|disregard"
     r"|important\s*:|new\s+instructions|assistant\s*:"
-    r"|\[system\]|<\/?system>"
-    r"|<\/?episode>|<\|im_start\|>|<\|im_end\|>"
-    r"|\[INST\]|<<SYS>>|Human\s*:|User\s*:|Assistant\s*:)",
+    r"|\[system\]|\[INST\]"
+    r"|Human\s*:|User\s*:|Assistant\s*:)",
 )
 
 
 def _sanitize_for_prompt(text: str) -> str:
     """Strip common prompt injection patterns from episode content.
 
-    Also replaces angle brackets inside content with fullwidth equivalents
-    to prevent structural tag injection (the surrounding <episode> tags are
-    added by the prompt builder, not the content).
+    Neutralizes angle brackets FIRST (fullwidth equivalents) to prevent
+    structural tag injection, then runs keyword-based regex to catch
+    remaining injection patterns. Order matters: no raw <> survive to
+    the prompt regardless of whether the regex matches them.
     """
-    sanitized = _SANITIZE_RE.sub("[REDACTED]", text)
-    sanitized = sanitized.replace("<", "\uff1c").replace(">", "\uff1e")
+    sanitized = text.replace("<", "\uff1c").replace(">", "\uff1e")
+    sanitized = _SANITIZE_RE.sub("[REDACTED]", sanitized)
     return sanitized
 
 

@@ -197,6 +197,18 @@ class TestHybridScoring:
             assert "bm25_score" in cors_ep[0]
             assert cors_ep[0]["bm25_score"] > 0
 
+    def test_keyword_match_ranks_higher(self, _setup):
+        """Episode with exact keyword match should rank above pure-semantic matches."""
+        client = _setup
+        # Store one with the exact query term, one without
+        client.store("ZXCVBN token validation failure in auth", content_type="solution")
+        client.store("General authentication token improvements", content_type="solution")
+
+        result = client.recall("ZXCVBN token")
+        if len(result.episodes) >= 2:
+            # The keyword-matching episode should appear first
+            assert "ZXCVBN" in result.episodes[0]["content"]
+
     def test_semantic_only_still_works(self, _setup):
         """Episode with high semantic sim but no keyword match should still appear."""
         client = _setup

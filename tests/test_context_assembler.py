@@ -4,6 +4,7 @@ Run with: python -m pytest tests/test_context_assembler.py -v
 """
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 
@@ -13,46 +14,65 @@ from consolidation_memory.context_assembler import (
     _TASK_INDICATORS,
 )
 
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
 
 class TestRecencyDecay:
     """Verify half-life decay formula (fix #2)."""
 
     def test_zero_age_returns_one(self):
-        now = datetime.now(timezone.utc).isoformat()
-        score = _recency_decay(now, half_life_days=7.0)
-        assert score == pytest.approx(1.0, abs=0.02)
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            score = _recency_decay(FIXED_NOW.isoformat(), half_life_days=7.0)
+            assert score == pytest.approx(1.0, abs=0.02)
 
     def test_one_half_life_returns_half(self):
-        t = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-        score = _recency_decay(t, half_life_days=7.0)
-        assert score == pytest.approx(0.5, abs=0.05)
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            t = (FIXED_NOW - timedelta(days=7)).isoformat()
+            score = _recency_decay(t, half_life_days=7.0)
+            assert score == pytest.approx(0.5, abs=0.05)
 
     def test_two_half_lives_returns_quarter(self):
-        t = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
-        score = _recency_decay(t, half_life_days=7.0)
-        assert score == pytest.approx(0.25, abs=0.05)
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            t = (FIXED_NOW - timedelta(days=14)).isoformat()
+            score = _recency_decay(t, half_life_days=7.0)
+            assert score == pytest.approx(0.25, abs=0.05)
 
     def test_naive_datetime_assumed_utc(self):
         """Naive datetime (no tzinfo) should not crash."""
-        t = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
-        score = _recency_decay(t, half_life_days=7.0)
-        assert 0.0 < score <= 1.0
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            t = (FIXED_NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+            score = _recency_decay(t, half_life_days=7.0)
+            assert 0.0 < score <= 1.0
 
     def test_invalid_date_returns_default(self):
-        score = _recency_decay("not-a-date", half_life_days=7.0)
-        assert score == 0.5
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            score = _recency_decay("not-a-date", half_life_days=7.0)
+            assert score == 0.5
 
     def test_future_date_clamped_to_one(self):
-        future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
-        score = _recency_decay(future, half_life_days=7.0)
-        assert score == pytest.approx(1.0, abs=0.01)
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            future = (FIXED_NOW + timedelta(days=5)).isoformat()
+            score = _recency_decay(future, half_life_days=7.0)
+            assert score == pytest.approx(1.0, abs=0.01)
 
 
 class TestPriorityScore:
     """Test the combined priority scoring."""
 
     def _episode(self, **overrides):
-        now = datetime.now(timezone.utc).isoformat()
+        now = FIXED_NOW.isoformat()
         ep = {
             "content": "test",
             "surprise_score": 0.5,

@@ -199,6 +199,31 @@ class TestSoftDeleteByIds:
         ensure_schema()
         assert soft_delete_records_by_ids([]) == 0
 
+    def test_valid_from_after_valid_until_treated_as_expired(self, tmp_data_dir):
+        """Record with valid_from > valid_until (invalid window) should be treated as expired."""
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="invalid_window.md", title="Invalid Window", summary="S",
+            source_episodes=[],
+        )
+        ids = insert_knowledge_records(tid, [
+            {"record_type": "fact",
+             "content": {"type": "fact", "subject": "X", "info": "Y"},
+             "embedding_text": "X: Y"},
+        ])
+        # Set valid_from in the future and valid_until in the past (invalid window)
+        from consolidation_memory.database import get_connection
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE knowledge_records SET valid_from = ?, valid_until = ? WHERE id = ?",
+                (future, past, ids[0]),
+            )
+        # Should be treated as expired — not returned with include_expired=False
+        records = get_all_active_records(include_expired=False)
+        assert all(r["id"] != ids[0] for r in records)
+
 
 # ── Contradiction detection ──────────────────────────────────────────────────
 

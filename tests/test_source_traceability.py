@@ -7,11 +7,14 @@ Run with: python -m pytest tests/test_source_traceability.py -v
 """
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from consolidation_memory.context_assembler import (
     _format_source_dates,
     _enrich_source_traceability,
 )
+
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
 
 
 class TestFormatSourceDates:
@@ -21,54 +24,71 @@ class TestFormatSourceDates:
         assert _format_source_dates([]) == ""
 
     def test_single_date_current_year(self):
-        now = datetime.now(timezone.utc)
-        iso = now.isoformat()
-        result = _format_source_dates([iso])
-        assert result.startswith("Based on 1 conversation (")
-        assert now.strftime("%b %d") in result
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            iso = FIXED_NOW.isoformat()
+            result = _format_source_dates([iso])
+            assert result.startswith("Based on 1 conversation (")
+            assert FIXED_NOW.strftime("%b %d") in result
 
     def test_multiple_dates(self):
-        now = datetime.now(timezone.utc)
-        d1 = now.isoformat()
-        d2 = (now - timedelta(days=5)).isoformat()
-        result = _format_source_dates([d1, d2])
-        assert result.startswith("Based on 2 conversations (")
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            d1 = FIXED_NOW.isoformat()
+            d2 = (FIXED_NOW - timedelta(days=5)).isoformat()
+            result = _format_source_dates([d1, d2])
+            assert result.startswith("Based on 2 conversations (")
 
     def test_past_year_includes_year(self):
-        old = datetime(2023, 6, 15, tzinfo=timezone.utc).isoformat()
-        result = _format_source_dates([old])
-        assert "2023" in result
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            old = datetime(2023, 6, 15, tzinfo=timezone.utc).isoformat()
+            result = _format_source_dates([old])
+            assert "2023" in result
 
     def test_deduplicates_same_day(self):
-        now = datetime.now(timezone.utc)
-        d1 = now.isoformat()
-        d2 = (now + timedelta(hours=2)).isoformat()  # same day
-        result = _format_source_dates([d1, d2])
-        # Should say 2 conversations but only show 1 unique date
-        assert "Based on 2 conversations" in result
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            d1 = FIXED_NOW.isoformat()
+            d2 = (FIXED_NOW + timedelta(hours=2)).isoformat()  # same day
+            result = _format_source_dates([d1, d2])
+            # Should say 2 conversations but only show 1 unique date
+            assert "Based on 2 conversations" in result
 
     def test_invalid_dates_ignored(self):
         assert _format_source_dates(["not-a-date"]) == ""
 
     def test_mixed_valid_invalid(self):
-        now = datetime.now(timezone.utc).isoformat()
-        result = _format_source_dates([now, "bad-date"])
-        assert result.startswith("Based on 1 conversation (")
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            result = _format_source_dates([FIXED_NOW.isoformat(), "bad-date"])
+            assert result.startswith("Based on 1 conversation (")
 
     def test_many_dates_truncated(self):
         """More than 5 unique dates should show (+N more)."""
-        dates = [
-            (datetime.now(timezone.utc) - timedelta(days=i * 30)).isoformat()
-            for i in range(8)
-        ]
-        result = _format_source_dates(dates)
-        assert "+3 more" in result
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            dates = [
+                (FIXED_NOW - timedelta(days=i * 30)).isoformat()
+                for i in range(8)
+            ]
+            result = _format_source_dates(dates)
+            assert "+3 more" in result
 
     def test_naive_datetime_handled(self):
         """Naive datetime (no timezone) should not crash."""
-        naive = "2025-03-15T10:30:00"
-        result = _format_source_dates([naive])
-        assert result.startswith("Based on 1 conversation")
+        with patch("consolidation_memory.context_assembler.datetime") as mock_dt:
+            mock_dt.now.return_value = FIXED_NOW
+            mock_dt.fromisoformat = datetime.fromisoformat
+            naive = "2025-03-15T10:30:00"
+            result = _format_source_dates([naive])
+            assert result.startswith("Based on 1 conversation")
 
 
 class TestEnrichSourceTraceability:

@@ -93,16 +93,13 @@ class VectorStore:
                     )
 
             if self._index.ntotal > 0 and self._index.d != cfg.EMBEDDING_DIMENSION:
-                logger.error(
-                    "FAISS dimension mismatch: index=%d, config=%d. Rebuilding empty index.",
-                    self._index.d, cfg.EMBEDDING_DIMENSION,
+                raise RuntimeError(
+                    f"FAISS dimension mismatch: index has {self._index.d} dimensions but "
+                    f"config specifies {cfg.EMBEDDING_DIMENSION}. This likely means the "
+                    f"embedding model changed. Run 'consolidation-memory reindex' to "
+                    f"rebuild the index with the new model, or update "
+                    f"embedding.dimension in your config to match the existing index."
                 )
-                self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
-                self._id_map = []
-                self._uuid_to_pos = {}
-                self._tombstones = set()
-                self._save()
-                self._save_tombstones()
         else:
             logger.info("Creating new FAISS index (dim=%d)", cfg.EMBEDDING_DIMENSION)
             self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)

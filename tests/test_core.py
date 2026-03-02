@@ -216,6 +216,29 @@ class TestVectorStore:
         vs = VectorStore()
         assert vs.size == 0
 
+    def test_dimension_mismatch_raises(self):
+        """Changing embedding dimension with existing vectors must raise, not silently destroy data."""
+        from consolidation_memory.vector_store import VectorStore
+        from consolidation_memory.config import get_config, reset_config
+
+        # Create index with 384-dim vectors
+        vs = VectorStore()
+        vecs = _make_normalized_batch(3, dim=384, seed=42)
+        vs.add_batch(["a", "b", "c"], vecs)
+        assert vs.size == 3
+
+        # Change config to 768-dim — loading should raise RuntimeError
+        cfg = get_config()
+        reset_config(
+            _base_data_dir=cfg._base_data_dir,
+            active_project=cfg.active_project,
+            EMBEDDING_DIMENSION=768,
+            EMBEDDING_BACKEND="fastembed",
+        )
+
+        with pytest.raises(RuntimeError, match="FAISS dimension mismatch"):
+            VectorStore()
+
 
 # ── Tombstone tests ──────────────────────────────────────────────────────────
 

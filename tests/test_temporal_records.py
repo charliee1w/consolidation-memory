@@ -372,7 +372,8 @@ class TestMergeValidFromMarking:
         }
 
         with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_enc, \
-             patch("consolidation_memory.consolidation.engine._llm_extract_with_validation") as mock_llm:
+             patch("consolidation_memory.consolidation.engine._llm_extract_with_validation") as mock_llm, \
+             override_config(MERGE_DROP_DETECTION_ENABLED=False):
             mock_enc.side_effect = [new_vec, existing_vec]
             mock_llm.return_value = (merged_json, 1)
 
@@ -423,7 +424,8 @@ class TestMergeValidFromMarking:
 
         with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_enc, \
              patch("consolidation_memory.consolidation.engine._call_llm") as mock_contra_llm, \
-             patch("consolidation_memory.consolidation.engine._llm_extract_with_validation") as mock_llm:
+             patch("consolidation_memory.consolidation.engine._llm_extract_with_validation") as mock_llm, \
+             override_config(MERGE_DROP_DETECTION_ENABLED=False):
             mock_enc.side_effect = [vec, vec]
             mock_contra_llm.return_value = '["CONTRADICTS"]'
             mock_llm.return_value = (merged_json, 1)

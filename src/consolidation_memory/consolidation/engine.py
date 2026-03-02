@@ -212,6 +212,48 @@ def _detect_contradictions(
     return contradictions
 
 
+# ── Silent drop detection ─────────────────────────────────────────────────────
+
+
+def _detect_silent_drops(
+    pre_merge_records: list[dict],
+    merged_records: list[dict],
+) -> list[tuple[int, float]]:
+    """Detect pre-merge records silently dropped during LLM merge.
+
+    Compares each pre-merge record against all merged records using cosine
+    similarity. Returns indices of pre-merge records whose max similarity
+    to any merged record falls below the configured threshold.
+
+    Returns:
+        List of (pre_merge_index, max_similarity) for dropped records.
+    """
+    if not pre_merge_records or not merged_records:
+        return []
+
+    cfg = get_config()
+
+    pre_texts = [_embedding_text_for_record(rec) for rec in pre_merge_records]
+    merged_texts = [_embedding_text_for_record(rec) for rec in merged_records]
+
+    try:
+        pre_vecs = encode_documents(pre_texts)
+        merged_vecs = encode_documents(merged_texts)
+    except Exception as e:
+        logger.warning("Failed to embed records for silent drop detection: %s", e)
+        return []
+
+    sims = pre_vecs @ merged_vecs.T  # shape: (len(pre), len(merged))
+
+    drops: list[tuple[int, float]] = []
+    for idx in range(len(pre_merge_records)):
+        max_sim = float(np.max(sims[idx]))
+        if max_sim < cfg.MERGE_DROP_SIMILARITY_THRESHOLD:
+            drops.append((idx, max_sim))
+
+    return drops
+
+
 # ── Topic merging ─────────────────────────────────────────────────────────────
 
 
@@ -286,6 +328,33 @@ def _merge_into_existing(
         )
         increment_consolidation_attempts(cluster_ep_ids)
         return "failed", merge_calls
+
+    # Detect silent drops: pre-merge records not preserved in merged output
+    cfg = get_config()
+    if cfg.MERGE_DROP_DETECTION_ENABLED:
+        pre_merge = existing_records + new_records  # all claims before merge
+        silent_drops = _detect_silent_drops(pre_merge, merged_records)
+        for drop_idx, max_sim in silent_drops:
+            dropped_rec = pre_merge[drop_idx]
+            dropped_content = json.dumps(dropped_rec)
+            insert_contradiction(
+                topic_id=existing["id"],
+                old_record_id=None,
+                new_record_id=None,
+                old_content=dropped_content,
+                new_content="",
+                resolution="silent_drop",
+                reason=f"max_similarity={max_sim:.3f}",
+            )
+        if silent_drops:
+            logger.warning(
+                "Merge for %s: %d/%d pre-merge records potentially dropped "
+                "(threshold=%.2f)",
+                existing["filename"],
+                len(silent_drops),
+                len(pre_merge),
+                cfg.MERGE_DROP_SIMILARITY_THRESHOLD,
+            )
 
     # Detect contradictions between new extraction and existing records
     new_for_detection = []

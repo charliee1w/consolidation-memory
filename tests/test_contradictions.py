@@ -1,10 +1,11 @@
-"""Tests for contradiction audit log (Option A — truth maintenance)."""
+"""Tests for contradiction audit log and diff-aware merge validation."""
 
 from unittest.mock import patch
 
 import numpy as np
 
 from consolidation_memory.config import override_config
+from consolidation_memory.consolidation.engine import _detect_silent_drops
 from consolidation_memory.database import (
     ensure_schema,
     get_contradictions,
@@ -388,3 +389,346 @@ class TestContradictionsMCPTool:
             assert result.total == 0
         finally:
             client.close()
+
+
+# ── Diff-aware merge validation ──────────────────────────────────────────────
+
+
+class TestDiffAwareMergeValidation:
+    """Test silent drop detection during LLM merge."""
+
+    def _make_vec(self, seed=42):
+        rng = np.random.RandomState(seed)
+        v = rng.randn(384).astype(np.float32)
+        v /= np.linalg.norm(v)
+        return v
+
+    def test_silent_drop_detected_during_merge(self, tmp_data_dir):
+        """Merge drops a record — verify contradiction_log entry with
+        resolution='silent_drop'."""
+        ensure_schema()
+
+        tid = upsert_knowledge_topic(
+            filename="drop_test.md",
+            title="Drop Test",
+            summary="S",
+            source_episodes=["ep_old"],
+        )
+
+        # Insert two existing records
+        insert_knowledge_records(
+            tid,
+            [
+                {
+                    "record_type": "fact",
+                    "content": {"type": "fact", "subject": "A", "info": "kept"},
+                    "embedding_text": "A is kept",
+                    "confidence": 0.8,
+                },
+                {
+                    "record_type": "fact",
+                    "content": {"type": "fact", "subject": "B", "info": "dropped"},
+                    "embedding_text": "B is dropped",
+                    "confidence": 0.8,
+                },
+            ],
+        )
+
+        extraction_data = {
+            "title": "Drop Test",
+            "summary": "S",
+            "tags": [],
+            "records": [
+                {"type": "fact", "subject": "C", "info": "new claim"},
+            ],
+        }
+
+        existing = {
+            "id": tid,
+            "filename": "drop_test.md",
+            "title": "Drop Test",
+            "summary": "S",
+        }
+
+        # Vectors: existing[0] and new[0] similar, existing[1] dissimilar to
+        # merged output -> triggers silent drop for existing[1] and new[0]
+        kept_vec = self._make_vec(42)
+        dropped_vec = self._make_vec(99)
+
+        def mock_encode(texts):
+            vecs = []
+            for t in texts:
+                if "dropped" in t.lower() or "new claim" in t.lower():
+                    vecs.append(dropped_vec)
+                else:
+                    vecs.append(kept_vec)
+            return np.array(vecs)
+
+        # LLM merge returns only the kept record — drops existing[1]
+        def mock_llm_extract(prompt, episodes):
+            return {
+                "title": "Drop Test",
+                "summary": "S",
+                "tags": [],
+                "records": [
+                    {"type": "fact", "subject": "A", "info": "kept"},
+                ],
+            }, 1
+
+        with (
+            patch(
+                "consolidation_memory.consolidation.engine.encode_documents",
+                mock_encode,
+            ),
+            patch(
+                "consolidation_memory.consolidation.engine._llm_extract_with_validation",
+                mock_llm_extract,
+            ),
+            override_config(
+                MERGE_DROP_DETECTION_ENABLED=True,
+                MERGE_DROP_SIMILARITY_THRESHOLD=0.5,
+                CONTRADICTION_LLM_ENABLED=False,
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.99,
+                RENDER_MARKDOWN=False,
+            ),
+        ):
+            from consolidation_memory.consolidation.engine import _merge_into_existing
+
+            status, _ = _merge_into_existing(
+                existing=existing,
+                extraction_data=extraction_data,
+                cluster_episodes=[{"id": "ep_new", "content": "stuff", "tags": "[]"}],
+                cluster_ep_ids=["ep_new"],
+                confidence=0.8,
+            )
+
+        assert status == "updated"
+
+        rows = get_contradictions(topic_id=tid)
+        silent_drops = [r for r in rows if r["resolution"] == "silent_drop"]
+        assert len(silent_drops) >= 1
+        # Verify the dropped record content appears
+        assert any("dropped" in r["old_content"] for r in silent_drops)
+        assert silent_drops[0]["new_content"] == ""
+        assert "max_similarity=" in silent_drops[0]["reason"]
+
+    def test_no_silent_drops_when_all_preserved(self, tmp_data_dir):
+        """All pre-merge records have high similarity in merged output —
+        no drops logged."""
+        ensure_schema()
+
+        tid = upsert_knowledge_topic(
+            filename="preserve_test.md",
+            title="Preserve Test",
+            summary="S",
+            source_episodes=["ep_old"],
+        )
+
+        insert_knowledge_records(
+            tid,
+            [
+                {
+                    "record_type": "fact",
+                    "content": {"type": "fact", "subject": "A", "info": "value"},
+                    "embedding_text": "A has value",
+                    "confidence": 0.8,
+                },
+            ],
+        )
+
+        extraction_data = {
+            "title": "Preserve Test",
+            "summary": "S",
+            "tags": [],
+            "records": [
+                {"type": "fact", "subject": "B", "info": "new"},
+            ],
+        }
+
+        existing = {
+            "id": tid,
+            "filename": "preserve_test.md",
+            "title": "Preserve Test",
+            "summary": "S",
+        }
+
+        # All vectors identical — everything preserved
+        def mock_encode(texts):
+            return np.array([self._make_vec(42) for _ in texts])
+
+        def mock_llm_extract(prompt, episodes):
+            return {
+                "title": "Preserve Test",
+                "summary": "S",
+                "tags": [],
+                "records": [
+                    {"type": "fact", "subject": "A", "info": "value"},
+                    {"type": "fact", "subject": "B", "info": "new"},
+                ],
+            }, 1
+
+        with (
+            patch(
+                "consolidation_memory.consolidation.engine.encode_documents",
+                mock_encode,
+            ),
+            patch(
+                "consolidation_memory.consolidation.engine._llm_extract_with_validation",
+                mock_llm_extract,
+            ),
+            override_config(
+                MERGE_DROP_DETECTION_ENABLED=True,
+                MERGE_DROP_SIMILARITY_THRESHOLD=0.5,
+                CONTRADICTION_LLM_ENABLED=False,
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.99,
+                RENDER_MARKDOWN=False,
+            ),
+        ):
+            from consolidation_memory.consolidation.engine import _merge_into_existing
+
+            status, _ = _merge_into_existing(
+                existing=existing,
+                extraction_data=extraction_data,
+                cluster_episodes=[{"id": "ep_p", "content": "c", "tags": "[]"}],
+                cluster_ep_ids=["ep_p"],
+                confidence=0.8,
+            )
+
+        assert status == "updated"
+
+        rows = get_contradictions(topic_id=tid)
+        silent_drops = [r for r in rows if r["resolution"] == "silent_drop"]
+        assert len(silent_drops) == 0
+
+    def test_silent_drop_detection_disabled(self, tmp_data_dir):
+        """When MERGE_DROP_DETECTION_ENABLED=False, no drops logged even when
+        records are dropped."""
+        ensure_schema()
+
+        tid = upsert_knowledge_topic(
+            filename="disabled_test.md",
+            title="Disabled Test",
+            summary="S",
+            source_episodes=["ep_old"],
+        )
+
+        insert_knowledge_records(
+            tid,
+            [
+                {
+                    "record_type": "fact",
+                    "content": {"type": "fact", "subject": "X", "info": "will drop"},
+                    "embedding_text": "X will drop",
+                    "confidence": 0.8,
+                },
+            ],
+        )
+
+        extraction_data = {
+            "title": "Disabled Test",
+            "summary": "S",
+            "tags": [],
+            "records": [
+                {"type": "fact", "subject": "Y", "info": "new"},
+            ],
+        }
+
+        existing = {
+            "id": tid,
+            "filename": "disabled_test.md",
+            "title": "Disabled Test",
+            "summary": "S",
+        }
+
+        # Use orthogonal vectors so drops would be detected if enabled
+        def mock_encode(texts):
+            vecs = []
+            for i, _ in enumerate(texts):
+                vecs.append(self._make_vec(i * 100))
+            return np.array(vecs)
+
+        def mock_llm_extract(prompt, episodes):
+            return {
+                "title": "Disabled Test",
+                "summary": "S",
+                "tags": [],
+                "records": [
+                    {"type": "fact", "subject": "Y", "info": "new"},
+                ],
+            }, 1
+
+        with (
+            patch(
+                "consolidation_memory.consolidation.engine.encode_documents",
+                mock_encode,
+            ),
+            patch(
+                "consolidation_memory.consolidation.engine._llm_extract_with_validation",
+                mock_llm_extract,
+            ),
+            override_config(
+                MERGE_DROP_DETECTION_ENABLED=False,
+                MERGE_DROP_SIMILARITY_THRESHOLD=0.5,
+                CONTRADICTION_LLM_ENABLED=False,
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.99,
+                RENDER_MARKDOWN=False,
+            ),
+        ):
+            from consolidation_memory.consolidation.engine import _merge_into_existing
+
+            status, _ = _merge_into_existing(
+                existing=existing,
+                extraction_data=extraction_data,
+                cluster_episodes=[{"id": "ep_d", "content": "c", "tags": "[]"}],
+                cluster_ep_ids=["ep_d"],
+                confidence=0.8,
+            )
+
+        assert status == "updated"
+
+        rows = get_contradictions(topic_id=tid)
+        silent_drops = [r for r in rows if r["resolution"] == "silent_drop"]
+        assert len(silent_drops) == 0
+
+    def test_detect_silent_drops_unit(self, tmp_data_dir):
+        """Direct unit test of _detect_silent_drops with controlled vectors."""
+        kept_vec = self._make_vec(42)
+        dropped_vec = self._make_vec(99)
+
+        # Pre-merge: rec0 similar to merged, rec1 dissimilar
+        pre_merge = [
+            {"type": "fact", "subject": "A", "info": "kept"},
+            {"type": "fact", "subject": "B", "info": "dropped"},
+        ]
+        merged = [
+            {"type": "fact", "subject": "A", "info": "kept"},
+        ]
+
+        def mock_encode(texts):
+            vecs = []
+            for t in texts:
+                if "dropped" in t.lower():
+                    vecs.append(dropped_vec)
+                else:
+                    vecs.append(kept_vec)
+            return np.array(vecs)
+
+        with (
+            patch(
+                "consolidation_memory.consolidation.engine.encode_documents",
+                mock_encode,
+            ),
+            override_config(MERGE_DROP_SIMILARITY_THRESHOLD=0.5),
+        ):
+            drops = _detect_silent_drops(pre_merge, merged)
+
+        # rec1 ("dropped") should be detected as dropped
+        drop_indices = [idx for idx, _ in drops]
+        assert 1 in drop_indices
+
+        # rec0 ("kept") should NOT be detected as dropped
+        assert 0 not in drop_indices
+
+        # Verify max_sim is reported
+        for _, max_sim in drops:
+            assert max_sim < 0.5

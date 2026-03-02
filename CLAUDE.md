@@ -8,10 +8,10 @@ Local-first persistent memory for AI agents — store, recall, and consolidate k
 src/consolidation_memory/
 ├── server.py              MCP server (primary interface)
 ├── client.py              MemoryClient API + MCP tool dispatch
-├── database.py            SQLite (schema v9, WAL mode)
+├── database.py            SQLite (schema v10, WAL mode, FTS5 hybrid search)
 ├── vector_store.py        FAISS index (flat → IVF auto-migration at 10K vectors)
 ├── config.py              Singleton Config dataclass, TOML + env var loading
-├── context_assembler.py   Retrieval pipeline (FAISS ANN + priority scoring)
+├── context_assembler.py   Retrieval pipeline (hybrid FAISS + BM25 + priority scoring)
 ├── consolidation/         Knowledge extraction engine
 │   ├── clustering.py      scipy UPGMA hierarchical clustering (threshold 0.78)
 │   ├── prompting.py       LLM prompt builders, JSON parsing, validation
@@ -43,7 +43,7 @@ pip install -e ".[all,dev]"
 python -m pytest tests/ -v
 ```
 
-Run the full suite before any commit. All 379+ tests must pass.
+Run the full suite before any commit. All 407+ tests must pass.
 
 ### Linting
 
@@ -72,6 +72,7 @@ python -m mypy src/consolidation_memory/
 
 - **Config singleton**: `get_config()` returns a shared dataclass instance. Tests use `reset_config()`. All ~50 fields loadable from TOML + env var overrides (`CONSOLIDATION_MEMORY_<FIELD>`).
 - **FAISS persistence**: Atomic writes via tempfile + os.replace. ID-map written first (source of truth). Auto-migrates to IndexIVFFlat at 10K vectors.
+- **Hybrid search**: FTS5 virtual table mirrors episode content. Recall runs FAISS (cosine) + FTS5 (BM25) in parallel, merges candidates, computes weighted hybrid score. Gracefully degrades if FTS5 unavailable.
 - **Knowledge records**: 4 structured types — `fact`, `solution`, `preference`, `procedure`. Stored as JSON in SQLite, rendered to markdown. Each record has its own embedding for independent retrieval.
 - **Consolidation engine**: Background daemon thread with `consolidation_lock`. Scipy UPGMA clustering at threshold 0.78. LLM extracts structured records from episode clusters.
 - **Contradiction detection**: Semantic similarity >= 0.7 between new and existing records triggers LLM verification. Contradicted records get `valid_until` set (temporal expiry).
@@ -111,10 +112,17 @@ Release when a meaningful milestone lands — a feature, a noteworthy bug fix, o
 ## Roadmap
 
 See `.claude/ROADMAP.md` for the implementation roadmap.
-**Current focus: Phase 2 (Recall Quality Leap).**
+**Current focus: Phase 2 (Recall Quality Leap). Next up: 2.3 Query expansion for recall.**
 
 When asked to "continue the roadmap", read that file and implement the next
 incomplete item. Commit after each feature. Run the full test suite before committing.
+
+**Roadmap maintenance (automatic):** After completing any roadmap item, release,
+or significant feature work, update `.claude/ROADMAP.md` to reflect the current
+state: mark completed items with `[x]` and `— DONE (vX.Y.Z)`, update schema
+versions, test counts, and the priority table. Also update this CLAUDE.md if
+project structure, architecture decisions, or test counts changed. Keep both
+files as the single source of truth for project status.
 
 ## Key Files to Know
 

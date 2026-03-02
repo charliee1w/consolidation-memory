@@ -188,6 +188,8 @@ class Config:
     CONSOLIDATION_MAX_ATTEMPTS: int = 5
     CONTRADICTION_SIMILARITY_THRESHOLD: float = 0.7
     CONTRADICTION_LLM_ENABLED: bool = True
+    MERGE_DROP_DETECTION_ENABLED: bool = True
+    MERGE_DROP_SIMILARITY_THRESHOLD: float = 0.5
     CONSOLIDATION_STOPWORDS: frozenset[str] = field(default_factory=lambda: _DEFAULT_STOPWORDS)
     CONSOLIDATION_PRIORITY_WEIGHTS: dict[str, float] = field(
         default_factory=lambda: {"surprise": 0.4, "recency": 0.35, "access_frequency": 0.25}
@@ -410,6 +412,8 @@ def _build_config(
         CONSOLIDATION_MAX_ATTEMPTS=int(_consol.get("max_attempts", 5)),
         CONTRADICTION_SIMILARITY_THRESHOLD=float(_consol.get("contradiction_similarity_threshold", 0.7)),
         CONTRADICTION_LLM_ENABLED=bool(_consol.get("contradiction_llm_enabled", True)),
+        MERGE_DROP_DETECTION_ENABLED=bool(_consol.get("merge_drop_detection_enabled", True)),
+        MERGE_DROP_SIMILARITY_THRESHOLD=float(_consol.get("merge_drop_similarity_threshold", 0.5)),
         CONSOLIDATION_STOPWORDS=stopwords,
         CONSOLIDATION_PRIORITY_WEIGHTS=_consol.get(
             "priority_weights",

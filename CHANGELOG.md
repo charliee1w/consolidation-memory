@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.12.1 — 2026-03-02
+
+
 ## 0.12.0 â€” 2026-03-02
 
 Diff-aware merge validation for consolidation trust.

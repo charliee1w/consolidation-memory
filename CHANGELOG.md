@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.0 — 2026-03-02
+
+Diff-aware merge validation for consolidation trust.
+
+### Features
+
+- **Diff-aware merge validation** — after LLM merge, each pre-merge record is compared against merged output via cosine similarity. Records with no semantic match (max similarity below threshold) are flagged as "silently dropped" and logged to `contradiction_log` with `resolution='silent_drop'` for audit. Prevents silent merge drift, the #1 trust issue with consolidation
+- **2 new config fields** — `merge_drop_detection_enabled` (default true), `merge_drop_similarity_threshold` (default 0.5) under `[consolidation]`
+
+### Internal
+
+- 407 tests (4 new for merge validation)
+
 ## 0.11.0 — 2026-03-02
 
 Hybrid search and recall quality improvements.

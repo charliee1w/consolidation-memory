@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from consolidation_memory.database import (
     ensure_schema,
@@ -538,6 +539,14 @@ class TestMCPServerAsOf:
 
 # ── REST API ─────────────────────────────────────────────────────────────
 
+try:
+    from consolidation_memory.rest import RecallRequest  # noqa: F401
+    HAS_FASTAPI = True
+except ImportError:
+    HAS_FASTAPI = False
+
+
+@pytest.mark.skipif(not HAS_FASTAPI, reason="fastapi not installed")
 class TestRESTAsOf:
     """Test that the REST API accepts as_of."""
 

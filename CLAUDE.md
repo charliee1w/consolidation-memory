@@ -43,7 +43,7 @@ pip install -e ".[all,dev]"
 python -m pytest tests/ -v
 ```
 
-Run the full suite before any commit. All 459+ tests must pass.
+Run the full suite before any commit. All 471+ tests must pass.
 
 ### Linting
 
@@ -57,6 +57,19 @@ python -m ruff format --check src/ tests/
 ```
 python -m mypy src/consolidation_memory/
 ```
+
+### CI
+
+GitHub Actions matrix: `ubuntu-latest` + `windows-latest`, Python 3.10/3.12/3.13. Ruff and mypy run only on Python 3.13 + ubuntu.
+
+### Benchmarks
+
+```
+pip install -e ".[benchmark]"
+python -m benchmarks.locomo
+```
+
+Requires LoCoMo-10 JSON dataset in `benchmarks/data/` (not checked in). Results go to `benchmarks/results/`.
 
 ## Code Style
 
@@ -78,6 +91,15 @@ python -m mypy src/consolidation_memory/
 - **Contradiction detection**: Semantic similarity >= 0.7 between new and existing records triggers LLM verification. Contradicted records get `valid_until` set (temporal expiry).
 - **Thread safety**: SQLite WAL mode, FAISS threading lock, per-thread DB connections via `threading.local`.
 - **Security**: Prompt injection sanitization (XML wrapping, pattern stripping), path traversal guards, input validation, circuit breaker for LLM failures.
+
+## Gotchas
+
+- **Ruff hook is non-blocking**: The `.claude/hooks/ruff-check.ps1` PostToolUse hook always exits 0. It prints warnings but never blocks writes. The real lint gate is CI and `scripts/release.py`.
+- **Backend switch requires reindex**: Changing `EMBEDDING_BACKEND` changes vector dimensions. Run `consolidation-memory reindex` after switching or FAISS will raise `RuntimeError` on dimension mismatch.
+- **Tests skip env vars**: `reset_config()` in `conftest.py` ignores all `CONSOLIDATION_MEMORY_*` env vars for isolation. To test env var parsing, call config loading functions directly.
+- **Lazy imports in `__init__.py`**: Uses `__getattr__` to defer heavy deps (faiss, numpy). Bare `import consolidation_memory` is fast — don't add eager imports.
+- **Test imports via `pythonpath`**: `pyproject.toml` sets `pythonpath = ["tests"]`, so test files use `from tests.helpers import mock_encode`.
+- **Consolidation thread is a daemon**: Dies with the main process. `close()` sets a stop event and joins with 30s timeout for graceful shutdown.
 
 ## Release Process
 

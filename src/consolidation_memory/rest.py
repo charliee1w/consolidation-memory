@@ -50,6 +50,8 @@ class RecallRequest(BaseModel):
     tags: list[str] | None = None
     after: str | None = None
     before: str | None = None
+    include_expired: bool = False
+    as_of: str | None = None
 
 
 class EpisodeInput(BaseModel):
@@ -159,6 +161,8 @@ def create_app() -> FastAPI:
             tags=req.tags,
             after=req.after,
             before=req.before,
+            include_expired=req.include_expired,
+            as_of=req.as_of,
         )
         return dataclasses.asdict(result)
 

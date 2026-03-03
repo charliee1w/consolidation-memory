@@ -184,6 +184,14 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
                     "description": "Include temporally expired knowledge records. Default False.",
                     "default": False,
                 },
+                "as_of": {
+                    "type": "string",
+                    "description": (
+                        "ISO datetime for temporal belief queries. Returns knowledge "
+                        "state at that point in time, including records that have since "
+                        "been superseded (e.g. '2025-06-15T00:00:00+00:00')."
+                    ),
+                },
             },
             "required": ["query"],
         },
@@ -575,6 +583,7 @@ def dispatch_tool_call(
             after=arguments.get("after"),
             before=arguments.get("before"),
             include_expired=arguments.get("include_expired", False),
+            as_of=arguments.get("as_of"),
         )
         return dataclasses.asdict(recall_result)
 

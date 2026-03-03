@@ -937,6 +937,34 @@ def get_all_active_records(include_expired: bool = False) -> list[dict[str, Any]
     return [dict(r) for r in rows]
 
 
+def get_records_as_of(as_of: str) -> list[dict[str, Any]]:
+    """Return knowledge records as they existed at a specific point in time.
+
+    Returns non-deleted records that were created on or before ``as_of`` and
+    had not yet been superseded (expired) at that time.  This enables
+    "what did I believe about X at time T?" queries.
+
+    A record is considered valid at time T when:
+    - ``created_at <= T`` (the record existed)
+    - ``valid_until IS NULL OR valid_until > T`` (not yet superseded)
+
+    Args:
+        as_of: ISO 8601 datetime string representing the point in time.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
+               FROM knowledge_records kr
+               JOIN knowledge_topics kt ON kr.topic_id = kt.id
+               WHERE kr.deleted = 0
+                 AND kr.created_at <= ?
+                 AND (kr.valid_until IS NULL OR kr.valid_until > ?)
+               ORDER BY kr.updated_at DESC""",
+            (as_of, as_of),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_records_by_topic(topic_id: str, include_expired: bool = False) -> list[dict[str, Any]]:
     """Return all active records for a specific topic.
 

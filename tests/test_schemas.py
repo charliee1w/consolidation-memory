@@ -87,7 +87,7 @@ class TestDispatch:
         client.recall.assert_called_once_with(
             query="test", n_results=10, include_knowledge=True,
             content_types=None, tags=None, after=None, before=None,
-            include_expired=False,
+            include_expired=False, as_of=None,
         )
 
     def test_dispatch_status(self):

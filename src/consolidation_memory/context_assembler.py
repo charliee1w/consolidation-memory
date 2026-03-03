@@ -17,6 +17,7 @@ from consolidation_memory.database import (
     fts_search,
     get_episodes_batch,
     get_recently_contradicted_topic_ids,
+    get_records_as_of,
     get_tag_pairs_in_set,
     increment_access,
     increment_record_access,
@@ -342,6 +343,7 @@ def recall(
     after: str | None = None,
     before: str | None = None,
     include_expired: bool = False,
+    as_of: str | None = None,
 ) -> dict:
     """Main retrieval function. Returns ranked episodes + knowledge excerpts.
 
@@ -351,9 +353,20 @@ def recall(
         after: Only return episodes created after this ISO date string.
         before: Only return episodes created before this ISO date string.
         include_expired: If True, include temporally expired knowledge records.
+        as_of: ISO datetime for temporal belief queries. When set, returns
+            knowledge state as it was at that point in time, including
+            records that have since been superseded and excluding records
+            that did not yet exist. Implicitly caps episode results to
+            episodes created on or before this time.
     """
     cfg = get_config()
     n_results = min(n_results, cfg.RECALL_MAX_N)
+
+    # Temporal belief query: as_of caps episode results to that point in time.
+    # Use whichever is earlier: the explicit `before` or `as_of`.
+    if as_of:
+        if before is None or as_of < before:
+            before = as_of
 
     # Fetch more candidates when filtering, since many will be discarded
     fetch_k = n_results * 5 if (content_types or tags or after or before) else n_results * 3
@@ -380,10 +393,11 @@ def recall(
 
     logger.debug(
         "recall: query_len=%d, n_results=%d, vector_candidates=%d, "
-        "fts_candidates=%d, merged=%d, filters=%s",
+        "fts_candidates=%d, merged=%d, filters=%s, as_of=%s",
         len(query), n_results, len(candidates), len(bm25_map),
         len(all_candidate_ids),
         {"content_types": content_types, "tags": tags, "after": after, "before": before},
+        as_of,
     )
 
     # Batch-fetch all candidate episodes in one query instead of N individual SELECTs
@@ -458,9 +472,11 @@ def recall(
     records: list[dict] = []
     warnings = []
     if include_knowledge:
-        knowledge, kw_warnings = _search_knowledge(query, query_vec)
+        knowledge, kw_warnings = _search_knowledge(query, query_vec, as_of=as_of)
         warnings.extend(kw_warnings)
-        records, rec_warnings = _search_records(query, query_vec, include_expired=include_expired)
+        records, rec_warnings = _search_records(
+            query, query_vec, include_expired=include_expired, as_of=as_of,
+        )
         warnings.extend(rec_warnings)
 
         # Source traceability: enrich records and topics with source dates
@@ -482,13 +498,25 @@ def recall(
 
 
 def _search_knowledge(
-    query: str, query_vec: np.ndarray | None = None,
+    query: str, query_vec: np.ndarray | None = None, *, as_of: str | None = None,
 ) -> tuple[list[dict], list[str]]:
     cfg = get_config()
     warnings: list[str] = []
     topics, summary_vecs = topic_cache.get_topic_vecs()
     if not topics:
         return [], warnings
+
+    # Temporal belief query: filter topics to those that existed at as_of
+    if as_of:
+        filtered_indices = [
+            i for i, t in enumerate(topics)
+            if t.get("created_at", "") <= as_of
+        ]
+        topics = [topics[i] for i in filtered_indices]
+        if summary_vecs is not None and len(filtered_indices) < len(summary_vecs):
+            summary_vecs = summary_vecs[filtered_indices] if filtered_indices else None
+        if not topics:
+            return [], warnings
 
     try:
         if query_vec is None:
@@ -570,14 +598,37 @@ def _search_knowledge(
 
 
 def _search_records(
-    query: str, query_vec: np.ndarray | None = None, *, include_expired: bool = False,
+    query: str,
+    query_vec: np.ndarray | None = None,
+    *,
+    include_expired: bool = False,
+    as_of: str | None = None,
 ) -> tuple[list[dict], list[str]]:
-    """Search individual knowledge records by semantic + keyword similarity."""
+    """Search individual knowledge records by semantic + keyword similarity.
+
+    When ``as_of`` is set, bypasses the record cache and queries the database
+    directly for records that were valid at that point in time, then embeds
+    them on the fly.
+    """
     cfg = get_config()
     warnings: list[str] = []
-    records, record_vecs = record_cache.get_record_vecs(include_expired=include_expired)
-    if not records:
-        return [], warnings
+
+    if as_of:
+        # Temporal query: fetch records valid at that point in time directly
+        # from the database — the cache only holds current state.
+        records = get_records_as_of(as_of)
+        if not records:
+            return [], warnings
+        texts = [r["embedding_text"] for r in records]
+        try:
+            record_vecs = backends.encode_documents(texts)
+        except Exception as e:
+            logger.warning("Failed to embed temporal records: %s", e, exc_info=True)
+            record_vecs = None
+    else:
+        records, record_vecs = record_cache.get_record_vecs(include_expired=include_expired)
+        if not records:
+            return [], warnings
 
     try:
         if query_vec is None:

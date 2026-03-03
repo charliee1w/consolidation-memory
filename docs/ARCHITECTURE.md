@@ -153,7 +153,7 @@ file's mtime and reload the index if it's newer than their load timestamp.
 Config file: `~/.config/consolidation_memory/config.toml` (XDG), or
 `%APPDATA%/consolidation_memory/config.toml` (Windows).
 
-### SQLite Schema (v9)
+### SQLite Schema (v10)
 
 ```mermaid
 erDiagram
@@ -250,6 +250,10 @@ erDiagram
         TEXT tag_b
         INTEGER count
         TEXT last_seen
+    }
+
+    episodes_fts {
+        TEXT content "FTS5 virtual table mirroring episode content for BM25 keyword search"
     }
 
     schema_version {

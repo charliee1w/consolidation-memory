@@ -286,13 +286,17 @@ Switching embedding backends? `consolidation-memory reindex`
 
 ## Roadmap
 
-- [ ] Hybrid search (BM25 + semantic fusion)
-- [ ] Diff-aware merge validation for consolidation
-- [ ] Query expansion for short/ambiguous recalls
-- [ ] Recall result deduplication
-- [ ] Entity extraction and relationship graph
-- [ ] Entity-aware recall boosting
-- [ ] First-party plugins (git history, project context, Obsidian export)
+- [x] Hybrid search (BM25 + semantic fusion)
+- [x] Diff-aware merge validation for consolidation
+- [x] Recall result deduplication
+- [x] Confidence-aware recall ranking
+- [x] Source traceability in recall results
+- [x] Consolidation changelog
+- [x] Uncertainty signaling for low-confidence records
+- [x] Temporal belief queries (`as_of` parameter)
+- [ ] Adaptive memory (query-driven consolidation, access-weighted ranking)
+- [ ] Cross-project recall
+- [ ] First-party plugins (project context, git history)
 
 ## Development
 

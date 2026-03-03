@@ -560,6 +560,10 @@ def _search_knowledge(
         topic_confidence = topic.get("confidence", 0.8)
         relevance *= 0.5 + 0.5 * topic_confidence
 
+        # Access-weighted ranking: frequently-recalled topics rank higher
+        topic_access = topic.get("access_count", 0)
+        relevance *= 1.0 + math.log1p(topic_access) * cfg.CONSOLIDATION_PRIORITY_WEIGHTS["access_frequency"]
+
         if relevance < cfg.KNOWLEDGE_RELEVANCE_THRESHOLD:
             continue
 
@@ -676,6 +680,10 @@ def _search_records(
         # 0.5 confidence → 0.75x, 0.8 → 0.9x, 1.0 → 1.0x
         confidence = rec.get("confidence", 0.8)
         relevance *= 0.5 + 0.5 * confidence
+
+        # Access-weighted ranking: frequently-recalled records rank higher
+        rec_access = rec.get("access_count", 0)
+        relevance *= 1.0 + math.log1p(rec_access) * cfg.CONSOLIDATION_PRIORITY_WEIGHTS["access_frequency"]
 
         if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
             continue

@@ -37,6 +37,7 @@ class VectorStore:
         self._tombstones: set[str] = set()
         self._last_load_time: float = 0.0
         self._load_or_create()
+        self._check_embedding_metadata()
 
     def _load_or_create(self) -> None:
         """Load existing FAISS index and id map from disk, or create empty. Validates dimension and id-map integrity on load."""
@@ -272,16 +273,20 @@ class VectorStore:
     def add(self, episode_id: str, embedding: np.ndarray) -> None:
         """Add a single vector with its episode UUID. Persists to disk immediately."""
         with self._lock:
+            was_empty = self._index.ntotal == 0
             vec = embedding.reshape(1, -1).astype(np.float32)
             self._index.add(vec)
             self._id_map.append(episode_id)
             self._uuid_to_pos[episode_id] = len(self._id_map) - 1
             self._save()
+            if was_empty:
+                self._save_embedding_metadata()
             self._maybe_upgrade_index()
 
     def add_batch(self, episode_ids: list[str], embeddings: np.ndarray) -> None:
         """Add multiple vectors with UUIDs. More efficient than repeated add() calls."""
         with self._lock:
+            was_empty = self._index.ntotal == 0
             vecs = embeddings.astype(np.float32)
             self._index.add(vecs)
             start = len(self._id_map)
@@ -289,6 +294,8 @@ class VectorStore:
             for i, uid in enumerate(episode_ids):
                 self._uuid_to_pos[uid] = start + i
             self._save()
+            if was_empty:
+                self._save_embedding_metadata()
             self._maybe_upgrade_index()
 
     # ── Search ───────────────────────────────────────────────────────────────
@@ -457,6 +464,71 @@ class VectorStore:
         """Number of tombstoned (soft-deleted) vectors."""
         with self._lock:
             return len(self._tombstones)
+
+    # ── Embedding metadata ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _embedding_meta_path() -> os.PathLike[str]:
+        cfg = get_config()
+        return cfg.DATA_DIR / "embedding_meta.json"
+
+    def _check_embedding_metadata(self) -> None:
+        """Compare stored embedding metadata against current config. Warn on mismatch."""
+        meta_path = self._embedding_meta_path()
+        cfg = get_config()
+        current = {
+            "backend": cfg.EMBEDDING_BACKEND,
+            "model": cfg.EMBEDDING_MODEL_NAME,
+            "dimension": cfg.EMBEDDING_DIMENSION,
+        }
+
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r") as f:
+                    stored = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to read embedding metadata: %s", e)
+                return
+
+            mismatches = []
+            for key in ("backend", "model", "dimension"):
+                if key in stored and stored[key] != current[key]:
+                    mismatches.append(
+                        f"  {key}: stored={stored[key]!r}, current={current[key]!r}"
+                    )
+            if mismatches:
+                logger.warning(
+                    "Embedding model config has changed since the index was created:\n%s\n"
+                    "This may cause inconsistent similarity scores. "
+                    "Run 'consolidation-memory reindex' to rebuild the index.",
+                    "\n".join(mismatches),
+                )
+        elif self._index is not None and self._index.ntotal > 0:
+            # Index exists but no metadata — write current config for future checks
+            self._save_embedding_metadata()
+
+    def _save_embedding_metadata(self) -> None:
+        """Persist current embedding config alongside the FAISS index."""
+        meta_path = self._embedding_meta_path()
+        cfg = get_config()
+        meta = {
+            "backend": cfg.EMBEDDING_BACKEND,
+            "model": cfg.EMBEDDING_MODEL_NAME,
+            "dimension": cfg.EMBEDDING_DIMENSION,
+        }
+        try:
+            parent = os.path.dirname(meta_path)
+            os.makedirs(parent, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=parent, suffix=".json.tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(meta, f, indent=2)
+            except Exception:
+                os.unlink(tmp)
+                raise
+            os.replace(tmp, str(meta_path))
+        except OSError as e:
+            logger.warning("Failed to save embedding metadata: %s", e)
 
     @property
     def size(self) -> int:

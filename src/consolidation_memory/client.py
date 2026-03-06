@@ -1939,7 +1939,8 @@ class MemoryClient:
                 break
             now_monotonic = time.monotonic()
             utility_state = self._compute_consolidation_utility(now_monotonic=now_monotonic)
-            utility_score = float(utility_state["score"])
+            score_value = utility_state.get("score")
+            utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
             should_run, trigger_reason = self._should_trigger_consolidation(
                 now_monotonic=now_monotonic,
                 last_run_monotonic=last_run_monotonic,

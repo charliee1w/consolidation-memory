@@ -9,7 +9,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from consolidation_memory.types import DriftAnchor, DriftOutput
+from consolidation_memory.types import DriftAnchor, DriftClaimImpact, DriftOutput
 
 logger = logging.getLogger(__name__)
 
@@ -182,11 +182,11 @@ def detect_code_drift(
     challenged_claim_ids = sorted(mark_claims_challenged_by_anchors(lookup_anchors))
     challenged_ids_set = set(challenged_claim_ids)
 
-    impacts: list[dict[str, Any]] = []
+    impacts: list[DriftClaimImpact] = []
     for claim_id in impacted_claim_ids:
         previous_status = str(claim_rows[claim_id].get("status") or "")
         new_status = "challenged" if claim_id in challenged_ids_set else previous_status
-        matched_anchors = [
+        matched_anchors: list[DriftAnchor] = [
             {"anchor_type": anchor_type, "anchor_value": anchor_value}
             for anchor_type, anchor_value in sorted(
                 matched_anchor_pairs.get(claim_id, set()),

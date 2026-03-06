@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.4 - 2026-03-06
+
+Novelty release hardening and claim-graph drift support.
+
+### Highlights
+
+- Added code drift detection (`detect-drift`) across Python client, CLI, and REST with deterministic impacted-claim outputs and `code_drift_detected` audit events.
+- Added adaptive utility-based consolidation scheduling with deterministic weighted scoring and interval fallback trigger.
+- Added novelty benchmark harness (`benchmarks/novelty_eval.py`) with quick/full modes and pass/fail metric gating output.
+- Added CI novelty gate job that runs targeted claim-graph, drift, and adaptive scheduler suites plus novelty quick eval, failing build on metric gate miss.
+- Extended export/import portability to round-trip claim graph entities: `claims`, `claim_edges`, `claim_sources`, `claim_events`, and `episode_anchors`.
+- Extended integration and regression coverage for drift invalidation, utility scheduling, claim retrieval, and end-to-end claim drift recall flows.
+
 ## 0.12.3 — 2026-03-03
 
 Comprehensive security and robustness hardening across 17 files.

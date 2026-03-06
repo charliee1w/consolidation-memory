@@ -11,7 +11,7 @@ import pytest
 
 from consolidation_memory.client import MemoryClient
 from consolidation_memory.database import ensure_schema, fts_search, search_episodes
-from helpers import mock_encode as _mock_encode
+from tests.helpers import mock_encode as _mock_encode
 
 
 @pytest.fixture()

@@ -425,7 +425,7 @@ def _build_config(
         LLM_API_KEY=_llm.get("api_key", ""),
         LLM_CALL_TIMEOUT=float(_llm.get("call_timeout", 120)),
         LLM_CORRECTION_TIMEOUT=float(_llm.get("correction_timeout", 90)),
-        LLM_VALIDATION_RETRY=_coerce_bool(_consol.get("validation_retry", True)),
+        LLM_VALIDATION_RETRY=_coerce_bool(_llm.get("validation_retry", True)),
         # Consolidation
         CONSOLIDATION_AUTO_RUN=_coerce_bool(_consol.get("auto_run", True)),
         CONSOLIDATION_INTERVAL_HOURS=float(_consol.get("interval_hours", 6)),
@@ -631,6 +631,14 @@ def set_active_project(name: str | None = None) -> str:
     cfg = get_config()
     cfg.active_project = validate_project_name(name)
     cfg._recompute_paths()
+    # Drop stale thread-local DB connections so subsequent DB calls use
+    # the new project's path immediately.
+    try:
+        from consolidation_memory.database import close_thread_local_connection
+        close_thread_local_connection()
+    except Exception:
+        # Keep project switching resilient even if DB module isn't initialized.
+        pass
     return cfg.active_project
 
 

@@ -11,7 +11,7 @@ from consolidation_memory.database import (
     update_tag_cooccurrence,
 )
 
-from helpers import make_normalized_vec as _make_normalized_vec
+from tests.helpers import make_normalized_vec as _make_normalized_vec
 
 
 # ── Schema migration ──────────────────────────────────────────────────────────

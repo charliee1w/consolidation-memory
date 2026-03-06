@@ -7,7 +7,7 @@ import pytest
 from consolidation_memory.anchors import extract_anchors
 from consolidation_memory.client import MemoryClient
 from consolidation_memory.database import ensure_schema, get_connection
-from helpers import mock_encode as _mock_encode
+from tests.helpers import mock_encode as _mock_encode
 
 
 class TestAnchorExtraction:

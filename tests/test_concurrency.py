@@ -9,7 +9,7 @@ Run with: python -m pytest tests/test_concurrency.py -v
 import threading
 from unittest.mock import patch
 
-from helpers import make_normalized_vec as _make_vec
+from tests.helpers import make_normalized_vec as _make_vec
 
 
 class TestConcurrentStore:

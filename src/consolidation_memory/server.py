@@ -276,6 +276,30 @@ async def memory_claim_search(
 
 
 @mcp.tool()
+async def memory_detect_drift(
+    base_ref: str | None = None,
+    repo_path: str | None = None,
+) -> str:
+    """Detect code drift and challenge claims impacted by changed file anchors.
+
+    Args:
+        base_ref: Optional git base ref for comparison (e.g. 'origin/main').
+        repo_path: Optional repository path (defaults to current working directory).
+    """
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(
+            client.detect_drift,
+            base_ref=base_ref,
+            repo_path=repo_path,
+        )
+        return json.dumps(result, default=str)
+    except Exception as e:
+        logger.exception("memory_detect_drift failed")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
 async def memory_status() -> str:
     """Show memory system statistics.
 
@@ -376,9 +400,11 @@ async def memory_consolidate() -> str:
     try:
         client = _get_client()
         result = await asyncio.to_thread(client.consolidate)
-        if result.get("status") == "already_running":
-            return json.dumps({"status": "already_running", "message": "A consolidation run is already in progress"})
-        return json.dumps({"status": "completed", "report": result}, default=str)
+        if isinstance(result, dict) and result.get("status") == "already_running":
+            payload = dict(result)
+            payload.setdefault("message", "A consolidation run is already in progress")
+            return json.dumps(payload, default=str)
+        return json.dumps(result, default=str)
     except Exception as e:
         logger.exception("memory_consolidate failed")
         return json.dumps({"error": str(e)})

@@ -2,6 +2,7 @@
 
 import json
 from unittest.mock import patch
+from typing import Any, cast
 
 import numpy as np
 
@@ -20,10 +21,11 @@ from consolidation_memory.database import (
 
 class TestClaimEmission:
     @staticmethod
-    def _content_dict(row: dict) -> dict:
+    def _content_dict(row: dict[str, Any]) -> dict[str, Any]:
         content = row.get("content", {})
         if isinstance(content, str):
-            return json.loads(content)
+            loaded = cast(dict[str, Any], json.loads(content))
+            return loaded
         return dict(content)
 
     @staticmethod

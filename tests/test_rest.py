@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from helpers import make_normalized_vec as _make_normalized_vec
+from tests.helpers import make_normalized_vec as _make_normalized_vec
 
 try:
     from fastapi.testclient import TestClient
@@ -105,7 +105,7 @@ class TestForgetEndpoint:
 class TestBatchStoreEndpoint:
     @patch("consolidation_memory.backends.encode_documents")
     def test_batch_store(self, mock_embed, api_client):
-        from helpers import make_normalized_batch
+        from tests.helpers import make_normalized_batch
         mock_embed.return_value = make_normalized_batch(2, seed=42)
 
         resp = api_client.post("/memory/store/batch", json={

@@ -516,7 +516,7 @@ def cmd_import(path: str):
     from pathlib import Path
     from consolidation_memory.database import (
         ensure_schema, insert_episode, upsert_knowledge_topic, get_episode,
-        insert_knowledge_records,
+        insert_knowledge_records, hard_delete_episode,
         import_claim_graph_snapshot,
     )
     from consolidation_memory.backends import encode_documents
@@ -550,9 +550,10 @@ def cmd_import(path: str):
     ensure_schema()
     vs = VectorStore()
 
-    # Import episodes — collect new ones first, then batch-embed
+    # Import episodes — embed first, then write DB + vector store in lockstep.
     imported = 0
     skipped = 0
+    failed = 0
     new_episodes: list[dict] = []
     for ep in data.get("episodes", []):
         existing = get_episode(ep["id"])
@@ -561,33 +562,67 @@ def cmd_import(path: str):
             continue
 
         tags = parse_json_list(ep.get("tags"))
-        episode_id = insert_episode(
-            content=ep["content"],
-            content_type=ep.get("content_type", "exchange"),
-            tags=tags,
-            surprise_score=ep.get("surprise_score", 0.5),
-            episode_id=ep["id"],
+        new_episodes.append(
+            {
+                "id": ep["id"],
+                "content": ep["content"],
+                "content_type": ep.get("content_type", "exchange"),
+                "tags": tags,
+                "surprise_score": ep.get("surprise_score", 0.5),
+            }
         )
-        new_episodes.append({"id": episode_id, "content": ep["content"]})
-        imported += 1
 
-    # Batch-embed in chunks of 50
+    # Batch import in chunks of 50
     BATCH_SIZE = 50
     for i in range(0, len(new_episodes), BATCH_SIZE):
         batch = new_episodes[i : i + BATCH_SIZE]
         texts = [ep["content"] for ep in batch]
         try:
             embeddings = encode_documents(texts)
-            for ep, emb in zip(batch, embeddings):
-                vs.add(ep["id"], emb)
         except Exception as e:
             print(f"  Warning: Failed to embed episode batch {i}-{i + len(batch)}: {e}")
+            failed += len(batch)
+            continue
 
-    print(f"\nEpisodes: {imported} imported, {skipped} skipped (already exist)")
+        inserted_ids: list[str] = []
+        inserted_positions: list[int] = []
+        for j, ep in enumerate(batch):
+            try:
+                episode_id = insert_episode(
+                    content=ep["content"],
+                    content_type=ep["content_type"],
+                    tags=ep["tags"],
+                    surprise_score=ep["surprise_score"],
+                    episode_id=ep["id"],
+                )
+            except Exception as e:
+                print(f"  Warning: Failed to insert episode {ep.get('id', '?')}: {e}")
+                failed += 1
+                continue
+            inserted_ids.append(episode_id)
+            inserted_positions.append(j)
+
+        if not inserted_ids:
+            continue
+
+        try:
+            vs.add_batch(inserted_ids, embeddings[inserted_positions])
+            imported += len(inserted_ids)
+        except Exception as e:
+            print(f"  Warning: Failed to index episode batch {i}-{i + len(batch)}: {e}")
+            failed += len(inserted_ids)
+            for episode_id in inserted_ids:
+                try:
+                    hard_delete_episode(episode_id)
+                except Exception:
+                    pass
+
+    print(f"\nEpisodes: {imported} imported, {skipped} skipped (already exist), {failed} failed")
 
     # Import knowledge
     cfg.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     k_imported = 0
+    topic_id_map: dict[str, str] = {}
     knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
     for topic in data.get("knowledge_topics", []):
         if topic.get("file_content"):
@@ -598,7 +633,7 @@ def cmd_import(path: str):
             filepath.write_text(topic["file_content"], encoding="utf-8")
 
         source_eps = parse_json_list(topic.get("source_episodes"))
-        upsert_knowledge_topic(
+        topic_id = upsert_knowledge_topic(
             filename=topic["filename"],
             title=topic["title"],
             summary=topic["summary"],
@@ -606,6 +641,9 @@ def cmd_import(path: str):
             fact_count=topic.get("fact_count", 0),
             confidence=topic.get("confidence", 0.8),
         )
+        old_topic_id = topic.get("id")
+        if old_topic_id:
+            topic_id_map[str(old_topic_id)] = topic_id
         k_imported += 1
 
     print(f"Knowledge: {k_imported} topics imported")
@@ -615,9 +653,10 @@ def cmd_import(path: str):
     for rec in data.get("knowledge_records", []):
         if not rec.get("topic_id") or not rec.get("record_type"):
             continue
+        topic_id = topic_id_map.get(str(rec["topic_id"]), rec["topic_id"])
         try:
             insert_knowledge_records(
-                topic_id=rec["topic_id"],
+                topic_id=topic_id,
                 records=[{
                     "record_type": rec["record_type"],
                     "content": rec.get("content", "{}"),
@@ -634,10 +673,18 @@ def cmd_import(path: str):
         print(f"Records: {r_imported} imported")
 
     # Import claim graph entities (v1.2+ exports; optional for backward compatibility)
+    claim_sources = []
+    for source in data.get("claim_sources", []):
+        remapped = dict(source)
+        source_topic_id = remapped.get("source_topic_id")
+        if source_topic_id is not None:
+            remapped["source_topic_id"] = topic_id_map.get(str(source_topic_id), source_topic_id)
+        claim_sources.append(remapped)
+
     imported_claim_graph = import_claim_graph_snapshot(
         claims=data.get("claims", []),
         claim_edges=data.get("claim_edges", []),
-        claim_sources=data.get("claim_sources", []),
+        claim_sources=claim_sources,
         claim_events=data.get("claim_events", []),
         episode_anchors=data.get("episode_anchors", []),
     )

@@ -109,6 +109,34 @@ class TestGetRecordsAsOf:
         assert old_id not in record_ids
         assert new_id in record_ids
 
+    def test_as_of_treats_equivalent_offset_instants_equally(self, tmp_data_dir):
+        """Equivalent timestamps with different offsets should match the same records."""
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="offsets.md",
+            title="Offsets",
+            summary="S",
+            source_episodes=[],
+        )
+        rec_ids = insert_knowledge_records(
+            tid,
+            [{"record_type": "fact", "content": {"subject": "X", "info": "Y"}, "embedding_text": "X:Y"}],
+        )
+        rec_id = rec_ids[0]
+
+        from consolidation_memory.database import get_connection
+
+        created_utc = "2026-01-01T00:00:00+00:00"
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE knowledge_records SET created_at = ?, updated_at = ? WHERE id = ?",
+                (created_utc, created_utc, rec_id),
+            )
+
+        equivalent_as_of = "2025-12-31T16:00:00-08:00"
+        records = get_records_as_of(equivalent_as_of)
+        assert any(r["id"] == rec_id for r in records)
+
     def test_as_of_before_any_records(self, tmp_data_dir):
         """Querying before any records existed should return nothing."""
         tid, old_id, new_id, t0, t1 = self._setup_timeline()

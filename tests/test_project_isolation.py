@@ -1,5 +1,6 @@
 """Tests for multi-project namespace support: validation, project switching, and isolation."""
 
+import sqlite3
 from unittest.mock import patch
 
 import pytest
@@ -13,7 +14,7 @@ from consolidation_memory.config import (
 )
 from consolidation_memory import config
 import consolidation_memory.database as database
-from helpers import make_normalized_vec as _make_normalized_vec
+from tests.helpers import make_normalized_vec as _make_normalized_vec
 
 
 # ── Project name validation ──────────────────────────────────────────────────
@@ -144,6 +145,36 @@ class TestSetActiveProject:
             set_active_project("")
         with pytest.raises(ValueError):
             set_active_project("../escape")
+
+    def test_switch_closes_thread_local_db_connection(self, tmp_data_dir):
+        from consolidation_memory.database import ensure_schema, get_connection, insert_episode
+
+        cfg = get_config()
+        ensure_schema()
+        insert_episode("alpha-content")
+        with get_connection() as conn_alpha:
+            alpha_conn_id = id(conn_alpha)
+
+        set_active_project("beta")
+        ensure_schema()
+        insert_episode("beta-content")
+        with get_connection() as conn_beta:
+            beta_conn_id = id(conn_beta)
+
+        assert beta_conn_id != alpha_conn_id
+
+        database.close_all_connections()
+
+        alpha_db = cfg._base_data_dir / "projects" / "default" / "memory.db"
+        beta_db = cfg._base_data_dir / "projects" / "beta" / "memory.db"
+
+        with sqlite3.connect(alpha_db) as conn:
+            alpha_count = conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+        with sqlite3.connect(beta_db) as conn:
+            beta_count = conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+
+        assert alpha_count == 1
+        assert beta_count == 1
 
 
 # ── Project isolation (end-to-end) ──────────────────────────────────────────

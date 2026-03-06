@@ -24,6 +24,7 @@ from consolidation_memory.database import (
     ensure_schema,
     expire_claim,
     expire_record,
+    get_connection,
     get_all_knowledge_topics,
     get_prunable_episodes,
     get_records_by_topic,
@@ -38,7 +39,6 @@ from consolidation_memory.database import (
     mark_consolidated,
     mark_pruned,
     reset_stale_consolidation_attempts,
-    soft_delete_records_by_ids,
     start_consolidation_run,
     upsert_claim,
     upsert_knowledge_topic,
@@ -802,9 +802,6 @@ def _merge_into_existing(
     non_contradicted_ids = [
         r["id"] for r in existing_db_records if r["id"] not in contradicted_existing_ids
     ]
-    if non_contradicted_ids:
-        soft_delete_records_by_ids(non_contradicted_ids)
-
     # Build merged record rows.
     # When contradictions were detected, mark ALL merged records with valid_from.
     # Rationale: the LLM rewrites and deduplicates records during merge, so there
@@ -823,11 +820,21 @@ def _merge_into_existing(
         if has_contradictions:
             row["valid_from"] = now_ts
         record_rows.append(row)
-    inserted_record_ids = insert_knowledge_records(
-        existing["id"],
-        record_rows,
-        source_episodes=cluster_ep_ids,
-    )
+    # Replace non-contradicted records and insert merged ones atomically so a
+    # failure during insert does not leave the topic with deleted records.
+    with get_connection() as conn:
+        if non_contradicted_ids:
+            placeholders = ",".join("?" for _ in non_contradicted_ids)
+            conn.execute(
+                f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",
+                [now_ts, *non_contradicted_ids],
+            )
+        inserted_record_ids = insert_knowledge_records(
+            existing["id"],
+            record_rows,
+            source_episodes=cluster_ep_ids,
+            conn=conn,
+        )
     _emit_claims_for_records(
         merged_records,
         topic_id=existing["id"],

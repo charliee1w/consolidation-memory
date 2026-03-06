@@ -5,7 +5,7 @@ Run with: python -m pytest tests/test_plugins.py -v
 
 from unittest.mock import patch
 
-from helpers import make_normalized_vec
+from tests.helpers import make_normalized_vec
 
 from consolidation_memory.plugins import (
     PluginBase,

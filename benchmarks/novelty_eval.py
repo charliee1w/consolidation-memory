@@ -33,7 +33,7 @@ _SRC_PATH = _REPO_ROOT / "src"
 if str(_SRC_PATH) not in sys.path:
     sys.path.insert(0, str(_SRC_PATH))
 
-from consolidation_memory.utils import parse_datetime
+from consolidation_memory.utils import parse_datetime  # noqa: E402
 
 logger = logging.getLogger("benchmark.novelty_eval")
 

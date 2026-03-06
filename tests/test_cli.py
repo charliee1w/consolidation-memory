@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from consolidation_memory.database import ensure_schema
-from helpers import make_normalized_vec as _make_normalized_vec
+from tests.helpers import make_normalized_vec as _make_normalized_vec
 
 
 class TestCmdTest:
@@ -376,3 +376,78 @@ class TestExportImportHardening:
         assert len(get_all_claim_sources()) == 1
         assert len(get_all_claim_events()) == 1
         assert len(get_all_episode_anchors()) == 1
+
+    def test_import_rolls_back_episode_rows_when_embedding_fails(self, tmp_data_dir):
+        from consolidation_memory.cli import cmd_import
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import get_all_episodes
+
+        cfg = get_config()
+        payload = {
+            "exported_at": "2026-03-06T00:00:00+00:00",
+            "version": "1.2",
+            "episodes": [
+                {
+                    "id": "ep-fail-1",
+                    "content": "Episode that should roll back",
+                    "content_type": "fact",
+                    "tags": [],
+                    "surprise_score": 0.5,
+                }
+            ],
+            "knowledge_topics": [],
+            "knowledge_records": [],
+            "stats": {"episode_count": 1, "knowledge_count": 0, "record_count": 0},
+        }
+        import_path = cfg.BACKUP_DIR / "import_embed_failure.json"
+        import_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with patch("consolidation_memory.backends.encode_documents", side_effect=RuntimeError("embed down")):
+            cmd_import(str(import_path))
+
+        assert get_all_episodes(include_deleted=False) == []
+
+    def test_import_remaps_topic_ids_for_knowledge_records(self, tmp_data_dir):
+        from consolidation_memory.cli import cmd_import
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import get_all_active_records, get_all_knowledge_topics
+
+        cfg = get_config()
+        payload = {
+            "exported_at": "2026-03-06T00:00:00+00:00",
+            "version": "1.2",
+            "episodes": [],
+            "knowledge_topics": [
+                {
+                    "id": "topic-export-1",
+                    "filename": "topic.md",
+                    "title": "Topic",
+                    "summary": "Summary",
+                    "source_episodes": [],
+                    "file_content": "# Topic\n",
+                }
+            ],
+            "knowledge_records": [
+                {
+                    "id": "record-export-1",
+                    "topic_id": "topic-export-1",
+                    "record_type": "fact",
+                    "content": {"subject": "A", "info": "B"},
+                    "embedding_text": "A:B",
+                    "source_episodes": [],
+                    "confidence": 0.8,
+                }
+            ],
+            "stats": {"episode_count": 0, "knowledge_count": 1, "record_count": 1},
+        }
+        import_path = cfg.BACKUP_DIR / "import_topic_id_remap.json"
+        import_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        cmd_import(str(import_path))
+
+        topics = get_all_knowledge_topics()
+        records = get_all_active_records()
+        assert len(topics) == 1
+        assert len(records) == 1
+        assert topics[0]["id"] != "topic-export-1"
+        assert records[0]["topic_id"] == topics[0]["id"]

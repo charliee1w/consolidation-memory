@@ -5,6 +5,7 @@ import json
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 from consolidation_memory.config import override_config
 from consolidation_memory.consolidation.engine import _detect_silent_drops
@@ -481,6 +482,88 @@ class TestContradictionsDuringConsolidation:
         assert calls == 1
         rows = get_records_by_topic(tid)
         assert len(rows) >= 5
+
+    def test_merge_replacement_rolls_back_on_insert_failure(self, tmp_data_dir):
+        """Insert failure during replacement should not soft-delete old records."""
+        ensure_schema()
+
+        tid = upsert_knowledge_topic(
+            filename="merge_txn_rollback.md",
+            title="Merge Txn Rollback",
+            summary="S",
+            source_episodes=["ep_old"],
+        )
+        insert_knowledge_records(
+            tid,
+            [
+                {
+                    "record_type": "fact",
+                    "content": {"type": "fact", "subject": "A", "info": "old"},
+                    "embedding_text": "A: old",
+                    "confidence": 0.8,
+                },
+            ],
+        )
+
+        extraction_data = {
+            "title": "Merge Txn Rollback",
+            "summary": "S",
+            "tags": [],
+            "records": [
+                {"type": "fact", "subject": "B", "info": "new"},
+            ],
+        }
+        existing = {
+            "id": tid,
+            "filename": "merge_txn_rollback.md",
+            "title": "Merge Txn Rollback",
+            "summary": "S",
+        }
+
+        with (
+            patch("consolidation_memory.consolidation.engine._llm_extract_with_validation") as mock_llm,
+            patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode,
+            patch(
+                "consolidation_memory.consolidation.engine.insert_knowledge_records",
+                side_effect=RuntimeError("simulated insert failure"),
+            ),
+            override_config(
+                RENDER_MARKDOWN=False,
+                MERGE_DROP_DETECTION_ENABLED=False,
+                CONTRADICTION_LLM_ENABLED=False,
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.99,
+            ),
+        ):
+            mock_llm.return_value = ({
+                "title": "Merge Txn Rollback",
+                "summary": "S",
+                "tags": [],
+                "records": [{"type": "fact", "subject": "B", "info": "new"}],
+            }, 1)
+            # Force low similarity so no contradiction path is taken.
+            mock_encode.side_effect = [
+                np.array([[1.0, 0.0]], dtype=np.float32),
+                np.array([[0.0, 1.0]], dtype=np.float32),
+            ]
+
+            from consolidation_memory.consolidation.engine import _merge_into_existing
+
+            with pytest.raises(RuntimeError, match="simulated insert failure"):
+                _merge_into_existing(
+                    existing=existing,
+                    extraction_data=extraction_data,
+                    cluster_episodes=[{"id": "ep_new3", "content": "new data", "tags": "[]"}],
+                    cluster_ep_ids=["ep_new3"],
+                    confidence=0.8,
+                )
+
+        rows = get_records_by_topic(tid)
+        assert len(rows) == 1
+        content = rows[0]["content"]
+        if isinstance(content, str):
+            content = json.loads(content)
+        assert content["subject"] == "A"
+        assert content["info"] == "old"
 
 
 # ── MCP tool ─────────────────────────────────────────────────────────────────

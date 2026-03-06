@@ -6,6 +6,7 @@ No external embedding server required — embedding backend is mocked.
 
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -15,8 +16,8 @@ from consolidation_memory.config import override_config
 import numpy as np
 import pytest
 
-from helpers import make_normalized_vec as _make_normalized_vec
-from helpers import make_normalized_batch as _make_normalized_batch
+from tests.helpers import make_normalized_vec as _make_normalized_vec
+from tests.helpers import make_normalized_batch as _make_normalized_batch
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -55,6 +56,15 @@ class TestDatabase:
         deleted = soft_delete_episode(ep_id)
         assert deleted is True
         assert get_episode(ep_id) is None
+
+    def test_get_connection_depth_restored_on_commit_failure(self):
+        import consolidation_memory.database as database
+
+        database.ensure_schema()
+        with pytest.raises(sqlite3.ProgrammingError):
+            with database.get_connection() as conn:
+                conn.close()
+        assert getattr(database._local, "conn_depth", 0) == 0
 
     def test_access_increment(self):
         from consolidation_memory.database import ensure_schema, insert_episode, get_episode, increment_access
@@ -1139,6 +1149,12 @@ class TestConfigDefaults:
         cfg = get_config()
         assert cfg.CIRCUIT_BREAKER_THRESHOLD == 3
         assert cfg.CIRCUIT_BREAKER_COOLDOWN == 60.0
+
+    def test_llm_validation_retry_reads_llm_section(self):
+        from consolidation_memory.config import _build_config
+
+        cfg = _build_config({"llm": {"validation_retry": False}}, _load_env=False)
+        assert cfg.LLM_VALIDATION_RETRY is False
 
 
 class TestEnvVarOverrides:

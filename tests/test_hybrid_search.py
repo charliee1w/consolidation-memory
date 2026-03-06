@@ -18,7 +18,7 @@ from consolidation_memory.database import (
     soft_delete_episode,
     hard_delete_episode,
 )
-from helpers import mock_encode as _mock_encode
+from tests.helpers import mock_encode as _mock_encode
 
 
 @pytest.fixture()

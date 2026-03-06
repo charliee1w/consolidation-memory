@@ -6,7 +6,7 @@ Run with: python -m pytest tests/test_client.py -v
 import json
 from unittest.mock import MagicMock, patch
 
-from helpers import make_normalized_vec as _make_normalized_vec
+from tests.helpers import make_normalized_vec as _make_normalized_vec
 
 
 class TestClientLifecycle:
@@ -126,6 +126,22 @@ class TestClientRecall:
         assert len(result.episodes) == 0
 
         client.close()
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_store_batch_all_invalid_returns_empty_result(self, mock_embed):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            result = client.store_batch([{}, {"content_type": "fact"}])
+            assert result.status == "stored"
+            assert result.stored == 0
+            assert result.duplicates == 0
+            mock_embed.assert_not_called()
+        finally:
+            client.close()
 
     def test_recall_surfaces_claims_field(self):
         from consolidation_memory.database import ensure_schema

@@ -400,6 +400,31 @@ MEMORY_CLAIM_SEARCH_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_DETECT_DRIFT_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_detect_drift",
+        "description": (
+            "Detect code drift by checking changed files and challenge impacted claims. "
+            "Use after substantial file edits."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "base_ref": {
+                    "type": "string",
+                    "description": "Optional git base ref for comparison (e.g. 'origin/main').",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Optional repository path (defaults to current working directory).",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
 MEMORY_COMPACT_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -594,6 +619,7 @@ openai_tools: list[dict[str, Any]] = [
     MEMORY_SEARCH_SCHEMA,
     MEMORY_CLAIM_BROWSE_SCHEMA,
     MEMORY_CLAIM_SEARCH_SCHEMA,
+    MEMORY_DETECT_DRIFT_SCHEMA,
     MEMORY_STATUS_SCHEMA,
     MEMORY_FORGET_SCHEMA,
     MEMORY_EXPORT_SCHEMA,
@@ -710,6 +736,13 @@ def dispatch_tool_call(
                 limit=min(arguments.get("limit", 50), 200),
             )
             return dataclasses.asdict(search_claims_result)
+
+        elif name == "memory_detect_drift":
+            drift_result = client.detect_drift(
+                base_ref=arguments.get("base_ref"),
+                repo_path=arguments.get("repo_path"),
+            )
+            return dict(drift_result)
 
         elif name == "memory_status":
             status_result = client.status()

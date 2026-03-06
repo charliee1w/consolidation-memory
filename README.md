@@ -61,6 +61,7 @@ Available tools:
 - `memory_search`
 - `memory_claim_browse`
 - `memory_claim_search`
+- `memory_detect_drift`
 - `memory_status`
 - `memory_forget`
 - `memory_export`

@@ -420,6 +420,10 @@ class MemoryClient:
                 "surprise": max(0.0, min(1.0, surprise)),
             })
 
+        if not items:
+            logger.warning("Batch store received %d episodes but none were valid", len(episodes))
+            return BatchStoreResult(status="stored", stored=0, duplicates=0)
+
         # Single embedding call for all texts
         try:
             embeddings = encode_documents([it["content"] for it in items])

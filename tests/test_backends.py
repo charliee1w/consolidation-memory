@@ -98,6 +98,12 @@ class TestOllamaEmbeddingBackend:
         # Zero vector stays zero, no division by zero
         assert np.allclose(result[0], [0.0, 0.0, 0.0])
 
+    def test_normalize_empty_vectors(self):
+        from consolidation_memory.backends.base import normalize_l2
+        vecs = np.array([], dtype=np.float32)
+        result = normalize_l2(vecs)
+        assert result.shape == (0, 0)
+
     @patch("consolidation_memory.backends.ollama.httpx.post")
     @patch("consolidation_memory.backends.time.sleep")
     def test_encode_documents_retries_on_http_error(self, mock_sleep, mock_post):
@@ -121,6 +127,25 @@ class TestOllamaEmbeddingBackend:
         result = backend.encode_documents(["test text"])
         assert result.shape == (1, 3)
         assert mock_post.call_count == 2
+
+    @patch("consolidation_memory.backends.ollama.httpx.post")
+    def test_encode_query_nomic_uses_single_query_prefix(self, mock_post):
+        from consolidation_memory.backends.ollama import OllamaEmbeddingBackend
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"embeddings": [[0.1, 0.2, 0.3]]}
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        backend = OllamaEmbeddingBackend(
+            api_base="http://localhost:11434",
+            model_name="nomic-embed-text",
+            dimension=3,
+        )
+        result = backend.encode_query("test text")
+        assert result.shape == (1, 3)
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["input"] == ["search_query: test text"]
 
 
 class TestOllamaLLMBackend:

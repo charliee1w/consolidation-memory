@@ -18,7 +18,7 @@ from typing import Any, Mapping, Sequence
 
 from consolidation_memory.config import get_config as _get_config
 from consolidation_memory.types import RUN_STATUS_COMPLETED, RunStatus, StatsDict
-from consolidation_memory.utils import parse_json_list
+from consolidation_memory.utils import parse_datetime, parse_json_list
 
 logger = logging.getLogger(__name__)
 
@@ -191,23 +191,59 @@ def _ensure_parent(path: Path) -> None:
 
 def _get_cached_connection() -> sqlite3.Connection:
     """Return a thread-local cached connection. Creates one if needed."""
+    current_db_path = str(_get_config().DB_PATH)
     conn: sqlite3.Connection | None = getattr(_local, "conn", None)
+    cached_db_path: str | None = getattr(_local, "db_path", None)
     if conn is not None:
-        try:
-            conn.execute("SELECT 1")
-            return conn
-        except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+        # Project switching updates config paths at runtime; if the DB path changed,
+        # discard the stale thread-local connection and open a new one.
+        if cached_db_path and cached_db_path != current_db_path:
+            try:
+                conn.close()
+            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+                pass
             _local.conn = None
+            _local.db_path = None
+            _local.conn_depth = 0
+            conn = None
+        else:
+            try:
+                conn.execute("SELECT 1")
+                return conn
+            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+                _local.conn = None
+                _local.db_path = None
+                _local.conn_depth = 0
+                conn = None
 
     _ensure_parent(_get_config().DB_PATH)
-    conn = sqlite3.connect(str(_get_config().DB_PATH), timeout=10)
+    conn = sqlite3.connect(current_db_path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     _local.conn = conn
+    _local.db_path = current_db_path
     with _conn_list_lock:
         _all_connections.append(conn)
     return conn
+
+
+def close_thread_local_connection() -> None:
+    """Close only the current thread's cached connection, if present."""
+    conn: sqlite3.Connection | None = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _conn_list_lock:
+            try:
+                _all_connections.remove(conn)
+            except ValueError:
+                pass
+    _local.conn = None
+    _local.db_path = None
+    _local.conn_depth = 0
 
 
 def close_all_connections() -> None:
@@ -221,6 +257,8 @@ def close_all_connections() -> None:
         _all_connections.clear()
     # Also clear this thread's cached reference
     _local.conn = None
+    _local.db_path = None
+    _local.conn_depth = 0
     # Reset FTS5 availability cache (new DB may or may not have FTS5)
     _reset_fts5_cache()
 
@@ -233,18 +271,21 @@ def get_connection():
     outermost context manager commits or rolls back.
     """
     conn = _get_cached_connection()
-    depth = getattr(_local, "conn_depth", 0)
+    depth = int(getattr(_local, "conn_depth", 0))
     _local.conn_depth = depth + 1
     try:
         yield conn
-        _local.conn_depth -= 1
-        if _local.conn_depth == 0:
+        if depth == 0:
             conn.commit()
     except Exception:
-        _local.conn_depth -= 1
-        if _local.conn_depth == 0:
-            conn.rollback()
+        if depth == 0:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise
+    finally:
+        _local.conn_depth = depth
 
 
 def ensure_schema() -> None:
@@ -784,6 +825,7 @@ def insert_knowledge_records(
     topic_id: str,
     records: list[dict[str, Any]],
     source_episodes: list[str] | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> list[str]:
     """Insert multiple knowledge records for a topic.
 
@@ -797,12 +839,13 @@ def insert_knowledge_records(
     now = _now()
     src = json.dumps(source_episodes or [])
     ids: list[str] = []
-    with get_connection() as conn:
+
+    def _insert_rows(active_conn: sqlite3.Connection) -> None:
         for rec in records:
             rec_id = str(uuid.uuid4())
             content = rec["content"] if isinstance(rec["content"], str) else json.dumps(rec["content"])
             valid_from = rec.get("valid_from")
-            conn.execute(
+            active_conn.execute(
                 """INSERT INTO knowledge_records
                    (id, topic_id, record_type, content, embedding_text,
                     source_episodes, confidence, created_at, updated_at, valid_from)
@@ -812,6 +855,12 @@ def insert_knowledge_records(
                  now, now, valid_from),
             )
             ids.append(rec_id)
+
+    if conn is None:
+        with get_connection() as managed_conn:
+            _insert_rows(managed_conn)
+    else:
+        _insert_rows(conn)
     return ids
 
 
@@ -1046,16 +1095,18 @@ def get_records_as_of(as_of: str) -> list[dict[str, Any]]:
     Args:
         as_of: ISO 8601 datetime string representing the point in time.
     """
+    # Normalize to UTC so equivalent instants with different offsets compare correctly.
+    as_of_utc = parse_datetime(as_of).astimezone(timezone.utc).isoformat()
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
                FROM knowledge_records kr
                JOIN knowledge_topics kt ON kr.topic_id = kt.id
                WHERE kr.deleted = 0
-                 AND kr.created_at <= ?
-                 AND (kr.valid_until IS NULL OR kr.valid_until > ?)
+                 AND julianday(kr.created_at) <= julianday(?)
+                 AND (kr.valid_until IS NULL OR julianday(kr.valid_until) > julianday(?))
                ORDER BY kr.updated_at DESC""",
-            (as_of, as_of),
+            (as_of_utc, as_of_utc),
         ).fetchall()
     return [dict(r) for r in rows]
 

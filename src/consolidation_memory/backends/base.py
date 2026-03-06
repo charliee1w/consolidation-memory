@@ -7,6 +7,12 @@ import numpy as np
 
 def normalize_l2(vecs: np.ndarray) -> np.ndarray:
     """L2-normalize embedding vectors. Zero vectors are left as-is."""
+    if vecs.size == 0:
+        if vecs.ndim == 1:
+            return vecs.reshape(0, 0).astype(np.float32, copy=False)
+        return vecs.astype(np.float32, copy=False)
+    if vecs.ndim == 1:
+        vecs = vecs.reshape(1, -1)
     norms = np.linalg.norm(vecs, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     result: np.ndarray = vecs / norms

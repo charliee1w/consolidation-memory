@@ -184,14 +184,13 @@ class TestDeduplicationInRecall:
         from unittest.mock import patch
 
         from consolidation_memory.context_assembler import recall
-        from consolidation_memory.config import reset_config
+        from consolidation_memory.config import override_config
 
         vs, ep_ids, query_vec = setup_db
 
-        # Disable dedup
-        reset_config(RECALL_DEDUP_ENABLED=False)
-
+        # Disable dedup while preserving project/test paths.
         with (
+            override_config(RECALL_DEDUP_ENABLED=False),
             patch("consolidation_memory.context_assembler.backends") as mock_be,
             patch("consolidation_memory.context_assembler.record_cache") as mock_rc,
             patch("consolidation_memory.context_assembler.topic_cache") as mock_tc,

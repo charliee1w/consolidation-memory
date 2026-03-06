@@ -27,6 +27,7 @@ class TestSchemaStructure:
             "memory_search",
             "memory_claim_browse",
             "memory_claim_search",
+            "memory_detect_drift",
             "memory_status",
             "memory_forget",
             "memory_export",
@@ -172,6 +173,26 @@ class TestDispatch:
             claim_type="procedure",
             as_of="2026-01-01T00:00:00+00:00",
             limit=50,
+        )
+
+    def test_dispatch_detect_drift(self):
+        client = MagicMock()
+        client.detect_drift.return_value = {
+            "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+            "impacted_claim_ids": ["claim-1"],
+            "challenged_claim_ids": ["claim-1"],
+            "impacts": [],
+        }
+
+        result = dispatch_tool_call(
+            client,
+            "memory_detect_drift",
+            {"base_ref": "origin/main", "repo_path": "C:/repo"},
+        )
+        assert result["challenged_claim_ids"] == ["claim-1"]
+        client.detect_drift.assert_called_once_with(
+            base_ref="origin/main",
+            repo_path="C:/repo",
         )
 
     def test_dispatch_unknown_returns_error(self):

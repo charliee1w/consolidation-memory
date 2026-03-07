@@ -14,7 +14,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from consolidation_memory.config import get_config as _get_config
 from consolidation_memory.types import (
@@ -1960,7 +1960,7 @@ def _ensure_consolidation_scheduler_row(conn: sqlite3.Connection) -> sqlite3.Row
         (_SCHEDULER_ROW_ID,),
     ).fetchone()
     if row is not None:
-        return row
+        return cast(sqlite3.Row, row)
 
     now = _now()
     conn.execute(
@@ -1975,7 +1975,7 @@ def _ensure_consolidation_scheduler_row(conn: sqlite3.Connection) -> sqlite3.Row
     ).fetchone()
     if created is None:
         raise RuntimeError("Failed to initialize consolidation scheduler state")
-    return created
+    return cast(sqlite3.Row, created)
 
 
 def get_consolidation_scheduler_state() -> dict[str, Any]:

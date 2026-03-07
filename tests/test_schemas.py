@@ -120,7 +120,7 @@ class TestDispatch:
 
     def test_dispatch_recall(self):
         client = MagicMock()
-        client.recall.return_value = RecallResult(
+        client.query_recall.return_value = RecallResult(
             episodes=[{"id": "1", "content": "test"}],
             knowledge=[],
             total_episodes=1,
@@ -129,15 +129,15 @@ class TestDispatch:
 
         result = dispatch_tool_call(client, "memory_recall", {"query": "test"})
         assert result["total_episodes"] == 1
-        client.recall.assert_called_once_with(
+        client.query_recall.assert_called_once_with(
             query="test", n_results=10, include_knowledge=True,
             content_types=None, tags=None, after=None, before=None,
-            include_expired=False, as_of=None,
+            include_expired=False, as_of=None, scope=None,
         )
 
     def test_dispatch_recall_with_scope(self):
         client = MagicMock()
-        client.recall_with_scope.return_value = RecallResult(episodes=[], knowledge=[])
+        client.query_recall.return_value = RecallResult(episodes=[], knowledge=[])
 
         result = dispatch_tool_call(
             client,
@@ -145,7 +145,7 @@ class TestDispatch:
             {"query": "test", "scope": {"project": {"slug": "repo-a"}}},
         )
         assert "episodes" in result
-        client.recall_with_scope.assert_called_once_with(
+        client.query_recall.assert_called_once_with(
             query="test",
             n_results=10,
             include_knowledge=True,
@@ -157,7 +157,6 @@ class TestDispatch:
             as_of=None,
             scope={"project": {"slug": "repo-a"}},
         )
-        client.recall.assert_not_called()
 
     def test_dispatch_status(self):
         client = MagicMock()
@@ -176,7 +175,7 @@ class TestDispatch:
 
     def test_dispatch_search(self):
         client = MagicMock()
-        client.search.return_value = SearchResult(
+        client.query_search.return_value = SearchResult(
             episodes=[{"id": "1", "content": "test"}],
             total_matches=1,
             query="test",
@@ -184,13 +183,14 @@ class TestDispatch:
 
         result = dispatch_tool_call(client, "memory_search", {"query": "test"})
         assert result["total_matches"] == 1
-        client.search.assert_called_once_with(
+        client.query_search.assert_called_once_with(
             query="test",
             content_types=None,
             tags=None,
             after=None,
             before=None,
             limit=20,
+            scope=None,
         )
 
     def test_dispatch_store_batch_with_scope(self):
@@ -219,7 +219,7 @@ class TestDispatch:
 
     def test_dispatch_search_with_scope(self):
         client = MagicMock()
-        client.search_with_scope.return_value = SearchResult(
+        client.query_search.return_value = SearchResult(
             episodes=[],
             total_matches=0,
             query="test",
@@ -231,7 +231,7 @@ class TestDispatch:
             {"query": "test", "scope": {"project": {"slug": "repo-a"}}},
         )
         assert result["total_matches"] == 0
-        client.search_with_scope.assert_called_once_with(
+        client.query_search.assert_called_once_with(
             query="test",
             content_types=None,
             tags=None,
@@ -240,11 +240,10 @@ class TestDispatch:
             limit=20,
             scope={"project": {"slug": "repo-a"}},
         )
-        client.search.assert_not_called()
 
     def test_dispatch_claim_browse(self):
         client = MagicMock()
-        client.browse_claims.return_value = ClaimBrowseResult(
+        client.query_browse_claims.return_value = ClaimBrowseResult(
             claims=[{"id": "claim-1", "canonical_text": "python version is 3.12"}],
             total=1,
             claim_type="fact",
@@ -256,7 +255,7 @@ class TestDispatch:
             {"claim_type": "fact", "as_of": "2026-01-01T00:00:00+00:00", "limit": 25},
         )
         assert result["total"] == 1
-        client.browse_claims.assert_called_once_with(
+        client.query_browse_claims.assert_called_once_with(
             claim_type="fact",
             as_of="2026-01-01T00:00:00+00:00",
             limit=25,
@@ -264,7 +263,7 @@ class TestDispatch:
 
     def test_dispatch_claim_search(self):
         client = MagicMock()
-        client.search_claims.return_value = ClaimSearchResult(
+        client.query_search_claims.return_value = ClaimSearchResult(
             claims=[{"id": "claim-2", "canonical_text": "uses uvicorn"}],
             total_matches=1,
             query="uvicorn",
@@ -276,7 +275,7 @@ class TestDispatch:
             {"query": "uvicorn", "claim_type": "procedure", "as_of": "2026-01-01T00:00:00+00:00"},
         )
         assert result["total_matches"] == 1
-        client.search_claims.assert_called_once_with(
+        client.query_search_claims.assert_called_once_with(
             query="uvicorn",
             claim_type="procedure",
             as_of="2026-01-01T00:00:00+00:00",
@@ -285,7 +284,7 @@ class TestDispatch:
 
     def test_dispatch_detect_drift(self):
         client = MagicMock()
-        client.detect_drift.return_value = {
+        client.query_detect_drift.return_value = {
             "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/app.py"}],
             "impacted_claim_ids": ["claim-1"],
             "challenged_claim_ids": ["claim-1"],
@@ -298,7 +297,7 @@ class TestDispatch:
             {"base_ref": "origin/main", "repo_path": "C:/repo"},
         )
         assert result["challenged_claim_ids"] == ["claim-1"]
-        client.detect_drift.assert_called_once_with(
+        client.query_detect_drift.assert_called_once_with(
             base_ref="origin/main",
             repo_path="C:/repo",
         )

@@ -139,13 +139,13 @@ class TestClaimRecallPayload:
 class TestClaimToolDispatch:
     def test_mcp_dispatch_for_claim_calls(self):
         client = MagicMock()
-        client.browse_claims.return_value = ClaimBrowseResult(
+        client.query_browse_claims.return_value = ClaimBrowseResult(
             claims=[{"id": "claim-a"}],
             total=1,
             claim_type="fact",
             as_of="2026-01-01T00:00:00+00:00",
         )
-        client.search_claims.return_value = ClaimSearchResult(
+        client.query_search_claims.return_value = ClaimSearchResult(
             claims=[{"id": "claim-b"}],
             total_matches=1,
             query="uvicorn",
@@ -168,12 +168,12 @@ class TestClaimToolDispatch:
         assert browse_out["claims"][0]["id"] == "claim-a"
         assert search_out["total_matches"] == 1
         assert search_out["claims"][0]["id"] == "claim-b"
-        client.browse_claims.assert_called_once_with(
+        client.query_browse_claims.assert_called_once_with(
             claim_type="fact",
             as_of="2026-01-01T00:00:00+00:00",
             limit=10,
         )
-        client.search_claims.assert_called_once_with(
+        client.query_search_claims.assert_called_once_with(
             query="uvicorn",
             claim_type="procedure",
             as_of="2026-01-01T00:00:00+00:00",

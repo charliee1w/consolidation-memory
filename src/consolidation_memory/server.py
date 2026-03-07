@@ -114,6 +114,7 @@ async def memory_recall(
     before: str | None = None,
     include_expired: bool = False,
     as_of: str | None = None,
+    scope: dict[str, object] | None = None,
 ) -> str:
     """Retrieve relevant memories by semantic similarity.
 
@@ -133,15 +134,17 @@ async def memory_recall(
         include_expired: Include temporally expired knowledge records. Default False.
         as_of: ISO datetime for temporal belief queries. Returns knowledge state
             at that point in time, including records since superseded.
+        scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
         client = _get_client()
         n_results = max(1, min(n_results, 50))
         result = await asyncio.to_thread(
-            lambda: client.recall(
+            lambda: client.query_recall(
                 query, n_results, include_knowledge,
                 content_types=content_types, tags=tags, after=after, before=before,
                 include_expired=include_expired, as_of=as_of,
+                scope=scope,
             )
         )
         return json.dumps(dataclasses.asdict(result), default=str)
@@ -185,6 +188,7 @@ async def memory_search(
     after: str | None = None,
     before: str | None = None,
     limit: int = 20,
+    scope: dict[str, object] | None = None,
 ) -> str:
     """Keyword/metadata search over episodes. Works without embedding backend.
 
@@ -199,17 +203,19 @@ async def memory_search(
         after: Only episodes created after this ISO date (e.g. '2025-01-01').
         before: Only episodes created before this ISO date.
         limit: Maximum results (default 20, max 50).
+        scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
         client = _get_client()
         result = await asyncio.to_thread(
-            lambda: client.search(
+            lambda: client.query_search(
                 query=query,
                 content_types=content_types,
                 tags=tags,
                 after=after,
                 before=before,
                 limit=min(limit, 50),
+                scope=scope,
             )
         )
         return json.dumps(dataclasses.asdict(result), default=str)
@@ -234,7 +240,7 @@ async def memory_claim_browse(
     try:
         client = _get_client()
         result = await asyncio.to_thread(
-            client.browse_claims,
+            client.query_browse_claims,
             claim_type=claim_type,
             as_of=as_of,
             limit=min(limit, 200),
@@ -263,7 +269,7 @@ async def memory_claim_search(
     try:
         client = _get_client()
         result = await asyncio.to_thread(
-            client.search_claims,
+            client.query_search_claims,
             query=query,
             claim_type=claim_type,
             as_of=as_of,
@@ -289,7 +295,7 @@ async def memory_detect_drift(
     try:
         client = _get_client()
         result = await asyncio.to_thread(
-            client.detect_drift,
+            client.query_detect_drift,
             base_ref=base_ref,
             repo_path=repo_path,
         )

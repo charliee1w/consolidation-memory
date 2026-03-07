@@ -19,7 +19,6 @@ from consolidation_memory.database import (
     get_active_claims,
     get_all_active_records,
     get_claims_as_of,
-    get_claim_source_scope_rows,
     get_connection,
     get_episodes_batch,
     get_recently_contradicted_topic_ids,
@@ -30,6 +29,11 @@ from consolidation_memory.database import (
     increment_topic_access,
 )
 from consolidation_memory import backends
+from consolidation_memory.query_semantics import (
+    filter_claims_for_scope as _filter_claims_for_scope,
+    matches_scope_filter as _matches_scope_filter,
+    parse_claim_payload as _parse_claim_payload,
+)
 from consolidation_memory.vector_store import VectorStore
 from consolidation_memory import topic_cache
 from consolidation_memory import record_cache
@@ -254,44 +258,6 @@ def _deduplicate_episodes(
     return filtered
 
 
-def _matches_scope_filter(
-    row: dict[str, object],
-    scope: dict[str, str | None] | None,
-) -> bool:
-    if not scope:
-        return True
-    for key, expected in scope.items():
-        if expected is None:
-            continue
-        actual = row.get(key)
-        if actual is None or str(actual) != expected:
-            return False
-    return True
-
-
-def _filter_claims_for_scope(
-    claims: list[dict],
-    scope: dict[str, str | None] | None,
-) -> list[dict]:
-    if not scope or not claims:
-        return claims
-
-    claim_ids = [str(claim["id"]) for claim in claims if claim.get("id")]
-    if not claim_ids:
-        return []
-
-    source_rows = get_claim_source_scope_rows(claim_ids)
-    allowed_ids: set[str] = set()
-    for claim_id in claim_ids:
-        rows = source_rows.get(claim_id, [])
-        if not rows:
-            continue
-        if all(_matches_scope_filter(row, scope) for row in rows):
-            allowed_ids.add(claim_id)
-
-    return [claim for claim in claims if str(claim.get("id")) in allowed_ids]
-
-
 # ── Uncertainty signaling ──────────────────────────────────────────────────
 
 def _apply_uncertainty_signals(
@@ -395,20 +361,6 @@ def _recently_contradicted_claim_ids(
     return {row["claim_id"] for row in rows}
 
 
-def _parse_claim_payload(payload_raw: object) -> dict[str, object]:
-    """Parse a claim payload from DB storage into a dict."""
-    if isinstance(payload_raw, dict):
-        return dict(payload_raw)
-    if isinstance(payload_raw, str):
-        try:
-            parsed = json.loads(payload_raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return {}
-    return {}
-
-
 def _search_claims(
     query: str,
     query_vec: np.ndarray | None = None,
@@ -487,18 +439,27 @@ def _search_claims(
     top_claims = scored_claims[:cfg.RECORDS_MAX_RESULTS]
 
     scoped_claims = _filter_claims_for_scope(top_claims, scope)
-    contradicted_ids = _recently_contradicted_claim_ids(
-        [claim["id"] for claim in scoped_claims],
-        as_of=as_of,
-    )
+    claim_ids = [str(claim.get("id", "")) for claim in scoped_claims]
+    contradicted_ids = _recently_contradicted_claim_ids(claim_ids, as_of=as_of)
     low_conf_count = 0
     contradicted_count = 0
     for claim in scoped_claims:
+        claim_id = str(claim.get("id", ""))
+        raw_confidence = claim.get("confidence", 0.8)
+        if isinstance(raw_confidence, (int, float)):
+            confidence = float(raw_confidence)
+        elif isinstance(raw_confidence, str):
+            try:
+                confidence = float(raw_confidence)
+            except ValueError:
+                confidence = 0.8
+        else:
+            confidence = 0.8
         signals: list[str] = []
-        if claim["confidence"] < _LOW_CONFIDENCE_THRESHOLD:
+        if confidence < _LOW_CONFIDENCE_THRESHOLD:
             signals.append(_LOW_CONFIDENCE_WARNING)
             low_conf_count += 1
-        if claim["id"] in contradicted_ids:
+        if claim_id in contradicted_ids:
             signals.append(_RECENTLY_CONTRADICTED_CLAIM_WARNING)
             contradicted_count += 1
         if signals:

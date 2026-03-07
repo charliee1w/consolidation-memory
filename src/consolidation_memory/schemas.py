@@ -791,59 +791,34 @@ def dispatch_tool_call(
 
         elif name == "memory_recall":
             n_results = max(1, min(arguments.get("n_results", 10), 50))
-            scope = arguments.get("scope")
-            if scope is not None and hasattr(client, "recall_with_scope"):
-                recall_result = client.recall_with_scope(
-                    query=arguments["query"],
-                    n_results=n_results,
-                    include_knowledge=arguments.get("include_knowledge", True),
-                    content_types=arguments.get("content_types"),
-                    tags=arguments.get("tags"),
-                    after=arguments.get("after"),
-                    before=arguments.get("before"),
-                    include_expired=arguments.get("include_expired", False),
-                    as_of=arguments.get("as_of"),
-                    scope=scope,
-                )
-            else:
-                recall_result = client.recall(
-                    query=arguments["query"],
-                    n_results=n_results,
-                    include_knowledge=arguments.get("include_knowledge", True),
-                    content_types=arguments.get("content_types"),
-                    tags=arguments.get("tags"),
-                    after=arguments.get("after"),
-                    before=arguments.get("before"),
-                    include_expired=arguments.get("include_expired", False),
-                    as_of=arguments.get("as_of"),
-                )
+            recall_result = client.query_recall(
+                query=arguments["query"],
+                n_results=n_results,
+                include_knowledge=arguments.get("include_knowledge", True),
+                content_types=arguments.get("content_types"),
+                tags=arguments.get("tags"),
+                after=arguments.get("after"),
+                before=arguments.get("before"),
+                include_expired=arguments.get("include_expired", False),
+                as_of=arguments.get("as_of"),
+                scope=arguments.get("scope"),
+            )
             return dataclasses.asdict(recall_result)
 
         elif name == "memory_search":
-            scope = arguments.get("scope")
-            if scope is not None and hasattr(client, "search_with_scope"):
-                search_result = client.search_with_scope(
-                    query=arguments.get("query"),
-                    content_types=arguments.get("content_types"),
-                    tags=arguments.get("tags"),
-                    after=arguments.get("after"),
-                    before=arguments.get("before"),
-                    limit=min(arguments.get("limit", 20), 50),
-                    scope=scope,
-                )
-            else:
-                search_result = client.search(
-                    query=arguments.get("query"),
-                    content_types=arguments.get("content_types"),
-                    tags=arguments.get("tags"),
-                    after=arguments.get("after"),
-                    before=arguments.get("before"),
-                    limit=min(arguments.get("limit", 20), 50),
-                )
+            search_result = client.query_search(
+                query=arguments.get("query"),
+                content_types=arguments.get("content_types"),
+                tags=arguments.get("tags"),
+                after=arguments.get("after"),
+                before=arguments.get("before"),
+                limit=min(arguments.get("limit", 20), 50),
+                scope=arguments.get("scope"),
+            )
             return dataclasses.asdict(search_result)
 
         elif name == "memory_claim_browse":
-            browse_claims_result = client.browse_claims(
+            browse_claims_result = client.query_browse_claims(
                 claim_type=arguments.get("claim_type"),
                 as_of=arguments.get("as_of"),
                 limit=min(arguments.get("limit", 50), 200),
@@ -851,7 +826,7 @@ def dispatch_tool_call(
             return dataclasses.asdict(browse_claims_result)
 
         elif name == "memory_claim_search":
-            search_claims_result = client.search_claims(
+            search_claims_result = client.query_search_claims(
                 query=arguments["query"],
                 claim_type=arguments.get("claim_type"),
                 as_of=arguments.get("as_of"),
@@ -860,7 +835,7 @@ def dispatch_tool_call(
             return dataclasses.asdict(search_claims_result)
 
         elif name == "memory_detect_drift":
-            drift_result = client.detect_drift(
+            drift_result = client.query_detect_drift(
                 base_ref=arguments.get("base_ref"),
                 repo_path=arguments.get("repo_path"),
             )

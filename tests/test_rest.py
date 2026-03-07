@@ -98,9 +98,9 @@ class TestRecallEndpoint:
         from consolidation_memory.types import RecallResult
 
         with patch(
-            "consolidation_memory.client.MemoryClient.recall_with_scope",
+            "consolidation_memory.client.MemoryClient.query_recall",
             return_value=RecallResult(episodes=[], knowledge=[], total_episodes=0, total_knowledge_topics=0),
-        ) as mock_recall_with_scope:
+        ) as mock_query_recall:
             resp = api_client.post(
                 "/memory/recall",
                 json={
@@ -111,7 +111,7 @@ class TestRecallEndpoint:
 
         assert resp.status_code == 200
         assert resp.json()["total_episodes"] == 0
-        assert mock_recall_with_scope.call_count == 1
+        assert mock_query_recall.call_count == 1
 
 
 class TestStatusEndpoint:
@@ -128,9 +128,9 @@ class TestSearchEndpoint:
         from consolidation_memory.types import SearchResult
 
         with patch(
-            "consolidation_memory.client.MemoryClient.search_with_scope",
+            "consolidation_memory.client.MemoryClient.query_search",
             return_value=SearchResult(episodes=[], total_matches=0, query="scope"),
-        ) as mock_search_with_scope:
+        ) as mock_query_search:
             resp = api_client.post(
                 "/memory/search",
                 json={
@@ -141,7 +141,7 @@ class TestSearchEndpoint:
 
         assert resp.status_code == 200
         assert resp.json()["total_matches"] == 0
-        assert mock_search_with_scope.call_count == 1
+        assert mock_query_search.call_count == 1
 
 
 class TestForgetEndpoint:
@@ -296,7 +296,7 @@ class TestDriftEndpoint:
             }],
         }
 
-        with patch("consolidation_memory.client.MemoryClient.detect_drift", return_value=expected) as mock_detect:
+        with patch("consolidation_memory.client.MemoryClient.query_detect_drift", return_value=expected) as mock_detect:
             resp = api_client.post("/memory/detect-drift", json={"base_ref": "origin/main"})
 
         assert resp.status_code == 200
@@ -306,7 +306,7 @@ class TestDriftEndpoint:
 
     def test_detect_drift_runtime_error_returns_400(self, api_client):
         with patch(
-            "consolidation_memory.client.MemoryClient.detect_drift",
+            "consolidation_memory.client.MemoryClient.query_detect_drift",
             side_effect=RuntimeError("git diff failed"),
         ):
             resp = api_client.post("/memory/detect-drift", json={})

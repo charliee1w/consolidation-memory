@@ -155,6 +155,55 @@ def _clean_str(value: object) -> str | None:
     return cleaned or None
 
 
+def _coerce_namespace_sharing_mode(value: object) -> NamespaceSharingMode:
+    cleaned = _clean_str(value)
+    if cleaned == "private":
+        return "private"
+    if cleaned == "shared":
+        return "shared"
+    if cleaned == "team":
+        return "team"
+    if cleaned == "managed":
+        return "managed"
+    return "private"
+
+
+def _coerce_app_client_type(value: object) -> AppClientType:
+    cleaned = _clean_str(value)
+    if cleaned == "mcp":
+        return "mcp"
+    if cleaned == "python_sdk":
+        return "python_sdk"
+    if cleaned == "rest":
+        return "rest"
+    if cleaned == "openai_agents":
+        return "openai_agents"
+    if cleaned == "langgraph":
+        return "langgraph"
+    if cleaned == "adk":
+        return "adk"
+    if cleaned == "letta":
+        return "letta"
+    if cleaned == "cli":
+        return "cli"
+    if cleaned == "other":
+        return "other"
+    return "python_sdk"
+
+
+def _coerce_session_kind(value: object) -> SessionKind:
+    cleaned = _clean_str(value)
+    if cleaned == "conversation":
+        return "conversation"
+    if cleaned == "thread":
+        return "thread"
+    if cleaned == "workflow":
+        return "workflow"
+    if cleaned == "job":
+        return "job"
+    return "conversation"
+
+
 def coerce_scope_envelope(
     scope: ScopeEnvelope | Mapping[str, Any] | None,
 ) -> ScopeEnvelope | None:
@@ -183,11 +232,7 @@ def coerce_scope_envelope(
             id=_clean_str(ns.get("id")),
             slug=_clean_str(ns.get("slug")) or "default",
             display_name=_clean_str(ns.get("display_name")),
-            sharing_mode=(
-                _clean_str(ns.get("sharing_mode"))
-                if _clean_str(ns.get("sharing_mode")) in {"private", "shared", "team", "managed"}
-                else "private"
-            ),
+            sharing_mode=_coerce_namespace_sharing_mode(ns.get("sharing_mode")),
         )
 
     app_raw = scope.get("app_client", scope.get("app"))
@@ -199,12 +244,7 @@ def coerce_scope_envelope(
         app = _as_mapping(app_raw)
         app_client = AppClientScope(
             id=_clean_str(app.get("id")),
-            app_type=(
-                _clean_str(app.get("app_type"))
-                if _clean_str(app.get("app_type"))
-                in {"mcp", "python_sdk", "rest", "openai_agents", "langgraph", "adk", "letta", "cli", "other"}
-                else "python_sdk"
-            ),
+            app_type=_coerce_app_client_type(app.get("app_type")),
             name=_clean_str(app.get("name")) or "legacy_client",
             provider=_clean_str(app.get("provider")),
             external_key=_clean_str(app.get("external_key")),
@@ -232,15 +272,10 @@ def coerce_scope_envelope(
         session_map = _as_mapping(session_raw)
         session = None
         if session_map:
-            session_kind = _clean_str(session_map.get("session_kind"))
             session = SessionScope(
                 id=_clean_str(session_map.get("id")),
                 external_key=_clean_str(session_map.get("external_key")),
-                session_kind=(
-                    session_kind
-                    if session_kind in {"conversation", "thread", "workflow", "job"}
-                    else "conversation"
-                ),
+                session_kind=_coerce_session_kind(session_map.get("session_kind")),
             )
 
     project_raw = scope.get("project", scope.get("project_repo"))

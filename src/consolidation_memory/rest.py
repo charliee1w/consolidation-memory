@@ -218,33 +218,19 @@ def create_app() -> FastAPI:
         client = _require_client()
         # cast() widens list[Literal[...]] to list[str] for mypy invariance.
         ct = cast(list[str] | None, req.content_types)
-        if req.scope is not None:
-            result = await asyncio.to_thread(
-                client.recall_with_scope,
-                query=req.query,
-                n_results=req.n_results,
-                include_knowledge=req.include_knowledge,
-                content_types=ct,
-                tags=req.tags,
-                after=req.after,
-                before=req.before,
-                include_expired=req.include_expired,
-                as_of=req.as_of,
-                scope=req.scope,
-            )
-        else:
-            result = await asyncio.to_thread(
-                client.recall,
-                query=req.query,
-                n_results=req.n_results,
-                include_knowledge=req.include_knowledge,
-                content_types=ct,
-                tags=req.tags,
-                after=req.after,
-                before=req.before,
-                include_expired=req.include_expired,
-                as_of=req.as_of,
-            )
+        result = await asyncio.to_thread(
+            client.query_recall,
+            query=req.query,
+            n_results=req.n_results,
+            include_knowledge=req.include_knowledge,
+            content_types=ct,
+            tags=req.tags,
+            after=req.after,
+            before=req.before,
+            include_expired=req.include_expired,
+            as_of=req.as_of,
+            scope=req.scope,
+        )
         return dataclasses.asdict(result)
 
     @app.post("/memory/search")
@@ -252,27 +238,16 @@ def create_app() -> FastAPI:
         """Keyword/metadata search over episodes (no embedding needed)."""
         client = _require_client()
         ct = cast(list[str] | None, req.content_types)
-        if req.scope is not None:
-            result = await asyncio.to_thread(
-                client.search_with_scope,
-                query=req.query,
-                content_types=ct,
-                tags=req.tags,
-                after=req.after,
-                before=req.before,
-                limit=req.limit,
-                scope=req.scope,
-            )
-        else:
-            result = await asyncio.to_thread(
-                client.search,
-                query=req.query,
-                content_types=ct,
-                tags=req.tags,
-                after=req.after,
-                before=req.before,
-                limit=req.limit,
-            )
+        result = await asyncio.to_thread(
+            client.query_search,
+            query=req.query,
+            content_types=ct,
+            tags=req.tags,
+            after=req.after,
+            before=req.before,
+            limit=req.limit,
+            scope=req.scope,
+        )
         return dataclasses.asdict(result)
 
     @app.post("/memory/claims/browse")
@@ -280,7 +255,7 @@ def create_app() -> FastAPI:
         """Browse claims with optional type and temporal filtering."""
         client = _require_client()
         result = await asyncio.to_thread(
-            client.browse_claims,
+            client.query_browse_claims,
             claim_type=req.claim_type,
             as_of=req.as_of,
             limit=req.limit,
@@ -292,7 +267,7 @@ def create_app() -> FastAPI:
         """Search claims by text with optional type and temporal filtering."""
         client = _require_client()
         result = await asyncio.to_thread(
-            client.search_claims,
+            client.query_search_claims,
             query=req.query,
             claim_type=req.claim_type,
             as_of=req.as_of,
@@ -306,7 +281,7 @@ def create_app() -> FastAPI:
         client = _require_client()
         try:
             return await asyncio.to_thread(
-                client.detect_drift,
+                client.query_detect_drift,
                 base_ref=req.base_ref,
                 repo_path=req.repo_path,
             )

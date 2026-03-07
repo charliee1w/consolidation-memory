@@ -559,26 +559,26 @@ class TestSchemaAsOf:
         from consolidation_memory.schemas import dispatch_tool_call
 
         client = MagicMock()
-        client.recall.return_value = RecallResult()
+        client.query_recall.return_value = RecallResult()
 
         dispatch_tool_call(client, "memory_recall", {
             "query": "test",
             "as_of": "2025-06-01T00:00:00+00:00",
         })
 
-        client.recall.assert_called_once()
-        call_kwargs = client.recall.call_args
+        client.query_recall.assert_called_once()
+        call_kwargs = client.query_recall.call_args
         assert call_kwargs.kwargs.get("as_of") == "2025-06-01T00:00:00+00:00"
 
     def test_dispatch_as_of_defaults_to_none(self):
         from consolidation_memory.schemas import dispatch_tool_call
 
         client = MagicMock()
-        client.recall.return_value = RecallResult()
+        client.query_recall.return_value = RecallResult()
 
         dispatch_tool_call(client, "memory_recall", {"query": "test"})
 
-        call_kwargs = client.recall.call_args
+        call_kwargs = client.query_recall.call_args
         assert call_kwargs.kwargs.get("as_of") is None
 
 

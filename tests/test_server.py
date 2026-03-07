@@ -33,7 +33,7 @@ class TestMCPDetectDriftTool:
             }],
         }
         mock_client = MagicMock()
-        mock_client.detect_drift.return_value = expected
+        mock_client.query_detect_drift.return_value = expected
 
         with patch("consolidation_memory.server._get_client", return_value=mock_client):
             output = asyncio.run(
@@ -41,7 +41,7 @@ class TestMCPDetectDriftTool:
             )
 
         assert json.loads(output) == expected
-        mock_client.detect_drift.assert_called_once_with(
+        mock_client.query_detect_drift.assert_called_once_with(
             base_ref="origin/main",
             repo_path="C:/repo",
         )
@@ -50,7 +50,7 @@ class TestMCPDetectDriftTool:
         from consolidation_memory.server import memory_detect_drift
 
         mock_client = MagicMock()
-        mock_client.detect_drift.side_effect = RuntimeError("git diff failed")
+        mock_client.query_detect_drift.side_effect = RuntimeError("git diff failed")
 
         with patch("consolidation_memory.server._get_client", return_value=mock_client):
             output = asyncio.run(memory_detect_drift())
@@ -58,6 +58,39 @@ class TestMCPDetectDriftTool:
         data = json.loads(output)
         assert "error" in data
         assert "git diff failed" in data["error"]
+
+
+class TestMCPRecallTool:
+    def test_memory_recall_calls_canonical_query_service(self):
+        from consolidation_memory.server import memory_recall
+        from consolidation_memory.types import RecallResult
+
+        mock_client = MagicMock()
+        mock_client.query_recall.return_value = RecallResult()
+
+        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+            output = asyncio.run(
+                memory_recall(
+                    query="python runtime",
+                    as_of="2025-06-01T00:00:00+00:00",
+                    scope={"project": {"slug": "repo-a"}},
+                )
+        )
+
+        data = json.loads(output)
+        assert data["total_episodes"] == 0
+        mock_client.query_recall.assert_called_once_with(
+            "python runtime",
+            10,
+            True,
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            include_expired=False,
+            as_of="2025-06-01T00:00:00+00:00",
+            scope={"project": {"slug": "repo-a"}},
+        )
 
 
 class TestMCPConsolidateTool:

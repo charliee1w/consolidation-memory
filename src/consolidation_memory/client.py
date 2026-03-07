@@ -27,6 +27,14 @@ from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as Futur
 from datetime import datetime, timezone
 
 from consolidation_memory import __version__
+from consolidation_memory.query_service import (
+    CanonicalQueryService,
+    ClaimBrowseQuery,
+    ClaimSearchQuery,
+    DriftQuery,
+    EpisodeSearchQuery,
+    RecallQuery,
+)
 from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.types import (
     RUN_STATUS_COMPLETED,
@@ -252,20 +260,6 @@ def _extract_records_from_markdown(body: str) -> list[dict[str, str]]:
     return records
 
 
-def _parse_claim_payload(payload_raw: object) -> dict[str, object]:
-    """Parse claim payload column into a normalized dict."""
-    if isinstance(payload_raw, dict):
-        return dict(payload_raw)
-    if isinstance(payload_raw, str):
-        try:
-            parsed = json.loads(payload_raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return {}
-    return {}
-
-
 class MemoryClient:
     """Persistent semantic memory client.
 
@@ -290,6 +284,7 @@ class MemoryClient:
 
         ensure_schema()
         self._vector_store = VectorStore()
+        self._query_service = CanonicalQueryService(self._vector_store)
         self._check_embedding_backend()
 
         # Consolidation threading
@@ -465,6 +460,35 @@ class MemoryClient:
             resolved_scope=operation_context.scope,
         )
 
+    def query_recall(
+        self,
+        query: str,
+        n_results: int = 10,
+        include_knowledge: bool = True,
+        *,
+        content_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        include_expired: bool = False,
+        as_of: str | None = None,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> RecallResult:
+        """Canonical recall entrypoint shared by all adapter surfaces."""
+        operation_context = self.build_operation_context(scope)
+        return self._recall_internal(
+            query=query,
+            n_results=n_results,
+            include_knowledge=include_knowledge,
+            content_types=content_types,
+            tags=tags,
+            after=after,
+            before=before,
+            include_expired=include_expired,
+            as_of=as_of,
+            resolved_scope=operation_context.scope,
+        )
+
     def recall_with_scope(
         self,
         query: str,
@@ -478,9 +502,8 @@ class MemoryClient:
         as_of: str | None = None,
         scope: ScopeEnvelope | dict[str, object] | None = None,
     ) -> RecallResult:
-        """Recall memories with explicit canonical scope metadata."""
-        operation_context = self.build_operation_context(scope)
-        return self._recall_internal(
+        """Backward-compatible scoped wrapper for canonical recall."""
+        return self.query_recall(
             query=query,
             n_results=n_results,
             include_knowledge=include_knowledge,
@@ -490,7 +513,7 @@ class MemoryClient:
             before=before,
             include_expired=include_expired,
             as_of=as_of,
-            resolved_scope=operation_context.scope,
+            scope=scope,
         )
 
     def store_batch_with_scope(
@@ -515,7 +538,29 @@ class MemoryClient:
         limit: int = 20,
         scope: ScopeEnvelope | dict[str, object] | None = None,
     ) -> SearchResult:
-        """Run keyword search with explicit canonical scope metadata."""
+        """Backward-compatible scoped wrapper for canonical episode search."""
+        return self.query_search(
+            query=query,
+            content_types=content_types,
+            tags=tags,
+            after=after,
+            before=before,
+            limit=limit,
+            scope=scope,
+        )
+
+    def query_search(
+        self,
+        query: str | None = None,
+        content_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 20,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> SearchResult:
+        """Canonical episode keyword-search entrypoint for all adapters."""
         operation_context = self.build_operation_context(scope)
         return self._search_internal(
             query=query,
@@ -866,7 +911,7 @@ class MemoryClient:
         as_of: str | None = None,
     ) -> RecallResult:
         """Retrieve relevant memories using backward-compatible default scope."""
-        return self._recall_internal(
+        return self.query_recall(
             query=query,
             n_results=n_results,
             include_knowledge=include_knowledge,
@@ -876,7 +921,6 @@ class MemoryClient:
             before=before,
             include_expired=include_expired,
             as_of=as_of,
-            resolved_scope=self.resolve_scope(),
         )
 
     def _recall_internal(
@@ -894,25 +938,23 @@ class MemoryClient:
         resolved_scope: ResolvedScopeEnvelope,
     ) -> RecallResult:
         """Retrieve relevant memories with canonical scope filtering."""
-        from consolidation_memory.context_assembler import recall
-        from consolidation_memory.database import get_stats
-
         self._vector_store.reload_if_stale()
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
         try:
-            result = recall(
-                query=query,
-                n_results=n_results,
-                include_knowledge=include_knowledge,
-                vector_store=self._vector_store,
-                content_types=content_types,
-                tags=tags,
-                after=after,
-                before=before,
-                include_expired=include_expired,
-                as_of=as_of,
-                scope=scope_filter,
+            recall_result = self._query_service.recall(
+                RecallQuery(
+                    query=query,
+                    n_results=n_results,
+                    include_knowledge=include_knowledge,
+                    content_types=content_types,
+                    tags=tags,
+                    after=after,
+                    before=before,
+                    include_expired=include_expired,
+                    as_of=as_of,
+                ),
+                scope_filter=scope_filter,
             )
         except ConnectionError as e:
             logger.error("Embedding backend unreachable during recall: %s", e)
@@ -921,23 +963,15 @@ class MemoryClient:
                 message=f"Embedding backend unreachable: {e}",
             )
 
-        stats = get_stats()
-
-        records = result.get("records", [])
-        claims = result.get("claims", [])
+        records = recall_result.records
+        claims = recall_result.claims
         logger.info(
             "Recall query='%s' returned %d episodes, %d knowledge entries, %d records, %d claims",
-            query[:80], len(result["episodes"]), len(result["knowledge"]), len(records), len(claims),
-        )
-
-        recall_result = RecallResult(
-            episodes=result["episodes"],
-            knowledge=result["knowledge"],
-            records=records,
-            claims=claims,
-            total_episodes=stats["episodic_buffer"]["total"],
-            total_knowledge_topics=stats["knowledge_base"]["total_topics"],
-            warnings=result.get("warnings", []),
+            query[:80],
+            len(recall_result.episodes),
+            len(recall_result.knowledge),
+            len(records),
+            len(claims),
         )
 
         if (
@@ -964,14 +998,13 @@ class MemoryClient:
         limit: int = 20,
     ) -> SearchResult:
         """Keyword/metadata search using backward-compatible default scope."""
-        return self._search_internal(
+        return self.query_search(
             query=query,
             content_types=content_types,
             tags=tags,
             after=after,
             before=before,
             limit=limit,
-            resolved_scope=self.resolve_scope(),
         )
 
     def _search_internal(
@@ -1001,40 +1034,48 @@ class MemoryClient:
         Returns:
             SearchResult with matching episodes.
         """
-        from consolidation_memory.database import search_episodes
+        self._vector_store.reload_if_stale()
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
-        results = search_episodes(
-            query=query,
-            content_types=content_types,
-            tags=tags,
-            after=after,
-            before=before,
-            scope=scope_filter,
-            limit=limit,
+        result = self._query_service.search(
+            EpisodeSearchQuery(
+                query=query,
+                content_types=content_types,
+                tags=tags,
+                after=after,
+                before=before,
+                limit=limit,
+            ),
+            scope_filter=scope_filter,
         )
-
-        episodes = []
-        for ep in results:
-            episodes.append({
-                "id": ep["id"],
-                "content": ep["content"],
-                "content_type": ep["content_type"],
-                "tags": parse_json_list(ep["tags"]),
-                "created_at": ep["created_at"],
-                "surprise_score": ep["surprise_score"],
-                "access_count": ep["access_count"],
-            })
-
         logger.info(
             "Search query=%r returned %d results",
-            query, len(episodes),
+            query,
+            len(result.episodes),
         )
-        return SearchResult(
-            episodes=episodes,
-            total_matches=len(episodes),
-            query=query,
+        return result
+
+    def query_browse_claims(
+        self,
+        claim_type: str | None = None,
+        as_of: str | None = None,
+        limit: int = 50,
+    ) -> ClaimBrowseResult:
+        """Canonical claim-browse entrypoint for all adapters."""
+        result = self._query_service.browse_claims(
+            ClaimBrowseQuery(
+                claim_type=claim_type,
+                as_of=as_of,
+                limit=limit,
+            )
         )
+        logger.info(
+            "Browse claims claim_type=%r as_of=%r returned %d results",
+            claim_type,
+            as_of,
+            len(result.claims),
+        )
+        return result
 
     def browse_claims(
         self,
@@ -1042,43 +1083,37 @@ class MemoryClient:
         as_of: str | None = None,
         limit: int = 50,
     ) -> ClaimBrowseResult:
-        """List claims, optionally filtered by type and temporal snapshot."""
-        from consolidation_memory.database import get_active_claims, get_claims_as_of
-
-        bounded_limit = max(1, min(limit, 200))
-        if as_of:
-            rows = get_claims_as_of(as_of=as_of, claim_type=claim_type, limit=bounded_limit)
-        else:
-            rows = get_active_claims(claim_type=claim_type, limit=bounded_limit)
-
-        claims: list[dict[str, object]] = []
-        for row in rows:
-            payload = _parse_claim_payload(row.get("payload"))
-            claims.append({
-                "id": row.get("id", ""),
-                "claim_type": row.get("claim_type", ""),
-                "canonical_text": row.get("canonical_text", ""),
-                "payload": payload,
-                "status": row.get("status", ""),
-                "confidence": row.get("confidence", 0.0),
-                "valid_from": row.get("valid_from"),
-                "valid_until": row.get("valid_until"),
-                "created_at": row.get("created_at"),
-                "updated_at": row.get("updated_at"),
-            })
-
-        logger.info(
-            "Browse claims claim_type=%r as_of=%r returned %d results",
-            claim_type,
-            as_of,
-            len(claims),
-        )
-        return ClaimBrowseResult(
-            claims=claims,
-            total=len(claims),
+        """Backward-compatible wrapper for canonical claim browse."""
+        return self.query_browse_claims(
             claim_type=claim_type,
             as_of=as_of,
+            limit=limit,
         )
+
+    def query_search_claims(
+        self,
+        query: str,
+        claim_type: str | None = None,
+        as_of: str | None = None,
+        limit: int = 50,
+    ) -> ClaimSearchResult:
+        """Canonical claim-search entrypoint for all adapters."""
+        result = self._query_service.search_claims(
+            ClaimSearchQuery(
+                query=query,
+                claim_type=claim_type,
+                as_of=as_of,
+                limit=limit,
+            )
+        )
+        logger.info(
+            "Search claims query=%r claim_type=%r as_of=%r returned %d matches",
+            query.strip(),
+            claim_type,
+            as_of,
+            len(result.claims),
+        )
+        return result
 
     def search_claims(
         self,
@@ -1087,89 +1122,26 @@ class MemoryClient:
         as_of: str | None = None,
         limit: int = 50,
     ) -> ClaimSearchResult:
-        """Search claims using deterministic phrase/keyword ranking."""
-        bounded_limit = max(1, min(limit, 200))
-        normalized_query = query.strip()
-        if not normalized_query:
-            return ClaimSearchResult(
-                claims=[],
-                total_matches=0,
-                query=query,
-                claim_type=claim_type,
-                as_of=as_of,
-                message="Query must not be empty.",
-            )
-
-        fetch_limit = min(max(bounded_limit * 5, bounded_limit), 1000)
-        browse_result = self.browse_claims(
+        """Backward-compatible wrapper for canonical claim search."""
+        return self.query_search_claims(
+            query=query,
             claim_type=claim_type,
             as_of=as_of,
-            limit=fetch_limit,
-        )
-        if not browse_result.claims:
-            return ClaimSearchResult(
-                claims=[],
-                total_matches=0,
-                query=normalized_query,
-                claim_type=claim_type,
-                as_of=as_of,
-            )
-
-        query_lower = normalized_query.lower()
-        query_terms = [term for term in query_lower.split() if term]
-
-        scored: list[dict[str, object]] = []
-        for claim in browse_result.claims:
-            payload_text = json.dumps(claim.get("payload", {}), sort_keys=True, default=str)
-            haystack = f"{claim.get('canonical_text', '')} {payload_text}".lower()
-            if not haystack.strip():
-                continue
-
-            phrase_hit = 1.0 if query_lower in haystack else 0.0
-            term_hits = sum(1 for term in query_terms if term in haystack)
-            if phrase_hit == 0.0 and term_hits == 0:
-                continue
-
-            term_score = (term_hits / len(query_terms)) if query_terms else 0.0
-            confidence = float(claim.get("confidence", 0.8) or 0.8)
-            relevance = (phrase_hit + term_score) * (0.5 + 0.5 * confidence)
-
-            ranked = dict(claim)
-            ranked["relevance"] = round(relevance, 3)
-            scored.append(ranked)
-
-        def _claim_sort_key(item: dict[str, object]) -> tuple[float, str]:
-            raw_relevance = item.get("relevance", 0.0)
-            relevance = float(raw_relevance) if isinstance(raw_relevance, (int, float)) else 0.0
-            return relevance, str(item.get("updated_at", ""))
-
-        scored.sort(key=_claim_sort_key, reverse=True)
-        top_claims = scored[:bounded_limit]
-
-        logger.info(
-            "Search claims query=%r claim_type=%r as_of=%r returned %d matches",
-            normalized_query,
-            claim_type,
-            as_of,
-            len(top_claims),
-        )
-        return ClaimSearchResult(
-            claims=top_claims,
-            total_matches=len(top_claims),
-            query=normalized_query,
-            claim_type=claim_type,
-            as_of=as_of,
+            limit=limit,
         )
 
-    def detect_drift(
+    def query_detect_drift(
         self,
         base_ref: str | None = None,
         repo_path: str | None = None,
     ) -> DriftOutput:
-        """Detect code drift and challenge anchored claims."""
-        from consolidation_memory.drift import detect_code_drift
-
-        result = detect_code_drift(base_ref=base_ref, repo_path=repo_path)
+        """Canonical drift detection/challenge entrypoint for all adapters."""
+        result = self._query_service.detect_drift(
+            DriftQuery(
+                base_ref=base_ref,
+                repo_path=repo_path,
+            )
+        )
         logger.info(
             "Detect drift base_ref=%r repo_path=%r impacted=%d challenged=%d",
             base_ref,
@@ -1178,6 +1150,14 @@ class MemoryClient:
             len(result["challenged_claim_ids"]),
         )
         return result
+
+    def detect_drift(
+        self,
+        base_ref: str | None = None,
+        repo_path: str | None = None,
+    ) -> DriftOutput:
+        """Backward-compatible wrapper for canonical drift detection."""
+        return self.query_detect_drift(base_ref=base_ref, repo_path=repo_path)
 
     def status(self) -> StatusResult:
         """Get memory system statistics.

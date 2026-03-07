@@ -5,8 +5,10 @@ Add this to your `~/.claude/CLAUDE.md` (global) or project-level `CLAUDE.md` to 
 You can add this automatically with:
 
 ```bash
-consolidation-memory setup-claude
+consolidation-memory setup-memory --path ~/.claude/CLAUDE.md
 ```
+
+(`setup-claude` is still available as a legacy alias.)
 
 Or copy the snippet below manually:
 

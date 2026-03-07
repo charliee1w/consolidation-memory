@@ -3,6 +3,7 @@
 Usage:
     consolidation-memory serve       # Start MCP server (default)
     consolidation-memory init        # Interactive first-run setup
+    consolidation-memory setup-memory # Write memory instructions to AGENTS.md
     consolidation-memory test        # Verify installation end-to-end
     consolidation-memory consolidate # Run consolidation manually
     consolidation-memory status      # Show system stats
@@ -46,7 +47,7 @@ def cmd_init():
     """Interactive first-run setup."""
     from consolidation_memory.config import get_default_config_dir, get_config_path
 
-    print(f"consolidation-memory v{__version__} — first-run setup\n")
+    print(f"consolidation-memory v{__version__} - first-run setup\n")
 
     existing = get_config_path()
     if existing:
@@ -152,7 +153,7 @@ similarity_threshold = 0.95
     print(f"\nConfig written to: {config_path}")
 
     # Initialize data directory
-    from consolidation_memory.config import get_config
+    from consolidation_memory.config import get_config, get_active_project
     cfg = get_config()
     for d in [cfg.DATA_DIR, cfg.KNOWLEDGE_DIR, cfg.LOG_DIR, cfg.BACKUP_DIR]:
         d.mkdir(parents=True, exist_ok=True)
@@ -163,16 +164,19 @@ similarity_threshold = 0.95
     ensure_schema()
     print("Database initialized.")
 
-    # Print Claude Desktop config snippet
-    print("\n--- Add to Claude Desktop config ---")
+    # Print generic MCP client config snippet
+    active_project = get_active_project()
+    print("\n--- Add to your MCP client config ---")
     print(json.dumps({
         "mcpServers": {
             "consolidation_memory": {
-                "command": "consolidation-memory"
+                "command": "consolidation-memory",
+                "args": ["--project", active_project, "serve"],
             }
         }
     }, indent=2))
 
+    print(f"\nMCP project namespace: {active_project}")
     print("\nSetup complete. Run 'consolidation-memory serve' to start.")
 
 
@@ -826,7 +830,7 @@ def cmd_browse():
         if rt in records_by_topic[tid]:
             records_by_topic[tid][rt] += 1
 
-    print(f"consolidation-memory v{__version__} — knowledge browser\n")
+    print(f"consolidation-memory v{__version__} - knowledge browser\n")
     print(f"Knowledge directory: {cfg.KNOWLEDGE_DIR}\n")
 
     for i, topic in enumerate(topics, 1):
@@ -849,16 +853,14 @@ def cmd_browse():
         print()
 
 
-def cmd_setup_claude():
-    """Append recommended CLAUDE.md snippet for proactive memory use."""
-    from pathlib import Path
-
-    snippet = """\
+def _memory_instructions_snippet() -> str:
+    """Return the reusable memory instruction block for agent instruction files."""
+    return """\
 ## Memory
 
 **Recall**: At the start of every new conversation, call `memory_recall`
 with a query matching the user's opening message topic. This is your
-persistent memory — always check it before responding.
+persistent memory - always check it before responding.
 
 **Store**: Proactively call `memory_store` whenever you:
 - Learn something new about the user's setup, environment, or projects
@@ -873,40 +875,57 @@ exchange) and add `tags` for organization. Do NOT store trivial exchanges
 like greetings or simple Q&A.
 """
 
-    claude_md_path = Path.home() / ".claude" / "CLAUDE.md"
 
-    if claude_md_path.exists():
-        existing = claude_md_path.read_text(encoding="utf-8")
+def cmd_setup_memory(path: str = "AGENTS.md"):
+    """Append recommended memory snippet for proactive memory use."""
+    from pathlib import Path
+
+    snippet = _memory_instructions_snippet()
+    target_path = Path(path).expanduser().resolve()
+    target_name = target_path.name
+
+    if target_path.exists():
+        existing = target_path.read_text(encoding="utf-8")
         if "memory_recall" in existing:
-            print(f"Memory instructions already present in {claude_md_path}")
+            print(f"Memory instructions already present in {target_path}")
             print("No changes made.")
             return
 
-        print(f"Found existing CLAUDE.md at {claude_md_path}")
+        print(f"Found existing {target_name} at {target_path}")
         print("\nWill append this snippet:\n")
         print(snippet)
-        resp = input("Append to existing CLAUDE.md? [y/N] ").strip().lower()
+        resp = input(f"Append to existing {target_name}? [y/N] ").strip().lower()
         if resp != "y":
             print("No changes made.")
             return
 
-        with open(claude_md_path, "a", encoding="utf-8") as f:
+        with open(target_path, "a", encoding="utf-8") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
             f.write("\n" + snippet)
-        print(f"Snippet appended to {claude_md_path}")
+        print(f"Snippet appended to {target_path}")
     else:
-        print(f"No CLAUDE.md found at {claude_md_path}")
+        print(f"No {target_name} found at {target_path}")
         print("\nWill create it with this content:\n")
         print(snippet)
-        resp = input("Create CLAUDE.md? [y/N] ").strip().lower()
+        resp = input(f"Create {target_name}? [y/N] ").strip().lower()
         if resp != "y":
             print("No changes made.")
             return
 
-        claude_md_path.parent.mkdir(parents=True, exist_ok=True)
-        claude_md_path.write_text(snippet, encoding="utf-8")
-        print(f"Created {claude_md_path}")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(snippet, encoding="utf-8")
+        print(f"Created {target_path}")
 
-    print("\nClaude Code will now proactively use memory tools in every conversation.")
+    print("\nMemory instructions are installed for this agent instruction file.")
+
+
+def cmd_setup_claude():
+    """Legacy alias for setup-memory that writes to ~/.claude/CLAUDE.md."""
+    from pathlib import Path
+
+    print("Deprecated command: use `consolidation-memory setup-memory --path ~/.claude/CLAUDE.md`.")
+    cmd_setup_memory(str(Path.home() / ".claude" / "CLAUDE.md"))
 
 
 def cmd_dashboard():
@@ -957,7 +976,19 @@ def main():
     p_import.add_argument("path", help="Path to export JSON file")
     sub.add_parser("reindex", help="Re-embed all episodes with current backend")
     sub.add_parser("browse", help="Browse knowledge topics")
-    sub.add_parser("setup-claude", help="Add memory instructions to CLAUDE.md")
+    p_setup_memory = sub.add_parser(
+        "setup-memory",
+        help="Add memory instructions to AGENTS.md or another instruction file",
+    )
+    p_setup_memory.add_argument(
+        "--path",
+        default="AGENTS.md",
+        help="Instruction file path (default: AGENTS.md)",
+    )
+    sub.add_parser(
+        "setup-claude",
+        help="Deprecated alias for setup-memory --path ~/.claude/CLAUDE.md",
+    )
     sub.add_parser("dashboard", help="Launch TUI dashboard")
 
     args = parser.parse_args()
@@ -986,6 +1017,8 @@ def main():
         cmd_reindex()
     elif args.command == "browse":
         cmd_browse()
+    elif args.command == "setup-memory":
+        cmd_setup_memory(args.path)
     elif args.command == "setup-claude":
         cmd_setup_claude()
     elif args.command == "dashboard":

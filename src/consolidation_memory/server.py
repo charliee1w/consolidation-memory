@@ -1,7 +1,7 @@
 """Consolidation Memory MCP Server.
 
-Thin wrapper over MemoryClient — exposes memory tools to Claude Desktop
-via stdio transport.  All business logic lives in client.py.
+Thin wrapper over MemoryClient. Exposes memory tools to any MCP-capable
+client via stdio transport. All business logic lives in client.py.
 """
 
 import asyncio

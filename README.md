@@ -48,11 +48,15 @@ Add to your MCP client config:
 {
   "mcpServers": {
     "consolidation_memory": {
-      "command": "consolidation-memory"
+      "command": "consolidation-memory",
+      "args": ["--project", "universal", "serve"]
     }
   }
 }
 ```
+
+Use one shared project name (for example, `universal`) across all clients
+to keep a single knowledge set.
 
 Available tools:
 - `memory_store`
@@ -262,8 +266,23 @@ CONSOLIDATION_MEMORY_PROJECT=work
 | `consolidation-memory import PATH` | import JSON snapshot |
 | `consolidation-memory reindex` | rebuild embeddings/index |
 | `consolidation-memory browse` | inspect knowledge topics |
-| `consolidation-memory setup-claude` | write CLAUDE.md integration block |
+| `consolidation-memory setup-memory --path AGENTS.md` | write memory integration block to any instruction file |
+| `consolidation-memory setup-claude` | legacy alias for `setup-memory --path ~/.claude/CLAUDE.md` |
 | `consolidation-memory dashboard` | launch Textual dashboard |
+
+## Agent Instruction Setup
+
+Use the vendor-neutral setup helper to add proactive recall/store guidance to your agent instructions:
+
+```bash
+consolidation-memory setup-memory --path AGENTS.md
+```
+
+For Claude Desktop specifically, use:
+
+```bash
+consolidation-memory setup-memory --path ~/.claude/CLAUDE.md
+```
 
 ## Multi-project Isolation
 

@@ -2,7 +2,8 @@
   "mcpServers": [
     {
       "name": "consolidation_memory",
-      "command": "consolidation-memory"
+      "command": "consolidation-memory",
+      "args": ["--project", "universal", "serve"]
     }
   ]
 }

@@ -1,4 +1,5 @@
 {
   "command": "consolidation-memory",
+  "args": ["--project", "universal", "serve"],
   "transport": "stdio"
 }

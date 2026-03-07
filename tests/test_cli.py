@@ -164,6 +164,28 @@ class TestMainDispatch:
             main()
             mock_cmd.assert_called_once_with(base_ref="origin/main", repo_path=None)
 
+    def test_setup_memory_subcommand_registered(self):
+        """argparse recognizes 'setup-memory' and dispatches correctly."""
+        from consolidation_memory.cli import main
+
+        with (
+            patch("sys.argv", ["consolidation-memory", "setup-memory", "--path", "AGENTS.md"]),
+            patch("consolidation_memory.cli.cmd_setup_memory") as mock_cmd,
+        ):
+            main()
+            mock_cmd.assert_called_once_with("AGENTS.md")
+
+    def test_setup_claude_subcommand_registered(self):
+        """argparse recognizes 'setup-claude' legacy alias and dispatches correctly."""
+        from consolidation_memory.cli import main
+
+        with (
+            patch("sys.argv", ["consolidation-memory", "setup-claude"]),
+            patch("consolidation_memory.cli.cmd_setup_claude") as mock_cmd,
+        ):
+            main()
+            mock_cmd.assert_called_once()
+
 
 class TestDetectDriftCommand:
     def test_cmd_detect_drift_prints_json(self, capsys):

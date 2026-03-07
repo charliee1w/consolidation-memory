@@ -77,6 +77,14 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -v --cov=consolidation_memory --cov-report=xml
 
+      - name: Builder baseline smoke
+        if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
+        run: python scripts/smoke_builder_base.py
+
+      - name: ResourceWarning gate
+        if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
+        run: python -m pytest tests/ -q -W error::ResourceWarning
+
       - name: Lint
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
         run: ruff check src/ tests/

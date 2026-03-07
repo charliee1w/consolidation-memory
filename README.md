@@ -331,9 +331,16 @@ Export/import snapshots include:
 git clone https://github.com/charliee1w/consolidation-memory
 cd consolidation-memory
 pip install -e ".[all,dev]"
+python scripts/smoke_builder_base.py
 pytest tests/ -q
+pytest tests/ -q -W error::ResourceWarning
 ruff check src/ tests/
 ```
+
+Builder-focused docs:
+- [Builder Baseline](docs/BUILDER_BASELINE.md)
+- [External Review Playbook](docs/EXTERNAL_REVIEW_PLAYBOOK.md)
+- [Minimal Plugin Example](docs/examples/minimal_plugin.py)
 
 ## License
 

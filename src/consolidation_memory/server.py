@@ -8,6 +8,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 
@@ -26,6 +27,14 @@ _client = None
 
 
 _MAX_BATCH_SIZE = 100
+_MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
+)
+
+
+def _drift_timeout_seconds() -> float:
+    configured = _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS
+    return configured if configured > 0 else 90.0
 
 
 def _get_client():
@@ -300,12 +309,24 @@ async def memory_detect_drift(
     """
     try:
         client = _get_client()
-        result = await asyncio.to_thread(
-            client.query_detect_drift,
-            base_ref=base_ref,
-            repo_path=repo_path,
+        timeout_seconds = _drift_timeout_seconds()
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                client.query_detect_drift,
+                base_ref=base_ref,
+                repo_path=repo_path,
+            ),
+            timeout=timeout_seconds,
         )
         return json.dumps(result, default=str)
+    except asyncio.TimeoutError:
+        message = (
+            f"memory_detect_drift timed out after {timeout_seconds:g}s. "
+            "Try scoping repo_path to a smaller repository or set "
+            "CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS to a higher value."
+        )
+        logger.error(message)
+        return json.dumps({"error": message})
     except Exception as e:
         logger.exception("memory_detect_drift failed")
         return json.dumps({"error": str(e)})

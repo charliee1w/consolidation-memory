@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 from unittest.mock import MagicMock, patch
 
 
@@ -58,6 +59,27 @@ class TestMCPDetectDriftTool:
         data = json.loads(output)
         assert "error" in data
         assert "git diff failed" in data["error"]
+
+    def test_memory_detect_drift_timeout_returns_error_json(self):
+        from consolidation_memory.server import memory_detect_drift
+
+        def _slow_detect(*args, **kwargs):
+            del args, kwargs
+            time.sleep(0.05)
+            return {}
+
+        mock_client = MagicMock()
+        mock_client.query_detect_drift.side_effect = _slow_detect
+
+        with (
+            patch("consolidation_memory.server._get_client", return_value=mock_client),
+            patch("consolidation_memory.server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
+        ):
+            output = asyncio.run(memory_detect_drift())
+
+        data = json.loads(output)
+        assert "error" in data
+        assert "timed out after" in data["error"]
 
 
 class TestMCPRecallTool:

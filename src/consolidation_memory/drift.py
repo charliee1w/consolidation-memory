@@ -13,6 +13,14 @@ from consolidation_memory.types import DriftAnchor, DriftClaimImpact, DriftOutpu
 
 logger = logging.getLogger(__name__)
 
+_GIT_COMMAND_TIMEOUT_SECONDS = 15.0
+_MAX_CHANGED_FILES = 2000
+
+
+def _chunked(values: Sequence[str], size: int) -> Iterable[list[str]]:
+    for idx in range(0, len(values), size):
+        yield list(values[idx: idx + size])
+
 
 def _normalize_changed_path(value: str) -> str:
     normalized = value.strip().replace("\\", "/")
@@ -35,13 +43,19 @@ def _resolve_repo_dir(repo_path: str | PathLike[str] | None) -> Path:
 
 def _run_git_lines(repo_dir: Path, git_args: Sequence[str]) -> list[str]:
     cmd = ["git", "-c", f"safe.directory={repo_dir.as_posix()}", *git_args]
-    proc = subprocess.run(
-        cmd,
-        cwd=str(repo_dir),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"git {' '.join(git_args)} timed out after {_GIT_COMMAND_TIMEOUT_SECONDS:.0f}s"
+        ) from exc
     if proc.returncode != 0:
         details = (proc.stderr or proc.stdout or "").strip()
         if not details:
@@ -99,7 +113,15 @@ def get_changed_files(
         if normalized:
             changed.add(normalized)
 
-    return sorted(changed)
+    changed_list = sorted(changed)
+    if len(changed_list) > _MAX_CHANGED_FILES:
+        logger.warning(
+            "drift scan found %d changed files, truncating to %d for bounded runtime",
+            len(changed_list),
+            _MAX_CHANGED_FILES,
+        )
+        return changed_list[:_MAX_CHANGED_FILES]
+    return changed_list
 
 
 def _to_path_anchors(paths: Iterable[str]) -> list[DriftAnchor]:
@@ -114,7 +136,7 @@ def map_changed_files_to_claims(
     repo_path: str | PathLike[str] | None = None,
 ) -> tuple[list[DriftAnchor], dict[str, dict[str, Any]], dict[str, set[tuple[str, str]]]]:
     """Map changed file paths to claims linked through path anchors."""
-    from consolidation_memory.database import get_claims_by_anchor
+    from consolidation_memory.database import get_claims_by_anchor_values
 
     repo_dir = _resolve_repo_dir(repo_path)
     normalized_files = sorted(
@@ -128,23 +150,33 @@ def map_changed_files_to_claims(
 
     claim_rows: dict[str, dict[str, Any]] = {}
     matched_anchors: dict[str, set[tuple[str, str]]] = {}
+    candidate_to_paths: dict[str, set[str]] = {}
 
     for path_value in normalized_files:
         candidates = _build_path_anchor_candidates(path_value, repo_dir)
         for candidate in candidates:
-            rows = get_claims_by_anchor(
-                anchor_type="path",
-                anchor_value=candidate,
-                include_expired=False,
-                limit=1000,
-            )
-            for row in rows:
-                claim_id = str(row.get("id") or "")
-                if not claim_id:
-                    continue
-                if claim_id not in claim_rows:
-                    claim_rows[claim_id] = row
-                matched_anchors.setdefault(claim_id, set()).add(("path", path_value))
+            candidate_to_paths.setdefault(candidate, set()).add(path_value)
+
+    candidate_values = sorted(candidate_to_paths.keys())
+    if not candidate_values:
+        return checked_anchors, claim_rows, matched_anchors
+
+    for chunk in _chunked(candidate_values, 250):
+        rows = get_claims_by_anchor_values(
+            anchor_type="path",
+            anchor_values=chunk,
+            include_expired=False,
+        )
+        for row in rows:
+            claim_id = str(row.get("id") or "")
+            if not claim_id:
+                continue
+            if claim_id not in claim_rows:
+                claim_rows[claim_id] = row
+
+            anchor_value = str(row.get("anchor_value") or "")
+            for source_path in candidate_to_paths.get(anchor_value, set()):
+                matched_anchors.setdefault(claim_id, set()).add(("path", source_path))
 
     return checked_anchors, claim_rows, matched_anchors
 
@@ -174,10 +206,15 @@ def detect_code_drift(
         }
 
     lookup_anchors: list[dict[str, str]] = []
+    seen_lookup_pairs: set[tuple[str, str]] = set()
     for anchor in checked_anchors:
         path_value = anchor["anchor_value"]
         for candidate in _build_path_anchor_candidates(path_value, repo_dir):
-            lookup_anchors.append({"anchor_type": "path", "anchor_value": candidate})
+            pair = ("path", candidate)
+            if pair in seen_lookup_pairs:
+                continue
+            seen_lookup_pairs.add(pair)
+            lookup_anchors.append({"anchor_type": pair[0], "anchor_value": pair[1]})
 
     challenged_claim_ids = sorted(mark_claims_challenged_by_anchors(lookup_anchors))
     challenged_ids_set = set(challenged_claim_ids)

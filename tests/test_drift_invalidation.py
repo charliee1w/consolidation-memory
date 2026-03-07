@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+
+import pytest
 
 
 class TestChangedFiles:
@@ -29,6 +32,36 @@ class TestChangedFiles:
 
         assert changed == ["src/a.py", "src/b.py", "src/c.py", "src/d.py", "src/e.py"]
         assert ("diff", "--name-only", "origin/main...HEAD") in calls
+
+    def test_run_git_lines_timeout_raises_runtime_error(self, monkeypatch, tmp_path):
+        from consolidation_memory import drift
+
+        def fake_run(*args, **kwargs):
+            del args, kwargs
+            raise subprocess.TimeoutExpired(cmd="git diff --name-only", timeout=1.0)
+
+        monkeypatch.setattr(drift.subprocess, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="timed out"):
+            drift._run_git_lines(tmp_path, ["diff", "--name-only"])
+
+    def test_get_changed_files_truncates_large_sets(self, monkeypatch, tmp_path):
+        from consolidation_memory import drift
+
+        monkeypatch.setattr(drift, "_MAX_CHANGED_FILES", 3)
+
+        def fake_run_git_lines(repo_dir, git_args):
+            del repo_dir
+            key = tuple(git_args)
+            if key == ("diff", "--name-only"):
+                return ["src/a.py", "src/b.py", "src/c.py", "src/d.py", "src/e.py"]
+            return []
+
+        monkeypatch.setattr(drift, "_run_git_lines", fake_run_git_lines)
+
+        changed = drift.get_changed_files(repo_path=tmp_path)
+
+        assert changed == ["src/a.py", "src/b.py", "src/c.py"]
 
 
 class TestDriftDetection:

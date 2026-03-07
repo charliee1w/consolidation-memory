@@ -1873,6 +1873,76 @@ def get_claims_by_anchor(
     return [dict(r) for r in rows]
 
 
+def get_claims_by_anchor_values(
+    anchor_type: str,
+    anchor_values: Sequence[str],
+    include_expired: bool = False,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch claims linked to episodes matching any anchor value for one anchor type."""
+    anchor_type_token = str(anchor_type or "").strip()
+    if not anchor_type_token:
+        return []
+
+    deduped_values: list[str] = []
+    seen_values: set[str] = set()
+    for value in anchor_values:
+        token = str(value or "").strip()
+        if not token or token in seen_values:
+            continue
+        seen_values.add(token)
+        deduped_values.append(token)
+
+    if not deduped_values:
+        return []
+
+    max_results = limit if limit is None else max(1, int(limit))
+    params_prefix: list[Any] = [anchor_type_token]
+    common_conditions = ["ea.anchor_type = ?"]
+    if not include_expired:
+        now = _now()
+        common_conditions.extend(
+            [
+                "julianday(c.valid_from) <= julianday(?)",
+                "(c.valid_until IS NULL OR julianday(c.valid_until) > julianday(?))",
+            ]
+        )
+        params_prefix.extend([now, now])
+
+    rows: list[dict[str, Any]] = []
+    remaining = max_results
+    # Keep chunks well under SQLite's default parameter limit.
+    for start in range(0, len(deduped_values), 250):
+        if remaining is not None and remaining <= 0:
+            break
+        chunk = deduped_values[start:start + 250]
+        placeholders = ",".join("?" for _ in chunk)
+        where = " AND ".join([*common_conditions, f"ea.anchor_value IN ({placeholders})"])
+        query_params: list[Any] = [*params_prefix, *chunk]
+        sql = f"""SELECT DISTINCT
+                    c.id, c.claim_type, c.canonical_text, c.payload, c.status,
+                    c.confidence, c.valid_from, c.valid_until, c.created_at, c.updated_at,
+                    ea.anchor_value
+                FROM claims c
+                JOIN claim_sources cs ON cs.claim_id = c.id
+                JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
+                WHERE {where}
+                ORDER BY c.updated_at DESC, c.id ASC"""
+        if remaining is not None:
+            sql += " LIMIT ?"
+            query_params.append(remaining)
+
+        with get_connection() as conn:
+            chunk_rows = conn.execute(sql, query_params).fetchall()
+
+        mapped_chunk = [dict(row) for row in chunk_rows]
+        rows.extend(mapped_chunk)
+        if remaining is not None:
+            remaining -= len(mapped_chunk)
+
+    return rows
+
+
 def mark_claims_challenged_by_anchors(
     anchors: list[dict[str, Any]],
     challenged_at: str | None = None,

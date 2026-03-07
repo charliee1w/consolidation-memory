@@ -346,6 +346,11 @@ Builder-focused docs:
 - [External Review Playbook](docs/EXTERNAL_REVIEW_PLAYBOOK.md)
 - [Minimal Plugin Example](docs/examples/minimal_plugin.py)
 
+## Community
+
+- Contributors: [CONTRIBUTORS.md](CONTRIBUTORS.md)
+- Discussion thread: [Community Feedback and Contribution Thread (v0.13.x)](https://github.com/charliee1w/consolidation-memory/discussions/2)
+
 ## License
 
 MIT

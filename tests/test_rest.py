@@ -4,6 +4,7 @@ Run with: python -m pytest tests/test_rest.py -v
 Requires: pip install consolidation-memory[rest,dev]
 """
 
+import time
 from unittest.mock import patch
 
 import pytest
@@ -360,3 +361,18 @@ class TestDriftEndpoint:
 
         assert resp.status_code == 400
         assert "git diff failed" in resp.json()["detail"]
+
+    def test_detect_drift_timeout_returns_408(self, api_client):
+        def _slow_detect(*args, **kwargs):
+            del args, kwargs
+            time.sleep(0.05)
+            return {}
+
+        with (
+            patch("consolidation_memory.client.MemoryClient.query_detect_drift", side_effect=_slow_detect),
+            patch("consolidation_memory.rest._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
+        ):
+            resp = api_client.post("/memory/detect-drift", json={})
+
+        assert resp.status_code == 408
+        assert "timed out after" in resp.json()["detail"]

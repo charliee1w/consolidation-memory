@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import os
 import re
 from typing import Literal, cast
 
@@ -40,6 +41,14 @@ _ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference"]
 
 # Maximum number of episodes in a single batch store request.
 _MAX_BATCH_SIZE = 100
+_MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
+)
+
+
+def _drift_timeout_seconds() -> float:
+    configured = _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS
+    return configured if configured > 0 else 90.0
 
 # Reject filenames that attempt path traversal or contain path separators.
 _UNSAFE_FILENAME_RE = re.compile(r"[/\\]|\.\.")
@@ -284,11 +293,24 @@ def create_app() -> FastAPI:
         """Detect code drift and challenge anchored claims."""
         client = _require_client()
         try:
-            return await asyncio.to_thread(
-                client.query_detect_drift,
-                base_ref=req.base_ref,
-                repo_path=req.repo_path,
+            timeout_seconds = _drift_timeout_seconds()
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.query_detect_drift,
+                    base_ref=req.base_ref,
+                    repo_path=req.repo_path,
+                ),
+                timeout=timeout_seconds,
             )
+        except asyncio.TimeoutError as e:
+            raise HTTPException(
+                status_code=408,
+                detail=(
+                    f"memory_detect_drift timed out after {timeout_seconds:g}s. "
+                    "Try scoping repo_path to a smaller repository or set "
+                    "CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS to a higher value."
+                ),
+            ) from e
         except RuntimeError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 

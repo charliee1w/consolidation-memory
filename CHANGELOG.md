@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.13.0 - 2026-03-07
+
+First public pre-1.0 release focused on trust-preserving queries, scoped shared-memory foundations, and fail-closed release readiness for external builders.
+
+### Highlights
+
+- Introduced canonical scope envelope domain model (`NamespaceScope`, `AppClientScope`, `AgentScope`, `SessionScope`, `ProjectRepoScope`) and coercion helpers for typed scope-aware operations.
+- Added schema v13 scope columns plus indexes across episodes and knowledge tables, enabling namespace/project/app/agent/session partitioning without separate deployments.
+- Added canonical `CanonicalQueryService` and query envelopes to unify recall/search/claim browse/search semantics across Python client, CLI, MCP server, and REST surfaces.
+- Added trust-preserving claim scope filtering based on claim provenance source rows to prevent cross-scope claim leakage.
+- Added vendor-neutral instruction bootstrap command `setup-memory --path ...` while keeping `setup-claude` as a legacy alias.
+- Added universal project guidance and config examples to run one shared memory project across clients.
+- Added fail-closed release gate enforcement with novelty evidence validation in release automation and publish workflows.
+- Added a builder baseline smoke test and `ResourceWarning` gating to lock a minimum stable foundation for contributors.
+
+### Query Core And Scope Model
+
+- Added typed scope envelopes and mapping coercion (`coerce_scope_envelope`) with literal-constrained sharing modes, app types, and session kinds.
+- Threaded scope metadata through store/recall/search/claim operations across client, server, REST, and schema layers.
+- Added shared query semantics helpers for payload parsing and scope matching.
+- Added claim-source scope lookup and query-time filtering for trust-preserving claim retrieval.
+- Added and expanded regression coverage for project isolation and scope behavior.
+
+### Release And Quality Gates
+
+- Added `src/consolidation_memory/release_gates.py` to enforce scope alignment, metric thresholds, evidence completeness, and evidence recency.
+- Added `scripts/verify_release_gates.py` to validate novelty artifacts and emit machine-readable gate reports.
+- Updated release automation and publish workflow to run a full novelty evaluation and block publish on failed, missing, or stale evidence.
+- Added nightly full-novelty workflow artifact publishing for auditability.
+- Added and updated release-gate and novelty-eval documentation.
+
+### Builder Experience
+
+- Added deterministic `scripts/smoke_builder_base.py` end-to-end smoke coverage for Python API, tool dispatch, status, recall/search, and export on a fresh project.
+- Added builder baseline docs, external review playbook, minimal plugin example, and a structured issue template for outside reviewer feedback.
+- Updated README development guidance with builder smoke and `ResourceWarning` commands.
+- Updated MCP config examples to recommend explicit shared `--project` usage for cross-client memory continuity.
+
+### Hardening And Fixes
+
+- Resolved outstanding mypy errors in scope literal coercion and database row typing.
+- Hardened database connection lifecycle for teardown paths and added explicit close helpers used in tests and smoke flows.
+- Expanded test coverage for contradictions, server schemas, temporal records, query service behavior, project isolation, and vector-store consistency.
+- Added targeted fixes and regression tests across backend, consolidation, and API surfaces.
+
+### Docs And Strategy
+
+- Added architecture and execution docs covering universal memory design, gap analysis, schema migration, shared scopes, and query semantics.
+- Added an execution log and reusable prompt set for architecture and review cycles.
+
+### Compatibility
+
+- Pre-1.0 SemVer: this is a minor feature release (`0.13.0`).
+- Existing external APIs remain available; scope/query enhancements are additive.
+- `setup-claude` continues to work as an alias to `setup-memory --path ~/.claude/CLAUDE.md`.
+
 ## 0.12.4 - 2026-03-06
 
 Novelty release hardening and claim-graph drift support.

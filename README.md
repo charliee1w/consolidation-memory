@@ -350,6 +350,13 @@ Builder-focused docs:
 
 - Contributors: [CONTRIBUTORS.md](CONTRIBUTORS.md)
 - Discussion thread: [Community Feedback and Contribution Thread (v0.13.x)](https://github.com/charliee1w/consolidation-memory/discussions/2)
+- Discussion categories:
+  - [Announcements](https://github.com/charliee1w/consolidation-memory/discussions/categories/announcements): release notes, breaking changes, maintainer updates
+  - [Ideas](https://github.com/charliee1w/consolidation-memory/discussions/categories/ideas): proposals, roadmap suggestions, RFC-style feedback
+  - [Q&A](https://github.com/charliee1w/consolidation-memory/discussions/categories/q-a): setup help, usage questions, troubleshooting
+  - [Show and tell](https://github.com/charliee1w/consolidation-memory/discussions/categories/show-and-tell): integrations, demos, success stories
+  - [General](https://github.com/charliee1w/consolidation-memory/discussions/categories/general): broad project discussion and community coordination
+  - [Polls](https://github.com/charliee1w/consolidation-memory/discussions/categories/polls): community votes and preference checks
 
 ## License
 

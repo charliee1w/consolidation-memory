@@ -1,0 +1,38 @@
+title: "[Idea] "
+body:
+  - type: input
+    id: problem
+    attributes:
+      label: Problem
+      description: What pain point or gap does this idea address?
+      placeholder: Describe the current limitation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Explain your idea at a practical level.
+      placeholder: Describe behavior, API, UX, or architecture changes.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other options did you evaluate?
+      placeholder: Mention tradeoffs or why alternatives were rejected.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Expected impact
+      description: Who benefits and what risks should we watch?
+      placeholder: Adoption impact, migration cost, compatibility concerns.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I can help implement this.
+        - label: I can help test this.
+

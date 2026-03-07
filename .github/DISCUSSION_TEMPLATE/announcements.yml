@@ -1,0 +1,43 @@
+title: "[Announcement] "
+body:
+  - type: dropdown
+    id: announcement_type
+    attributes:
+      label: Announcement type
+      description: Choose the type that best fits this post.
+      options:
+        - Release
+        - Breaking change
+        - Deprecation
+        - Community update
+        - Security notice
+    validations:
+      required: true
+  - type: input
+    id: version_or_date
+    attributes:
+      label: Version or date
+      description: Include the release version or effective date.
+      placeholder: "v0.13.0 or 2026-03-07"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Briefly explain the update.
+      placeholder: What changed and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: action_required
+    attributes:
+      label: Action required
+      description: Call out migration steps or user actions.
+      placeholder: Steps users should take now.
+  - type: textarea
+    id: links
+    attributes:
+      label: Links
+      description: Add release notes, PRs, docs, or issue links.
+      placeholder: "https://github.com/..."

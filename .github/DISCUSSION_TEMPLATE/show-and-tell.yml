@@ -1,0 +1,37 @@
+title: "[Show & Tell] "
+body:
+  - type: input
+    id: project_name
+    attributes:
+      label: Project name
+      description: Name of what you built.
+      placeholder: Short project name or integration title.
+    validations:
+      required: true
+  - type: textarea
+    id: built
+    attributes:
+      label: What you built
+      description: Describe the use case and outcome.
+      placeholder: What does it do and why is it useful?
+    validations:
+      required: true
+  - type: textarea
+    id: stack
+    attributes:
+      label: Stack and setup
+      description: Share framework, backend, and deployment details.
+      placeholder: LangGraph/OpenAI Agents/CLI, provider, runtime, etc.
+  - type: textarea
+    id: links
+    attributes:
+      label: Demo links or screenshots
+      description: Add links to repo, demo, screenshots, or docs.
+      placeholder: "https://github.com/... or image links"
+  - type: textarea
+    id: lessons
+    attributes:
+      label: Lessons learned
+      description: What worked, what did not, and what you would change?
+      placeholder: Useful details for others building similar workflows.
+

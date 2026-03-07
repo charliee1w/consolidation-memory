@@ -1,0 +1,32 @@
+title: "[Q&A] "
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Ask your question clearly and specifically.
+      placeholder: What are you trying to do, and where are you stuck?
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you already tried
+      description: Include commands, configs, or docs you followed.
+      placeholder: Steps attempted and observed behavior.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, backend/provider, package version.
+      placeholder: "Windows 11, Python 3.11, fastembed, consolidation-memory v0.13.x"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or traceback
+      description: Paste the relevant error output.
+      placeholder: Include only the relevant section.
+      render: shell
+

@@ -1,0 +1,34 @@
+title: "[Poll] "
+body:
+  - type: input
+    id: question
+    attributes:
+      label: Poll question
+      description: State the decision or preference being voted on.
+      placeholder: Which option should we prioritize next?
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Poll options
+      description: List options as a numbered or bulleted list.
+      placeholder: |
+        1. Option A
+        2. Option B
+        3. Option C
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include enough context for an informed vote.
+      placeholder: Why this vote matters and what happens next.
+  - type: input
+    id: close_window
+    attributes:
+      label: Voting window
+      description: How long should voting remain open?
+      placeholder: "7 days"
+

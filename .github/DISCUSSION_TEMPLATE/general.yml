@@ -1,0 +1,31 @@
+title: "[Discussion] "
+body:
+  - type: input
+    id: topic
+    attributes:
+      label: Topic
+      description: One-line topic statement.
+      placeholder: What should we discuss?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Background and why this discussion matters.
+      placeholder: Provide enough context for people to engage quickly.
+    validations:
+      required: true
+  - type: textarea
+    id: desired_outcome
+    attributes:
+      label: Desired outcome
+      description: What decision, feedback, or action are you looking for?
+      placeholder: Clarify the goal of this thread.
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Related links to issues, PRs, docs, or prior discussions.
+      placeholder: "https://github.com/..."
+

@@ -1,0 +1,495 @@
+CODEX PROMPT PACK: UNIVERSAL SHARED MEMORY SYSTEM
+
+Purpose
+- This file contains copy-pasteable prompts for Codex to help transform consolidation-memory into a universal, model-agnostic shared memory system for LLM agents and apps.
+- Use one prompt at a time.
+- Do not combine multiple prompts into one run.
+- Prefer starting a fresh thread for each major prompt unless a prompt explicitly assumes prior work in the same branch.
+
+
+================================================================
+SET A: STRATEGIC AND DESIGN PROMPTS
+================================================================
+
+Shared Preamble For Set A
+
+You are working in C:\Users\gore\consolidation-memory.
+
+Context:
+I want this project to become a universal, model-agnostic shared memory system for LLM agents and apps. It should connect to major ecosystems and let multiple clients/models share memory safely. Keep and strengthen the current trust features: temporal recall, provenance, contradiction handling, and drift-aware invalidation.
+
+Instructions:
+- Inspect the existing repo before making recommendations or changes.
+- Prefer concrete artifacts, code, docs, and tests over generic advice.
+- Use official sources when comparing external systems or current market positioning.
+- For strategy work, create or update markdown files under docs/strategy/.
+- For implementation work, change code and tests directly.
+- If a relevant doc already exists, update it instead of creating duplicates.
+- State assumptions explicitly.
+- End with:
+  1. What you changed
+  2. Key decisions
+  3. Risks / open questions
+  4. Exact next prompt I should run
+
+
+Prompt A1: Transformation Gap Analysis
+
+Using the context above, audit the repo against the target vision of a universal shared memory system for LLMs/agents.
+
+Deliverables:
+- Create docs/strategy/universal-memory-gap-analysis.md
+- Document:
+  - current capabilities
+  - missing capabilities
+  - architectural bottlenecks
+  - product bottlenecks
+  - trust advantages worth preserving
+  - a dependency-aware roadmap in phases
+- Separate "must-have for private alpha", "must-have for public launch", and "nice-to-have later".
+- Make the roadmap concrete enough that future prompts can execute it directly.
+
+Do not make large code changes in this step unless a tiny fix is required to unblock analysis.
+
+
+Prompt A2: Product Thesis And Competitive Map
+
+Using official sources, assess where this system fits in the current memory-for-agents landscape.
+
+Deliverables:
+- Create docs/strategy/product-thesis.md
+- Create docs/strategy/competitive-map.md
+
+Requirements:
+- Compare against Mem0/OpenMemory, Zep/Graphiti, Letta, LangGraph/LangMem, and OpenAI agent/session memory patterns.
+- Be explicit about what is already commoditized and what could still be novel.
+- Define:
+  - category
+  - wedge
+  - non-goals
+  - ideal initial users
+  - why this should start with coding agents even if the long-term destination is universal
+- Recommend the strongest positioning statement for this project.
+
+
+Prompt A3: Target Universal Architecture
+
+Design the target architecture for a universal shared memory system built from this repo.
+
+Deliverables:
+- Create docs/strategy/universal-memory-architecture.md
+
+Requirements:
+- Include a concrete architecture for:
+  - memory control plane
+  - storage plane
+  - adapter layer
+  - query/service layer
+  - sync/event model
+  - trust/audit layer
+- Cover local-first, self-hosted, and managed deployment modes.
+- Explain how multiple clients/models share memory without sharing prompts or internal model state.
+- Include mermaid diagrams.
+- Map the current architecture to the target architecture and identify the required refactors.
+
+
+Prompt A4: Canonical Memory Object Model
+
+Define the canonical data model for the universal system and map the current schema into it.
+
+Deliverables:
+- Create docs/strategy/memory-object-model.md
+- Create docs/strategy/schema-migration-plan.md
+
+Requirements:
+- Define first-class entities for:
+  - namespaces
+  - users/principals
+  - apps/clients
+  - agents
+  - sessions
+  - projects/repos
+  - memories
+  - claims
+  - provenance links
+  - anchors
+  - contradictions
+  - lifecycle events
+  - access scopes / ACLs
+- Show which current tables survive, which evolve, and which new tables are needed.
+- Make the migration plan incremental and backward-compatible where possible.
+
+
+Prompt A5: Adapter Layer Refactor
+
+Implement the first version of an adapter architecture so this project can support multiple major agent ecosystems cleanly.
+
+Deliverables:
+- Add a new adapter abstraction under src/consolidation_memory/adapters/
+- Add tests for the abstraction
+- Add docs/strategy/adapter-layer.md
+
+Requirements:
+- Define clean interfaces for:
+  - MCP
+  - OpenAI Agents
+  - LangGraph / LangMem-style usage
+  - generic REST / raw SDK usage
+- Reuse as much of the current codebase as possible.
+- Do not fake full integrations yet; create the right extension points and wire at least one existing surface through the new abstraction.
+- Keep the design model-agnostic.
+
+
+Prompt A6: Shared Memory Scopes, Identity, And Namespacing
+
+Implement the first production-usable version of shared memory scoping for multiple clients and apps.
+
+Deliverables:
+- Add the minimal schema and service-layer changes needed
+- Add migration(s), tests, and docs
+- Create docs/strategy/shared-memory-scopes.md
+
+Requirements:
+- Introduce explicit concepts for namespace, client/app, agent, session, and project/repo scope.
+- Preserve backward compatibility for current single-project usage.
+- Make it possible for multiple clients to share one memory namespace intentionally while still isolating unrelated contexts.
+- Be precise about defaults, conflict behavior, and privacy boundaries.
+
+
+Prompt A7: Trust-Preserving Universal Query Layer
+
+Refactor the internal query/service layer so every external surface can rely on the same canonical trust-preserving semantics.
+
+Deliverables:
+- Implement the refactor in code
+- Add tests
+- Create docs/strategy/query-semantics.md
+
+Requirements:
+- Make the canonical service layer first-class for:
+  - temporal queries
+  - provenance-aware recall
+  - contradiction-aware recall
+  - drift-aware invalidation/challenge behavior
+- Reduce duplication between MCP, REST, Python client, and future adapters.
+- Document the invariants that every adapter must preserve.
+
+
+Prompt A8: Benchmark And Proof Of Novelty
+
+Close the evidence gap between the product claim and the current benchmark/release-gate implementation.
+
+Deliverables:
+- Audit the current novelty metrics, benchmark harness, and release gate logic
+- Implement missing logic and tests
+- Create docs/strategy/evaluation-plan.md
+
+Requirements:
+- Verify whether the current release gate enforces every metric claimed in the docs.
+- If there is a mismatch, fix it.
+- Add the missing "task success lift vs baseline" path if it is not implemented.
+- Define a realistic external-evidence plan:
+  - internal benchmarks
+  - design-partner evals
+  - public proof points
+- Be explicit about what claims the project can and cannot make today.
+
+
+Prompt A9: Private Alpha Distribution And Flagship Demo
+
+Prepare this repo for a serious private alpha rather than a broad public launch.
+
+Deliverables:
+- Create docs/strategy/private-alpha-plan.md
+- Create docs/strategy/demo-scenarios.md
+- Add at least one concrete example under examples/ showing two different agent surfaces sharing memory
+
+Requirements:
+- Define the private-alpha package:
+  - install path
+  - deployment modes
+  - onboarding flow
+  - success criteria
+  - telemetry / feedback to collect
+- Build one flagship demo around the core wedge:
+  - shared memory across surfaces
+  - temporal recall
+  - provenance
+  - code drift invalidation
+- Make the demo credible enough to show to design partners.
+
+
+================================================================
+SET B: EXECUTION-ORDERED PROMPTS FOR CLEAN, TESTABLE PROGRESS
+================================================================
+
+Usage Notes For Set B
+- These prompts are designed to be run in order.
+- Each prompt should leave the repo in a coherent, testable, commit-ready state.
+- Prefer using one branch for the whole sequence or one branch per milestone.
+- Do not skip validation.
+- Use Set A prompts to define or refine strategy contracts; use Set B prompts to implement production behavior against those contracts.
+- Avoid duplicate work: if a required strategy artifact already exists and is still accurate, update it in place and continue with the next execution prompt.
+
+
+Shared Preamble For Set B
+
+You are working in C:\Users\gore\consolidation-memory.
+
+Goal:
+Transform this project into a universal, model-agnostic shared memory system for LLM agents and apps while preserving and strengthening its trust features: temporal recall, provenance, contradiction handling, and drift-aware invalidation.
+
+Operating constraints:
+- Inspect the current repo before editing.
+- Work only on the scope required for this step.
+- Keep the system in a working state at the end of the step.
+- Add or update tests for all behavior changes.
+- Run targeted validation for the files you changed. Run broader validation if your change affects shared infrastructure.
+- Update docs/strategy/execution-log.md with:
+  - step name
+  - files changed
+  - tests run
+  - blockers
+  - recommended next step
+- If you discover that the requested step depends on earlier missing work, do the minimum needed to unblock it and document the adjustment.
+- End with:
+  1. What changed
+  2. Validation run
+  3. Remaining risks
+  4. Exact next prompt to run
+
+
+Definition Of Done For Every Set B Prompt
+
+- All listed deliverables exist and are updated in this step.
+- Every behavior change has tests added or updated.
+- Validation commands and outcomes are explicitly reported.
+- Backward compatibility checks are included whenever shared infrastructure changes.
+- `docs/strategy/execution-log.md` is updated with step name, files changed, tests run, blockers, and recommended next step.
+- For scope-affecting work, defaults, conflict behavior, and privacy boundaries are documented and tested.
+
+
+Prompt B1: Establish The Execution Baseline
+
+Using the goal and constraints above, create the execution baseline for the universal-memory transformation.
+
+Deliverables:
+- Create docs/strategy/execution-log.md if it does not exist
+- Create docs/strategy/universal-memory-execution-plan.md
+
+Requirements:
+- Audit the current repo and turn the high-level transformation into an execution sequence of concrete milestones.
+- Identify which milestones are documentation-only, which are schema changes, which are service-layer changes, and which are adapter/integration work.
+- Define validation expectations for each milestone.
+- Do not make major product-code changes in this step unless needed to unblock the plan.
+
+
+Prompt B2: Introduce The Canonical Domain Model Skeleton
+
+Implement the minimal code skeleton for the universal domain model without breaking current behavior.
+
+Deliverables:
+- Add or update code to introduce first-class concepts for:
+  - namespace
+  - app/client
+  - agent
+  - session
+  - project/repo scope
+- Add tests
+- Update docs/strategy/universal-memory-execution-plan.md and execution-log.md
+
+Requirements:
+- Start with types, interfaces, and service-layer shape before deep persistence changes.
+- Preserve backward compatibility with the current single-project model.
+- Avoid unnecessary surface API churn in this step.
+
+
+Prompt B3: Add Persistent Shared-Scope Support
+
+Implement the first database and persistence changes needed for true shared memory scopes.
+
+Deliverables:
+- Add migrations
+- Add persistence-layer code
+- Add tests for default isolation, explicit sharing, conflict handling, and migration safety
+- Create or update docs/strategy/shared-memory-scopes.md
+- Update docs/strategy/schema-migration-plan.md and execution-log.md
+
+Requirements:
+- Introduce first-class persistence for namespace, client/app, agent, session, and project/repo scope.
+- Make it possible for multiple clients and agents to intentionally share a namespace while preserving isolation for unrelated scopes.
+- Keep defaults safe and unsurprising: legacy/single-project behavior remains isolated unless sharing is explicitly configured.
+- Sharing must be explicit opt-in; no implicit cross-namespace or cross-project reads.
+- Define and implement conflict behavior for concurrent writes in shared scopes (deterministic merge/coexistence rules, no silent data loss).
+- Define privacy boundaries precisely, including namespace boundaries, project boundaries, and visibility of agent/session metadata.
+- Preserve existing installations through an idempotent migration path with rollback-safe failure behavior.
+- Add migration regressions for upgrade from existing installs and for unchanged legacy project-only calls.
+
+
+Prompt B4: Refactor To A Canonical Memory Service Layer
+
+Refactor the repo so external interfaces call through a canonical internal service layer instead of duplicating semantics.
+
+Deliverables:
+- Implement the service-layer refactor
+- Add tests
+- Update docs/strategy/query-semantics.md and execution-log.md
+
+Requirements:
+- The canonical layer must own:
+  - temporal semantics
+  - provenance semantics
+  - contradiction semantics
+  - drift challenge semantics
+  - scope resolution semantics
+- Reduce duplication across CLI, MCP, REST, and Python client code.
+
+
+Prompt B5: Add The Adapter Framework
+
+Implement the adapter framework needed to support multiple ecosystems cleanly.
+
+Deliverables:
+- Add src/consolidation_memory/adapters/
+- Add tests
+- Update docs/strategy/adapter-layer.md and execution-log.md
+
+Requirements:
+- Define stable interfaces for:
+  - MCP adapters
+  - OpenAI Agents adapters
+  - LangGraph/LangMem-style adapters
+  - generic SDK/REST adapters
+- Wire one existing surface through the new framework by the end of the step.
+- Keep the design model-agnostic.
+
+
+Prompt B6: Implement The First Two Universal Integrations
+
+Build the first practical universal integrations on top of the adapter layer.
+
+Deliverables:
+- Implement:
+  - a first-class MCP integration path
+  - one additional integration path optimized for either OpenAI Agents or LangGraph
+- Add tests
+- Add or update examples/
+- Update execution-log.md
+
+Requirements:
+- Reuse the canonical service layer.
+- Avoid superficial wrappers; make the integrations feel native to their ecosystems.
+- Document the integration boundary and any unsupported behaviors.
+
+
+Prompt B7: Harden Shared-Memory Trust Semantics Across Surfaces
+
+Ensure the trust guarantees remain correct across the new shared-memory and adapter architecture.
+
+Deliverables:
+- Add or update code and tests
+- Update docs/strategy/evaluation-plan.md and execution-log.md
+
+Requirements:
+- Build and validate an explicit trust matrix across every external surface and scope mode:
+  - default isolated scope
+  - explicitly shared namespace
+  - access denial for unrelated namespaces/scopes
+- Validate that all external surfaces preserve:
+  - as_of temporal correctness
+  - provenance completeness
+  - contradiction visibility
+  - drift challenge behavior
+  - scope isolation / scope sharing rules
+- Add regressions for any mismatches found.
+
+
+Prompt B8: Close The Benchmark And Release-Gate Evidence Gap
+
+Implement the missing evaluation logic needed to justify the universal-memory thesis.
+
+Deliverables:
+- Audit and update benchmark code
+- Audit and update release-gate enforcement
+- Add tests
+- Update docs/strategy/evaluation-plan.md and execution-log.md
+
+Requirements:
+- Verify that the implementation matches the metrics claimed in docs/NOVELTY_METRICS.md.
+- If the "Task Success Lift vs Current Baseline" metric is missing or not enforced, implement the missing path or explicitly downgrade the claim in docs with justification.
+- Leave the project with honest, internally consistent claims.
+
+
+Prompt B9: Build A Credible Private-Alpha Distribution
+
+Prepare the project for serious private use across multiple agent surfaces.
+
+Deliverables:
+- Add docs/strategy/private-alpha-plan.md
+- Add examples or scripts needed for onboarding
+- Update execution-log.md
+
+Requirements:
+- Define the private-alpha packaging and onboarding flow for:
+  - local-first self-hosted use
+  - shared namespace configuration
+  - multiple client attachment
+- Create one flagship walkthrough that demonstrates:
+  - shared memory across surfaces
+  - provenance
+  - temporal recall
+  - code drift invalidation
+
+
+Prompt B10: Rewrite The External Story Around Universal Shared Memory Trust
+
+Rewrite the top-level product story so it matches the actual system and evidence.
+
+Deliverables:
+- Update README.md
+- Add docs/strategy/public-positioning-draft.md
+- Update execution-log.md
+
+Requirements:
+- Position the system as a shared memory substrate or trust layer for agents, not just another vector-memory package.
+- Keep the long-term universal ambition, but anchor it in the strongest current wedge.
+- Remove or soften any claims not supported by implemented evidence.
+- Make the README legible to both technical evaluators and serious design partners.
+
+
+Unified Masterlist (Single Ordered Track)
+
+Use this one ordered list as the default run sequence. If a listed artifact already exists and is still accurate, update it in place and continue.
+
+1. Prompt B1: Establish The Execution Baseline
+2. Prompt A1: Transformation Gap Analysis
+3. Prompt A3: Target Universal Architecture
+4. Prompt A4: Canonical Memory Object Model
+5. Prompt B2: Introduce The Canonical Domain Model Skeleton
+6. Prompt A6: Shared Memory Scopes, Identity, And Namespacing
+7. Prompt B3: Add Persistent Shared-Scope Support
+8. Prompt A7: Trust-Preserving Universal Query Layer
+9. Prompt B4: Refactor To A Canonical Memory Service Layer
+10. Prompt A5: Adapter Layer Refactor
+11. Prompt B5: Add The Adapter Framework
+12. Prompt B6: Implement The First Two Universal Integrations
+13. Prompt B7: Harden Shared-Memory Trust Semantics Across Surfaces
+14. Prompt A8: Benchmark And Proof Of Novelty
+15. Prompt B8: Close The Benchmark And Release-Gate Evidence Gap
+16. Prompt A9: Private Alpha Distribution And Flagship Demo
+17. Prompt B9: Build A Credible Private-Alpha Distribution
+18. Prompt A2: Product Thesis And Competitive Map
+19. Prompt B10: Rewrite The External Story Around Universal Shared Memory Trust
+
+
+Optional Rule To Add At The Top Of Any Prompt
+
+Before making changes:
+- inspect the current repo state
+- identify the exact files likely to change
+- explain the plan briefly
+
+Before finishing:
+- run validation appropriate to the scope
+- summarize the diff at a high level
+- name the next highest-leverage step

@@ -17,18 +17,30 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
+import uuid
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 
 from consolidation_memory import __version__
 from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.types import (
+    RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_RUNNING,
+    AppClientScope,
+    AgentScope,
+    MemoryOperationContext,
+    NamespaceScope,
+    ProjectRepoScope,
+    ResolvedScopeEnvelope,
+    ScopeEnvelope,
+    SessionScope,
+    coerce_scope_envelope,
     ContentType,
     ConsolidationLogResult,
     ConsolidationReport,
@@ -55,6 +67,10 @@ from consolidation_memory.types import (
 
 logger = logging.getLogger("consolidation_memory")
 
+_DEFAULT_NAMESPACE_SLUG = "default"
+_DEFAULT_APP_CLIENT_NAME = "legacy_client"
+_SHARED_NAMESPACE_MODES = {"shared", "team", "managed"}
+
 
 def _normalize_content_type(ct: str) -> str:
     """Validate and normalize a content_type string.
@@ -67,6 +83,80 @@ def _normalize_content_type(ct: str) -> str:
         return ct
     logger.warning("Invalid content_type %r, defaulting to 'exchange'", ct)
     return ContentType.EXCHANGE.value
+
+
+def _normalize_scope_token(value: str | None) -> str | None:
+    """Normalize optional scope strings to non-empty tokens."""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _resolved_scope_to_db_row(scope: ResolvedScopeEnvelope) -> dict[str, str | None]:
+    """Convert a resolved scope envelope into DB scope columns."""
+    return {
+        "namespace_slug": scope.namespace.slug,
+        "namespace_sharing_mode": scope.namespace.sharing_mode,
+        "app_client_name": scope.app_client.name,
+        "app_client_type": scope.app_client.app_type,
+        "app_client_provider": scope.app_client.provider,
+        "app_client_external_key": scope.app_client.external_key,
+        "agent_name": scope.agent.name if scope.agent else None,
+        "agent_external_key": scope.agent.external_key if scope.agent else None,
+        "session_external_key": scope.session.external_key if scope.session else None,
+        "session_kind": scope.session.session_kind if scope.session else None,
+        "project_slug": scope.project.slug,
+        "project_display_name": scope.project.display_name,
+        "project_root_uri": scope.project.root_uri,
+        "project_repo_remote": scope.project.repo_remote,
+        "project_default_branch": scope.project.default_branch,
+    }
+
+
+def _resolved_scope_to_query_filter(scope: ResolvedScopeEnvelope) -> dict[str, str | None]:
+    """Build query-time scope filters from a resolved scope envelope."""
+    filters: dict[str, str | None] = {
+        "namespace_slug": scope.namespace.slug,
+        "project_slug": scope.project.slug,
+    }
+    shared_namespace = scope.namespace.sharing_mode in _SHARED_NAMESPACE_MODES
+    if not shared_namespace:
+        filters["app_client_name"] = scope.app_client.name
+        filters["app_client_type"] = scope.app_client.app_type
+        if scope.app_client.provider:
+            filters["app_client_provider"] = scope.app_client.provider
+        if scope.app_client.external_key:
+            filters["app_client_external_key"] = scope.app_client.external_key
+
+    if scope.agent is not None:
+        if scope.agent.external_key:
+            filters["agent_external_key"] = scope.agent.external_key
+        elif scope.agent.name:
+            filters["agent_name"] = scope.agent.name
+
+    if scope.session is not None:
+        if scope.session.external_key:
+            filters["session_external_key"] = scope.session.external_key
+        filters["session_kind"] = scope.session.session_kind
+
+    return filters
+
+
+def _row_matches_scope_filter(
+    row: dict[str, object],
+    scope_filter: dict[str, str | None],
+) -> bool:
+    """Return True when a DB row falls within the provided scope filter."""
+    for key, expected in scope_filter.items():
+        if expected is None:
+            continue
+        actual = row.get(key)
+        if actual is None:
+            return False
+        if str(actual) != expected:
+            return False
+    return True
 
 
 _MD_KV_BULLET_RE = re.compile(r"^[-*]\s+(?:\*\*(.+?)\*\*|([^:]+)):\s*(.+)$")
@@ -207,6 +297,9 @@ class MemoryClient:
         self._consolidation_stop = threading.Event()
         self._consolidation_thread: threading.Thread | None = None
         self._consolidation_pool: ThreadPoolExecutor | None = None
+        self._consolidation_future: Future[ConsolidationReport] | None = None
+        self._scheduler_owner = f"pid:{os.getpid()}:{uuid.uuid4().hex}"
+        self._auto_consolidate_enabled = auto_consolidate
 
         # Shared executor for LLM calls (e.g. correct())
         self._llm_executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
@@ -222,7 +315,7 @@ class MemoryClient:
         self._recall_miss_events: deque[float] = deque(maxlen=256)
         self._recall_fallback_events: deque[float] = deque(maxlen=256)
 
-        if auto_consolidate and cfg.CONSOLIDATION_AUTO_RUN:
+        if self._auto_consolidate_enabled and cfg.CONSOLIDATION_AUTO_RUN:
             self._start_consolidation_thread()
 
         logger.info(
@@ -268,6 +361,172 @@ class MemoryClient:
 
     # ── Public API ────────────────────────────────────────────────────────
 
+    def resolve_scope(
+        self,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> ResolvedScopeEnvelope:
+        """Resolve canonical scope input using backward-compatible defaults.
+
+        This method defines service-layer shape for universal scope handling
+        before persistent shared-scope tables are introduced.
+        """
+        from consolidation_memory.config import get_active_project
+
+        parsed_scope = coerce_scope_envelope(scope)
+        if parsed_scope is None:
+            parsed_scope = ScopeEnvelope()
+
+        namespace_slug = (
+            _normalize_scope_token(parsed_scope.namespace.slug) or _DEFAULT_NAMESPACE_SLUG
+        )
+        namespace = NamespaceScope(
+            id=_normalize_scope_token(parsed_scope.namespace.id),
+            slug=namespace_slug,
+            display_name=parsed_scope.namespace.display_name or namespace_slug,
+            sharing_mode=parsed_scope.namespace.sharing_mode,
+        )
+
+        app_type = parsed_scope.app_client.app_type
+        app_name = (
+            _normalize_scope_token(parsed_scope.app_client.name) or _DEFAULT_APP_CLIENT_NAME
+        )
+        app_client = AppClientScope(
+            id=_normalize_scope_token(parsed_scope.app_client.id),
+            app_type=app_type,
+            name=app_name,
+            provider=_normalize_scope_token(parsed_scope.app_client.provider),
+            external_key=_normalize_scope_token(parsed_scope.app_client.external_key),
+        )
+
+        resolved_project = parsed_scope.project or ProjectRepoScope()
+        active_project = _normalize_scope_token(get_active_project()) or "default"
+        project_slug = (
+            _normalize_scope_token(resolved_project.slug)
+            or _normalize_scope_token(resolved_project.id)
+            or active_project
+        )
+        project = ProjectRepoScope(
+            id=_normalize_scope_token(resolved_project.id),
+            slug=project_slug,
+            display_name=resolved_project.display_name or project_slug,
+            root_uri=_normalize_scope_token(resolved_project.root_uri),
+            repo_remote=_normalize_scope_token(resolved_project.repo_remote),
+            default_branch=_normalize_scope_token(resolved_project.default_branch),
+        )
+
+        agent: AgentScope | None = None
+        if parsed_scope.agent is not None:
+            agent = AgentScope(
+                id=_normalize_scope_token(parsed_scope.agent.id),
+                name=_normalize_scope_token(parsed_scope.agent.name),
+                external_key=_normalize_scope_token(parsed_scope.agent.external_key),
+                model_provider=_normalize_scope_token(parsed_scope.agent.model_provider),
+                model_name=_normalize_scope_token(parsed_scope.agent.model_name),
+            )
+
+        session: SessionScope | None = None
+        if parsed_scope.session is not None:
+            session = SessionScope(
+                id=_normalize_scope_token(parsed_scope.session.id),
+                external_key=_normalize_scope_token(parsed_scope.session.external_key),
+                session_kind=parsed_scope.session.session_kind,
+            )
+
+        return ResolvedScopeEnvelope(
+            namespace=namespace,
+            app_client=app_client,
+            project=project,
+            agent=agent,
+            session=session,
+        )
+
+    def build_operation_context(
+        self,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> MemoryOperationContext:
+        """Build a canonical operation context for service-layer calls."""
+        return MemoryOperationContext(scope=self.resolve_scope(scope))
+
+    def store_with_scope(
+        self,
+        content: str,
+        content_type: str = "exchange",
+        tags: list[str] | None = None,
+        surprise: float = 0.5,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> StoreResult:
+        """Store an episode with explicit canonical scope metadata."""
+        operation_context = self.build_operation_context(scope)
+        return self._store_internal(
+            content=content,
+            content_type=content_type,
+            tags=tags,
+            surprise=surprise,
+            resolved_scope=operation_context.scope,
+        )
+
+    def recall_with_scope(
+        self,
+        query: str,
+        n_results: int = 10,
+        include_knowledge: bool = True,
+        content_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        include_expired: bool = False,
+        as_of: str | None = None,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> RecallResult:
+        """Recall memories with explicit canonical scope metadata."""
+        operation_context = self.build_operation_context(scope)
+        return self._recall_internal(
+            query=query,
+            n_results=n_results,
+            include_knowledge=include_knowledge,
+            content_types=content_types,
+            tags=tags,
+            after=after,
+            before=before,
+            include_expired=include_expired,
+            as_of=as_of,
+            resolved_scope=operation_context.scope,
+        )
+
+    def store_batch_with_scope(
+        self,
+        episodes: list[dict],
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> BatchStoreResult:
+        """Store a batch of episodes with explicit canonical scope metadata."""
+        operation_context = self.build_operation_context(scope)
+        return self._store_batch_internal(
+            episodes=episodes,
+            resolved_scope=operation_context.scope,
+        )
+
+    def search_with_scope(
+        self,
+        query: str | None = None,
+        content_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 20,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> SearchResult:
+        """Run keyword search with explicit canonical scope metadata."""
+        operation_context = self.build_operation_context(scope)
+        return self._search_internal(
+            query=query,
+            content_types=content_types,
+            tags=tags,
+            after=after,
+            before=before,
+            limit=limit,
+            resolved_scope=operation_context.scope,
+        )
+
     def store(
         self,
         content: str,
@@ -275,23 +534,33 @@ class MemoryClient:
         tags: list[str] | None = None,
         surprise: float = 0.5,
     ) -> StoreResult:
-        """Store a memory episode.
+        """Store a memory episode using backward-compatible default scope."""
+        return self._store_internal(
+            content=content,
+            content_type=content_type,
+            tags=tags,
+            surprise=surprise,
+            resolved_scope=self.resolve_scope(),
+        )
 
-        Args:
-            content: Text content to store.
-            content_type: One of 'exchange', 'fact', 'solution', 'preference'.
-            tags: Optional topic tags.
-            surprise: Novelty score 0.0–1.0.
-
-        Returns:
-            StoreResult with status 'stored' or 'duplicate_detected'.
-        """
+    def _store_internal(
+        self,
+        *,
+        content: str,
+        content_type: str,
+        tags: list[str] | None,
+        surprise: float,
+        resolved_scope: ResolvedScopeEnvelope,
+    ) -> StoreResult:
+        """Store a memory episode with resolved canonical scope."""
         from consolidation_memory.database import insert_episode, get_episode, hard_delete_episode
         from consolidation_memory.backends import encode_documents
         from consolidation_memory.config import get_config
 
         cfg = get_config()
         self._vector_store.reload_if_stale()
+        scope_row = _resolved_scope_to_db_row(resolved_scope)
+        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
         try:
             embedding = encode_documents([content])
@@ -302,16 +571,19 @@ class MemoryClient:
                 message=f"Embedding backend unreachable: {e}",
             )
 
-        # Dedup check: search top-3 so tombstone-filtered results don't mask real duplicates
+        # Dedup check is scope-aware to avoid false positives across isolated contexts.
         if cfg.DEDUP_ENABLED and self._vector_store.size > 0:
-            matches = self._vector_store.search(embedding[0], k=3)
+            matches = self._vector_store.search(embedding[0], k=10)
             for match_id, match_sim in matches:
                 if match_sim >= cfg.DEDUP_SIMILARITY_THRESHOLD:
                     existing = get_episode(match_id)
-                    if existing is not None:
+                    if existing is not None and _row_matches_scope_filter(existing, scope_filter):
                         logger.info(
-                            "Duplicate detected (sim=%.4f >= %.2f): existing=%s",
-                            match_sim, cfg.DEDUP_SIMILARITY_THRESHOLD, match_id,
+                            "Duplicate detected (sim=%.4f >= %.2f): existing=%s scope=%s",
+                            match_sim,
+                            cfg.DEDUP_SIMILARITY_THRESHOLD,
+                            match_id,
+                            {k: v for k, v in scope_filter.items() if v is not None},
                         )
                         return StoreResult(
                             status="duplicate_detected",
@@ -329,6 +601,7 @@ class MemoryClient:
             content_type=content_type,
             tags=tags,
             surprise_score=max(0.0, min(1.0, surprise)),
+            scope=scope_row,
         )
 
         try:
@@ -350,8 +623,13 @@ class MemoryClient:
                 logger.warning("Failed to update tag co-occurrence: %s", e)
 
         logger.info(
-            "Stored episode %s (type=%s, surprise=%.2f, tags=%s)",
-            episode_id, content_type, surprise, tags,
+            "Stored episode %s (type=%s, surprise=%.2f, tags=%s, namespace=%s, project=%s)",
+            episode_id,
+            content_type,
+            surprise,
+            tags,
+            scope_row["namespace_slug"],
+            scope_row["project_slug"],
         )
 
         from consolidation_memory.plugins import get_plugin_manager
@@ -364,16 +642,30 @@ class MemoryClient:
             surprise=surprise,
         )
 
-        return StoreResult(
+        result = StoreResult(
             status="stored",
             id=episode_id,
             content_type=content_type,
             tags=tags or [],
         )
+        self._maybe_auto_consolidate(trigger_source="store")
+        return result
 
     def store_batch(
         self,
         episodes: list[dict],
+    ) -> BatchStoreResult:
+        """Store multiple episodes using backward-compatible default scope."""
+        return self._store_batch_internal(
+            episodes=episodes,
+            resolved_scope=self.resolve_scope(),
+        )
+
+    def _store_batch_internal(
+        self,
+        *,
+        episodes: list[dict],
+        resolved_scope: ResolvedScopeEnvelope,
     ) -> BatchStoreResult:
         """Store multiple memory episodes in a single operation.
 
@@ -401,6 +693,8 @@ class MemoryClient:
             return BatchStoreResult(status="stored", stored=0, duplicates=0)
 
         self._vector_store.reload_if_stale()
+        scope_row = _resolved_scope_to_db_row(resolved_scope)
+        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
         # Validate and normalize
         items = []
@@ -448,14 +742,14 @@ class MemoryClient:
         for i, item in enumerate(items):
             emb = embeddings[i]
 
-            # Dedup check: search top-3 so tombstone-filtered results don't mask real duplicates
+            # Dedup check is scope-aware to avoid false positives across isolated contexts.
             if cfg.DEDUP_ENABLED and self._vector_store.size > 0:
-                matches = self._vector_store.search(emb, k=3)
+                matches = self._vector_store.search(emb, k=10)
                 is_dup = False
                 for match_id, match_sim in matches:
                     if match_sim >= cfg.DEDUP_SIMILARITY_THRESHOLD:
                         existing = get_episode(match_id)
-                        if existing is not None:
+                        if existing is not None and _row_matches_scope_filter(existing, scope_filter):
                             duplicates += 1
                             results.append({
                                 "status": "duplicate_detected",
@@ -488,6 +782,7 @@ class MemoryClient:
                 content_type=item["content_type"],
                 tags=item["tags"],
                 surprise_score=item["surprise"],
+                scope=scope_row,
             )
 
             pending_ids.append(episode_id)
@@ -547,7 +842,15 @@ class MemoryClient:
                         )
 
         logger.info("Batch store: %d stored, %d duplicates out of %d", stored, duplicates, len(items))
-        return BatchStoreResult(status="stored", stored=stored, duplicates=duplicates, results=results)
+        batch_result = BatchStoreResult(
+            status="stored",
+            stored=stored,
+            duplicates=duplicates,
+            results=results,
+        )
+        if stored > 0:
+            self._maybe_auto_consolidate(trigger_source="store_batch")
+        return batch_result
 
     def recall(
         self,
@@ -562,28 +865,40 @@ class MemoryClient:
         include_expired: bool = False,
         as_of: str | None = None,
     ) -> RecallResult:
-        """Retrieve relevant memories by semantic similarity.
+        """Retrieve relevant memories using backward-compatible default scope."""
+        return self._recall_internal(
+            query=query,
+            n_results=n_results,
+            include_knowledge=include_knowledge,
+            content_types=content_types,
+            tags=tags,
+            after=after,
+            before=before,
+            include_expired=include_expired,
+            as_of=as_of,
+            resolved_scope=self.resolve_scope(),
+        )
 
-        Args:
-            query: Natural language description of what to recall.
-            n_results: Maximum episode results (1–50).
-            include_knowledge: Include consolidated knowledge documents.
-            content_types: Filter to specific content types (e.g. ['solution', 'fact']).
-            tags: Filter to episodes with at least one matching tag.
-            after: Only episodes created after this ISO date (e.g. '2025-01-01').
-            before: Only episodes created before this ISO date.
-            include_expired: Include temporally expired knowledge records.
-            as_of: ISO datetime for temporal belief queries. Returns knowledge
-                state as it was at that point in time, including records that
-                have since been superseded.
-
-        Returns:
-            RecallResult with episodes and knowledge lists.
-        """
+    def _recall_internal(
+        self,
+        *,
+        query: str,
+        n_results: int,
+        include_knowledge: bool,
+        content_types: list[str] | None,
+        tags: list[str] | None,
+        after: str | None,
+        before: str | None,
+        include_expired: bool,
+        as_of: str | None,
+        resolved_scope: ResolvedScopeEnvelope,
+    ) -> RecallResult:
+        """Retrieve relevant memories with canonical scope filtering."""
         from consolidation_memory.context_assembler import recall
         from consolidation_memory.database import get_stats
 
         self._vector_store.reload_if_stale()
+        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
         try:
             result = recall(
@@ -597,6 +912,7 @@ class MemoryClient:
                 before=before,
                 include_expired=include_expired,
                 as_of=as_of,
+                scope=scope_filter,
             )
         except ConnectionError as e:
             logger.error("Embedding backend unreachable during recall: %s", e)
@@ -635,6 +951,7 @@ class MemoryClient:
         from consolidation_memory.plugins import get_plugin_manager
         get_plugin_manager().fire("on_recall", query=query, result=recall_result)
 
+        self._maybe_auto_consolidate(trigger_source="recall")
         return recall_result
 
     def search(
@@ -645,6 +962,28 @@ class MemoryClient:
         after: str | None = None,
         before: str | None = None,
         limit: int = 20,
+    ) -> SearchResult:
+        """Keyword/metadata search using backward-compatible default scope."""
+        return self._search_internal(
+            query=query,
+            content_types=content_types,
+            tags=tags,
+            after=after,
+            before=before,
+            limit=limit,
+            resolved_scope=self.resolve_scope(),
+        )
+
+    def _search_internal(
+        self,
+        *,
+        query: str | None,
+        content_types: list[str] | None,
+        tags: list[str] | None,
+        after: str | None,
+        before: str | None,
+        limit: int,
+        resolved_scope: ResolvedScopeEnvelope,
     ) -> SearchResult:
         """Keyword/metadata search over episodes. No embedding backend required.
 
@@ -663,6 +1002,7 @@ class MemoryClient:
             SearchResult with matching episodes.
         """
         from consolidation_memory.database import search_episodes
+        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
         results = search_episodes(
             query=query,
@@ -670,6 +1010,7 @@ class MemoryClient:
             tags=tags,
             after=after,
             before=before,
+            scope=scope_filter,
             limit=limit,
         )
 
@@ -845,7 +1186,10 @@ class MemoryClient:
             StatusResult with counts, backend info, health, and last consolidation.
         """
         from consolidation_memory.database import (
-            get_stats, get_last_consolidation_run, get_recent_consolidation_runs,
+            get_consolidation_scheduler_state,
+            get_stats,
+            get_last_consolidation_run,
+            get_recent_consolidation_runs,
         )
         from consolidation_memory.config import get_config
 
@@ -893,6 +1237,7 @@ class MemoryClient:
             recent_activity.append(summary)
 
         utility_state = self._compute_consolidation_utility()
+        scheduler_state = get_consolidation_scheduler_state()
         utility_scheduler = {
             "enabled": bool(cfg.CONSOLIDATION_AUTO_RUN),
             "threshold": cfg.CONSOLIDATION_UTILITY_THRESHOLD,
@@ -901,6 +1246,11 @@ class MemoryClient:
             "normalized_signals": utility_state["normalized_signals"],
             "weighted_components": utility_state["weighted_components"],
             "raw_signals": utility_state["raw_signals"],
+            "next_due_at": scheduler_state.get("next_due_at"),
+            "last_status": scheduler_state.get("last_status"),
+            "last_trigger": scheduler_state.get("last_trigger"),
+            "lease_owner": scheduler_state.get("lease_owner"),
+            "lease_expires_at": scheduler_state.get("lease_expires_at"),
         }
 
         return StatusResult(
@@ -1138,6 +1488,26 @@ class MemoryClient:
         existing_topic = next((t for t in topics if t["filename"] == topic_filename), None)
         source_eps = parse_json_list(existing_topic.get("source_episodes") if existing_topic else None)
         existing_confidence = float(existing_topic["confidence"]) if existing_topic else 0.8
+        if existing_topic is not None:
+            topic_scope = {
+                "namespace_slug": existing_topic.get("namespace_slug"),
+                "namespace_sharing_mode": existing_topic.get("namespace_sharing_mode"),
+                "app_client_name": existing_topic.get("app_client_name"),
+                "app_client_type": existing_topic.get("app_client_type"),
+                "app_client_provider": existing_topic.get("app_client_provider"),
+                "app_client_external_key": existing_topic.get("app_client_external_key"),
+                "agent_name": existing_topic.get("agent_name"),
+                "agent_external_key": existing_topic.get("agent_external_key"),
+                "session_external_key": existing_topic.get("session_external_key"),
+                "session_kind": existing_topic.get("session_kind"),
+                "project_slug": existing_topic.get("project_slug"),
+                "project_display_name": existing_topic.get("project_display_name"),
+                "project_root_uri": existing_topic.get("project_root_uri"),
+                "project_repo_remote": existing_topic.get("project_repo_remote"),
+                "project_default_branch": existing_topic.get("project_default_branch"),
+            }
+        else:
+            topic_scope = _resolved_scope_to_db_row(self.resolve_scope())
 
         try:
             confidence = float(meta.get("confidence", existing_confidence))
@@ -1178,13 +1548,19 @@ class MemoryClient:
             source_episodes=source_eps,
             fact_count=len(record_rows),
             confidence=confidence,
+            scope=topic_scope,
         )
 
         for old in get_records_by_topic(topic_id, include_expired=False):
             expire_record(old["id"], valid_until=now_ts)
 
         if record_rows:
-            insert_knowledge_records(topic_id, record_rows, source_episodes=source_eps)
+            insert_knowledge_records(
+                topic_id,
+                record_rows,
+                source_episodes=source_eps,
+                scope=topic_scope,
+            )
 
         from consolidation_memory import topic_cache as _tc, record_cache as _rc
         _tc.invalidate()
@@ -1899,6 +2275,203 @@ class MemoryClient:
             return True, "utility"
         return False, "none"
 
+    def _should_trigger_scheduler_run(
+        self,
+        *,
+        scheduler_state: dict[str, object],
+        utility_score: float,
+        now_utc: datetime | None = None,
+    ) -> tuple[bool, str]:
+        """Decide if scheduler state warrants launching a run."""
+        from consolidation_memory.config import get_config
+
+        cfg = get_config()
+        now = now_utc or datetime.now(timezone.utc)
+        next_due_raw = scheduler_state.get("next_due_at")
+        interval_due = True
+        if isinstance(next_due_raw, str) and next_due_raw.strip():
+            try:
+                interval_due = now >= parse_datetime(next_due_raw)
+            except (ValueError, TypeError):
+                interval_due = True
+        if interval_due:
+            return True, "interval"
+        if utility_score >= cfg.CONSOLIDATION_UTILITY_THRESHOLD:
+            return True, "utility"
+        return False, "none"
+
+    def _maybe_auto_consolidate(self, *, trigger_source: str) -> bool:
+        """Best-effort non-blocking auto-consolidation trigger for API operations."""
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import get_consolidation_scheduler_state
+
+        cfg = get_config()
+        if (
+            not self._auto_consolidate_enabled
+            or not cfg.CONSOLIDATION_AUTO_RUN
+            or self._consolidation_stop.is_set()
+        ):
+            return False
+        if self._consolidation_future is not None and not self._consolidation_future.done():
+            return False
+
+        try:
+            utility_state = self._compute_consolidation_utility()
+            score_value = utility_state.get("score")
+            utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
+            scheduler_state = get_consolidation_scheduler_state()
+            should_run, trigger_reason = self._should_trigger_scheduler_run(
+                scheduler_state=scheduler_state,
+                utility_score=utility_score,
+            )
+            if not should_run:
+                return False
+            return self._submit_auto_consolidation(
+                trigger_source=trigger_source,
+                trigger_reason=trigger_reason,
+                utility_state=utility_state,
+                utility_score=utility_score,
+            )
+        except Exception:
+            logger.exception(
+                "Automatic consolidation tick failed (source=%s)",
+                trigger_source,
+            )
+            return False
+
+    def _submit_auto_consolidation(
+        self,
+        *,
+        trigger_source: str,
+        trigger_reason: str,
+        utility_state: dict[str, object],
+        utility_score: float,
+    ) -> bool:
+        """Submit one non-blocking consolidation run guarded by DB lease + process lock."""
+        from consolidation_memory.config import get_config
+        from consolidation_memory.consolidation import run_consolidation
+        from consolidation_memory.database import (
+            mark_consolidation_scheduler_started,
+            release_consolidation_lease,
+            try_acquire_consolidation_lease,
+        )
+
+        cfg = get_config()
+        lease_seconds = cfg.CONSOLIDATION_MAX_DURATION + 60
+        if not self._consolidation_lock.acquire(blocking=False):
+            return False
+
+        lease_acquired = False
+        scheduled = False
+        try:
+            lease_acquired = try_acquire_consolidation_lease(
+                owner=self._scheduler_owner,
+                lease_seconds=lease_seconds,
+            )
+            if not lease_acquired:
+                return False
+
+            mark_consolidation_scheduler_started(
+                owner=self._scheduler_owner,
+                trigger_reason=trigger_reason,
+                utility_score=utility_score,
+            )
+            if self._consolidation_pool is None:
+                self._consolidation_pool = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="consolidation",
+                )
+            future = self._consolidation_pool.submit(
+                run_consolidation,
+                vector_store=self._vector_store,
+            )
+            self._consolidation_future = future
+            logger.info(
+                "Auto consolidation submitted source=%s trigger=%s score=%.3f components=%s raw=%s",
+                trigger_source,
+                trigger_reason,
+                utility_score,
+                utility_state["weighted_components"],
+                utility_state["raw_signals"],
+            )
+            if hasattr(future, "add_done_callback"):
+                future.add_done_callback(  # type: ignore[union-attr]
+                    lambda done: self._finalize_auto_consolidation(done)
+                )
+            else:
+                self._finalize_auto_consolidation(future)
+            scheduled = True
+            return True
+        except Exception:
+            logger.exception("Failed to submit automatic consolidation run")
+            return False
+        finally:
+            if not scheduled:
+                if lease_acquired:
+                    try:
+                        release_consolidation_lease(self._scheduler_owner)
+                    except Exception:
+                        logger.exception("Failed to release scheduler lease after submit failure")
+                if self._consolidation_lock.locked():
+                    try:
+                        self._consolidation_lock.release()
+                    except RuntimeError:
+                        pass
+
+    def _finalize_auto_consolidation(self, future: Future[ConsolidationReport]) -> None:
+        """Handle completion bookkeeping for async auto-consolidation runs."""
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import (
+            mark_consolidation_scheduler_finished,
+            release_consolidation_lease,
+        )
+
+        cfg = get_config()
+        max_duration = cfg.CONSOLIDATION_MAX_DURATION + 60
+        status = RUN_STATUS_COMPLETED
+        error_message: str | None = None
+
+        try:
+            result = future.result(timeout=max_duration)
+            run_status = result.get("status") if isinstance(result, dict) else None
+            if run_status == RUN_STATUS_FAILED:
+                status = RUN_STATUS_FAILED
+                error_message = str(
+                    result.get("error_message")  # type: ignore[union-attr]
+                    or result.get("message")  # type: ignore[union-attr]
+                    or "consolidation failed"
+                )
+            logger.info("Automatic consolidation completed with status=%s", run_status or status)
+        except FuturesTimeoutError:
+            future.cancel()
+            status = RUN_STATUS_FAILED
+            error_message = f"Timed out after {max_duration}s"
+            logger.error("Automatic consolidation timed out after %ds", max_duration)
+        except Exception as exc:
+            status = RUN_STATUS_FAILED
+            error_message = str(exc)
+            logger.exception("Automatic consolidation failed")
+        finally:
+            try:
+                mark_consolidation_scheduler_finished(
+                    owner=self._scheduler_owner,
+                    status=status,
+                    interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
+                    error_message=error_message,
+                )
+            except Exception:
+                logger.exception("Failed to persist scheduler completion state")
+                try:
+                    release_consolidation_lease(self._scheduler_owner)
+                except Exception:
+                    logger.exception("Failed to release scheduler lease after completion failure")
+            self._consolidation_future = None
+            if self._consolidation_lock.locked():
+                try:
+                    self._consolidation_lock.release()
+                except RuntimeError:
+                    pass
+
     def _start_consolidation_thread(self) -> None:
         """Start the background consolidation daemon thread."""
         self._consolidation_stop.clear()
@@ -1956,8 +2529,30 @@ class MemoryClient:
             if not self._consolidation_lock.acquire(blocking=False):
                 logger.info("Consolidation already running, skipping")
                 continue
+            lease_acquired = False
             try:
+                from consolidation_memory.database import (
+                    mark_consolidation_scheduler_finished,
+                    mark_consolidation_scheduler_started,
+                    release_consolidation_lease,
+                    try_acquire_consolidation_lease,
+                )
                 from consolidation_memory.consolidation import run_consolidation
+
+                lease_acquired = try_acquire_consolidation_lease(
+                    owner=self._scheduler_owner,
+                    lease_seconds=max_duration,
+                )
+                if not lease_acquired:
+                    logger.info("Consolidation lease held by another process; skipping")
+                    continue
+
+                mark_consolidation_scheduler_started(
+                    owner=self._scheduler_owner,
+                    trigger_reason=trigger_reason,
+                    utility_score=utility_score,
+                )
+
                 logger.info(
                     "Consolidation trigger=%s utility_score=%.3f components=%s raw=%s",
                     trigger_reason,
@@ -1971,20 +2566,60 @@ class MemoryClient:
                 try:
                     result = future.result(timeout=max_duration)
                     last_run_monotonic = time.monotonic()
+                    run_status = result.get("status") if isinstance(result, dict) else RUN_STATUS_COMPLETED
+                    scheduler_status = (
+                        RUN_STATUS_FAILED if run_status == RUN_STATUS_FAILED else RUN_STATUS_COMPLETED
+                    )
+                    error_message = None
+                    if scheduler_status == RUN_STATUS_FAILED and isinstance(result, dict):
+                        error_message = str(
+                            result.get("error_message")
+                            or result.get("message")
+                            or "consolidation failed"
+                        )
+                    mark_consolidation_scheduler_finished(
+                        owner=self._scheduler_owner,
+                        status=scheduler_status,
+                        interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
+                        error_message=error_message,
+                    )
                     logger.info(
                         "Background consolidation completed: %s",
                         result.get("status", result),
                     )
                 except FuturesTimeoutError:
                     future.cancel()
+                    mark_consolidation_scheduler_finished(
+                        owner=self._scheduler_owner,
+                        status=RUN_STATUS_FAILED,
+                        interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
+                        error_message=f"Timed out after {max_duration}s",
+                    )
                     logger.error(
                         "Background consolidation timed out after %ds; "
                         "releasing lock. The worker thread will be abandoned.",
                         max_duration,
                     )
             except Exception:
+                if lease_acquired:
+                    try:
+                        from consolidation_memory.database import mark_consolidation_scheduler_finished
+                        mark_consolidation_scheduler_finished(
+                            owner=self._scheduler_owner,
+                            status=RUN_STATUS_FAILED,
+                            interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
+                            error_message="Background consolidation failed",
+                        )
+                    except Exception:
+                        logger.exception("Failed to persist scheduler failure state")
                 logger.exception("Background consolidation failed")
             finally:
+                if lease_acquired:
+                    try:
+                        from consolidation_memory.database import release_consolidation_lease
+                        release_consolidation_lease(self._scheduler_owner)
+                    except Exception:
+                        logger.exception("Failed to release scheduler lease")
                 self._consolidation_lock.release()
 
         logger.info("Background consolidation thread stopped.")

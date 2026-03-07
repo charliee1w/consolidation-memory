@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, Mapping, Protocol, TypedDict
 
 
 # ── Consolidation run status values ─────────────────────────────────────────
@@ -31,6 +31,241 @@ class RecordType(str, Enum):
     SOLUTION = "solution"
     PREFERENCE = "preference"
     PROCEDURE = "procedure"
+
+
+# ── Canonical domain-model scope skeleton ────────────────────────────────────
+
+NamespaceSharingMode = Literal["private", "shared", "team", "managed"]
+AppClientType = Literal[
+    "mcp",
+    "python_sdk",
+    "rest",
+    "openai_agents",
+    "langgraph",
+    "adk",
+    "letta",
+    "cli",
+    "other",
+]
+SessionKind = Literal["conversation", "thread", "workflow", "job"]
+
+
+@dataclass(frozen=True)
+class NamespaceScope:
+    """Top-level namespace identity for intentional sharing boundaries."""
+
+    id: str | None = None
+    slug: str = "default"
+    display_name: str | None = None
+    sharing_mode: NamespaceSharingMode = "private"
+
+
+@dataclass(frozen=True)
+class AppClientScope:
+    """Calling application or client identity."""
+
+    id: str | None = None
+    app_type: AppClientType = "python_sdk"
+    name: str = "legacy_client"
+    provider: str | None = None
+    external_key: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentScope:
+    """Logical agent identity inside an app client."""
+
+    id: str | None = None
+    name: str | None = None
+    external_key: str | None = None
+    model_provider: str | None = None
+    model_name: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionScope:
+    """Short-lived interaction context identity."""
+
+    id: str | None = None
+    external_key: str | None = None
+    session_kind: SessionKind = "conversation"
+
+
+@dataclass(frozen=True)
+class ProjectRepoScope:
+    """Project or repository context identity."""
+
+    id: str | None = None
+    slug: str | None = None
+    display_name: str | None = None
+    root_uri: str | None = None
+    repo_remote: str | None = None
+    default_branch: str | None = None
+
+
+@dataclass(frozen=True)
+class ScopeEnvelope:
+    """Canonical scope envelope for read/write operations."""
+
+    namespace: NamespaceScope = field(default_factory=NamespaceScope)
+    app_client: AppClientScope = field(default_factory=AppClientScope)
+    agent: AgentScope | None = None
+    session: SessionScope | None = None
+    project: ProjectRepoScope | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedScopeEnvelope:
+    """Resolved scope envelope with backward-compatible defaults applied."""
+
+    namespace: NamespaceScope
+    app_client: AppClientScope
+    project: ProjectRepoScope
+    agent: AgentScope | None = None
+    session: SessionScope | None = None
+
+
+@dataclass(frozen=True)
+class MemoryOperationContext:
+    """Service-layer operation context placeholder for later canonicalization."""
+
+    scope: ResolvedScopeEnvelope
+
+
+class ScopeResolver(Protocol):
+    """Protocol for components that resolve canonical scope envelopes."""
+
+    def resolve_scope(
+        self,
+        scope: ScopeEnvelope | Mapping[str, Any] | None = None,
+    ) -> ResolvedScopeEnvelope:
+        """Resolve scope input into a stable envelope."""
+
+
+def _as_mapping(value: object) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    return {}
+
+
+def _clean_str(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def coerce_scope_envelope(
+    scope: ScopeEnvelope | Mapping[str, Any] | None,
+) -> ScopeEnvelope | None:
+    """Coerce user/tool input into a typed scope envelope.
+
+    Accepts:
+      - ``None`` (returns ``None``)
+      - an already-typed ``ScopeEnvelope``
+      - a dict-like structure with canonical keys
+    """
+    if scope is None:
+        return None
+    if isinstance(scope, ScopeEnvelope):
+        return scope
+    if not isinstance(scope, Mapping):
+        raise TypeError("scope must be a ScopeEnvelope, mapping, or None")
+
+    namespace_raw = scope.get("namespace")
+    if isinstance(namespace_raw, NamespaceScope):
+        namespace = namespace_raw
+    elif isinstance(namespace_raw, str):
+        namespace = NamespaceScope(slug=namespace_raw)
+    else:
+        ns = _as_mapping(namespace_raw)
+        namespace = NamespaceScope(
+            id=_clean_str(ns.get("id")),
+            slug=_clean_str(ns.get("slug")) or "default",
+            display_name=_clean_str(ns.get("display_name")),
+            sharing_mode=(
+                _clean_str(ns.get("sharing_mode"))
+                if _clean_str(ns.get("sharing_mode")) in {"private", "shared", "team", "managed"}
+                else "private"
+            ),
+        )
+
+    app_raw = scope.get("app_client", scope.get("app"))
+    if isinstance(app_raw, AppClientScope):
+        app_client = app_raw
+    elif isinstance(app_raw, str):
+        app_client = AppClientScope(name=app_raw)
+    else:
+        app = _as_mapping(app_raw)
+        app_client = AppClientScope(
+            id=_clean_str(app.get("id")),
+            app_type=(
+                _clean_str(app.get("app_type"))
+                if _clean_str(app.get("app_type"))
+                in {"mcp", "python_sdk", "rest", "openai_agents", "langgraph", "adk", "letta", "cli", "other"}
+                else "python_sdk"
+            ),
+            name=_clean_str(app.get("name")) or "legacy_client",
+            provider=_clean_str(app.get("provider")),
+            external_key=_clean_str(app.get("external_key")),
+        )
+
+    agent_raw = scope.get("agent")
+    if isinstance(agent_raw, AgentScope):
+        agent = agent_raw
+    else:
+        agent_map = _as_mapping(agent_raw)
+        agent = None
+        if agent_map:
+            agent = AgentScope(
+                id=_clean_str(agent_map.get("id")),
+                name=_clean_str(agent_map.get("name")),
+                external_key=_clean_str(agent_map.get("external_key")),
+                model_provider=_clean_str(agent_map.get("model_provider")),
+                model_name=_clean_str(agent_map.get("model_name")),
+            )
+
+    session_raw = scope.get("session")
+    if isinstance(session_raw, SessionScope):
+        session = session_raw
+    else:
+        session_map = _as_mapping(session_raw)
+        session = None
+        if session_map:
+            session_kind = _clean_str(session_map.get("session_kind"))
+            session = SessionScope(
+                id=_clean_str(session_map.get("id")),
+                external_key=_clean_str(session_map.get("external_key")),
+                session_kind=(
+                    session_kind
+                    if session_kind in {"conversation", "thread", "workflow", "job"}
+                    else "conversation"
+                ),
+            )
+
+    project_raw = scope.get("project", scope.get("project_repo"))
+    if isinstance(project_raw, ProjectRepoScope):
+        project = project_raw
+    else:
+        project_map = _as_mapping(project_raw)
+        project = None
+        if project_map:
+            project = ProjectRepoScope(
+                id=_clean_str(project_map.get("id")),
+                slug=_clean_str(project_map.get("slug")),
+                display_name=_clean_str(project_map.get("display_name")),
+                root_uri=_clean_str(project_map.get("root_uri")),
+                repo_remote=_clean_str(project_map.get("repo_remote")),
+                default_branch=_clean_str(project_map.get("default_branch")),
+            )
+
+    return ScopeEnvelope(
+        namespace=namespace,
+        app_client=app_client,
+        agent=agent,
+        session=session,
+        project=project,
+    )
 
 
 # ── TypedDicts for structured dict returns ────────────────────────────────────

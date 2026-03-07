@@ -120,6 +120,15 @@ class VectorStore:
 
         self._last_load_time = time.time()
 
+    def _reload_persisted_state(self) -> None:
+        """Restore the last durable index/id-map/tombstone state from disk.
+
+        Call only while holding ``self._lock`` after a failed mutation so live
+        memory does not diverge from the on-disk source of truth.
+        """
+        logger.warning("Reloading persisted FAISS state after failed mutation")
+        self._load_or_create()
+
     def _save(self) -> None:
         """Atomic save: write to temp files, then rename over originals.
 
@@ -155,6 +164,7 @@ class VectorStore:
         # Rename id-map first (source of truth), then index.
         os.replace(map_tmp, str(cfg.FAISS_ID_MAP_PATH))
         os.replace(idx_tmp, str(cfg.FAISS_INDEX_PATH))
+        self.signal_reload()
 
     def _save_tombstones(self) -> None:
         """Atomic save of tombstone set."""
@@ -169,6 +179,7 @@ class VectorStore:
             os.unlink(tmp)
             raise
         os.replace(tmp, str(cfg.FAISS_TOMBSTONE_PATH))
+        self.signal_reload()
 
     # ── Index upgrade ────────────────────────────────────────────────────────
 
@@ -200,6 +211,7 @@ class VectorStore:
             "(n=%d, nlist=%d, dim=%d)",
             n, nlist, dim,
         )
+        prior_index = self._index
 
         try:
             # Bulk extract all vectors from flat index via internal storage pointer.
@@ -220,7 +232,11 @@ class VectorStore:
 
             # Atomic swap
             self._index = ivf_index
-            self._save()
+            try:
+                self._save()
+            except Exception:
+                self._index = prior_index
+                raise
 
             logger.info(
                 "FAISS index upgrade complete: IndexIVFFlat with "
@@ -275,10 +291,14 @@ class VectorStore:
         with self._lock:
             was_empty = self._index.ntotal == 0
             vec = embedding.reshape(1, -1).astype(np.float32)
-            self._index.add(vec)
-            self._id_map.append(episode_id)
-            self._uuid_to_pos[episode_id] = len(self._id_map) - 1
-            self._save()
+            try:
+                self._index.add(vec)
+                self._id_map.append(episode_id)
+                self._uuid_to_pos[episode_id] = len(self._id_map) - 1
+                self._save()
+            except Exception:
+                self._reload_persisted_state()
+                raise
             if was_empty:
                 self._save_embedding_metadata()
             self._maybe_upgrade_index()
@@ -288,12 +308,16 @@ class VectorStore:
         with self._lock:
             was_empty = self._index.ntotal == 0
             vecs = embeddings.astype(np.float32)
-            self._index.add(vecs)
-            start = len(self._id_map)
-            self._id_map.extend(episode_ids)
-            for i, uid in enumerate(episode_ids):
-                self._uuid_to_pos[uid] = start + i
-            self._save()
+            try:
+                self._index.add(vecs)
+                start = len(self._id_map)
+                self._id_map.extend(episode_ids)
+                for i, uid in enumerate(episode_ids):
+                    self._uuid_to_pos[uid] = start + i
+                self._save()
+            except Exception:
+                self._reload_persisted_state()
+                raise
             if was_empty:
                 self._save_embedding_metadata()
             self._maybe_upgrade_index()
@@ -357,20 +381,28 @@ class VectorStore:
         with self._lock:
             if episode_id not in self._uuid_to_pos:
                 return False
-            self._tombstones.add(episode_id)
-            self._save_tombstones()
+            try:
+                self._tombstones.add(episode_id)
+                self._save_tombstones()
+            except Exception:
+                self._reload_persisted_state()
+                raise
             return True
 
     def remove_batch(self, episode_ids: list[str]) -> int:
         """Tombstone multiple vectors by UUID. Returns count actually tombstoned."""
         with self._lock:
             count = 0
-            for uid in episode_ids:
-                if uid in self._uuid_to_pos and uid not in self._tombstones:
-                    self._tombstones.add(uid)
-                    count += 1
-            if count > 0:
-                self._save_tombstones()
+            try:
+                for uid in episode_ids:
+                    if uid in self._uuid_to_pos and uid not in self._tombstones:
+                        self._tombstones.add(uid)
+                        count += 1
+                if count > 0:
+                    self._save_tombstones()
+            except Exception:
+                self._reload_persisted_state()
+                raise
             return count
 
     # ── Compaction ───────────────────────────────────────────────────────────
@@ -384,43 +416,46 @@ class VectorStore:
             cfg = get_config()
             # Remember if the index was IVF before compaction so we can restore it
             was_ivf = not isinstance(self._index, faiss.IndexFlatIP)
+            try:
+                keep_positions = [
+                    i for i, uid in enumerate(self._id_map)
+                    if uid not in self._tombstones
+                ]
 
-            keep_positions = [
-                i for i, uid in enumerate(self._id_map)
-                if uid not in self._tombstones
-            ]
+                if not keep_positions:
+                    self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
+                    self._id_map = []
+                    self._uuid_to_pos = {}
+                    self._tombstones = set()
+                    self._save()
+                    self._save_tombstones()
+                    return removed
 
-            if not keep_positions:
+                if isinstance(self._index, faiss.IndexFlatIP):
+                    # Bulk extract from flat index, then select kept positions
+                    n = self._index.ntotal
+                    dim = self._index.d
+                    all_vectors = faiss.rev_swig_ptr(self._index.get_xb(), n * dim).reshape(n, dim)
+                    kept_vectors = all_vectors[keep_positions].copy()
+                else:
+                    # IVF index: reconstruct individually (no get_xb)
+                    kept_vectors = np.zeros(
+                        (len(keep_positions), cfg.EMBEDDING_DIMENSION), dtype=np.float32
+                    )
+                    for new_i, old_i in enumerate(keep_positions):
+                        kept_vectors[new_i] = self._index.reconstruct(old_i)
+
+                new_id_map = [self._id_map[i] for i in keep_positions]
                 self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
-                self._id_map = []
-                self._uuid_to_pos = {}
+                self._index.add(kept_vectors)
+                self._id_map = new_id_map
+                self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
                 self._tombstones = set()
                 self._save()
                 self._save_tombstones()
-                return removed
-
-            if isinstance(self._index, faiss.IndexFlatIP):
-                # Bulk extract from flat index, then select kept positions
-                n = self._index.ntotal
-                dim = self._index.d
-                all_vectors = faiss.rev_swig_ptr(self._index.get_xb(), n * dim).reshape(n, dim)
-                kept_vectors = all_vectors[keep_positions].copy()
-            else:
-                # IVF index: reconstruct individually (no get_xb)
-                kept_vectors = np.zeros(
-                    (len(keep_positions), cfg.EMBEDDING_DIMENSION), dtype=np.float32
-                )
-                for new_i, old_i in enumerate(keep_positions):
-                    kept_vectors[new_i] = self._index.reconstruct(old_i)
-
-            new_id_map = [self._id_map[i] for i in keep_positions]
-            self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
-            self._index.add(kept_vectors)
-            self._id_map = new_id_map
-            self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
-            self._tombstones = set()
-            self._save()
-            self._save_tombstones()
+            except Exception:
+                self._reload_persisted_state()
+                raise
             logger.info("Compacted FAISS index: removed %d tombstoned vectors", removed)
             # If the index was IVF before, force upgrade regardless of threshold
             if was_ivf and len(keep_positions) >= 100:

@@ -473,3 +473,86 @@ class TestExportImportHardening:
         assert len(records) == 1
         assert topics[0]["id"] != "topic-export-1"
         assert records[0]["topic_id"] == topics[0]["id"]
+
+    def test_import_remaps_record_ids_for_claim_sources(self, tmp_data_dir):
+        from consolidation_memory.cli import cmd_import
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import (
+            get_all_active_records,
+            get_all_claim_sources,
+            get_all_knowledge_topics,
+        )
+
+        cfg = get_config()
+        payload = {
+            "exported_at": "2026-03-06T00:00:00+00:00",
+            "version": "1.2",
+            "episodes": [],
+            "knowledge_topics": [
+                {
+                    "id": "topic-export-1",
+                    "filename": "topic.md",
+                    "title": "Topic",
+                    "summary": "Summary",
+                    "source_episodes": [],
+                    "file_content": "# Topic\n",
+                }
+            ],
+            "knowledge_records": [
+                {
+                    "id": "record-export-1",
+                    "topic_id": "topic-export-1",
+                    "record_type": "fact",
+                    "content": {"subject": "A", "info": "B"},
+                    "embedding_text": "A:B",
+                    "source_episodes": [],
+                    "confidence": 0.8,
+                }
+            ],
+            "claims": [
+                {
+                    "id": "claim-import-1",
+                    "claim_type": "fact",
+                    "canonical_text": "A is B",
+                    "payload": {"subject": "A", "info": "B"},
+                    "status": "active",
+                    "confidence": 0.8,
+                    "valid_from": "2026-01-01T00:00:00+00:00",
+                    "valid_until": None,
+                    "created_at": "2026-03-06T00:00:00+00:00",
+                    "updated_at": "2026-03-06T00:00:00+00:00",
+                }
+            ],
+            "claim_sources": [
+                {
+                    "id": "source-import-1",
+                    "claim_id": "claim-import-1",
+                    "source_episode_id": None,
+                    "source_topic_id": "topic-export-1",
+                    "source_record_id": "record-export-1",
+                    "created_at": "2026-03-06T00:00:01+00:00",
+                }
+            ],
+            "stats": {
+                "episode_count": 0,
+                "knowledge_count": 1,
+                "record_count": 1,
+                "claim_count": 1,
+                "claim_source_count": 1,
+            },
+        }
+        import_path = cfg.BACKUP_DIR / "import_record_id_remap.json"
+        import_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        cmd_import(str(import_path))
+
+        topics = get_all_knowledge_topics()
+        records = get_all_active_records()
+        claim_sources = get_all_claim_sources()
+
+        assert len(topics) == 1
+        assert len(records) == 1
+        assert len(claim_sources) == 1
+        assert claim_sources[0]["source_topic_id"] == topics[0]["id"]
+        assert claim_sources[0]["source_record_id"] == records[0]["id"]
+        assert claim_sources[0]["source_record_id"] != "record-export-1"

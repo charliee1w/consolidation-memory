@@ -17,7 +17,9 @@ from consolidation_memory.database import (
     fts_available,
     fts_search,
     get_active_claims,
+    get_all_active_records,
     get_claims_as_of,
+    get_claim_source_scope_rows,
     get_connection,
     get_episodes_batch,
     get_recently_contradicted_topic_ids,
@@ -252,6 +254,44 @@ def _deduplicate_episodes(
     return filtered
 
 
+def _matches_scope_filter(
+    row: dict[str, object],
+    scope: dict[str, str | None] | None,
+) -> bool:
+    if not scope:
+        return True
+    for key, expected in scope.items():
+        if expected is None:
+            continue
+        actual = row.get(key)
+        if actual is None or str(actual) != expected:
+            return False
+    return True
+
+
+def _filter_claims_for_scope(
+    claims: list[dict],
+    scope: dict[str, str | None] | None,
+) -> list[dict]:
+    if not scope or not claims:
+        return claims
+
+    claim_ids = [str(claim["id"]) for claim in claims if claim.get("id")]
+    if not claim_ids:
+        return []
+
+    source_rows = get_claim_source_scope_rows(claim_ids)
+    allowed_ids: set[str] = set()
+    for claim_id in claim_ids:
+        rows = source_rows.get(claim_id, [])
+        if not rows:
+            continue
+        if all(_matches_scope_filter(row, scope) for row in rows):
+            allowed_ids.add(claim_id)
+
+    return [claim for claim in claims if str(claim.get("id")) in allowed_ids]
+
+
 # ── Uncertainty signaling ──────────────────────────────────────────────────
 
 def _apply_uncertainty_signals(
@@ -374,6 +414,7 @@ def _search_claims(
     query_vec: np.ndarray | None = None,
     *,
     as_of: str | None = None,
+    scope: dict[str, str | None] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Search claims by semantic and keyword relevance with uncertainty labels."""
     cfg = get_config()
@@ -445,13 +486,14 @@ def _search_claims(
     scored_claims.sort(key=lambda x: x["relevance"], reverse=True)
     top_claims = scored_claims[:cfg.RECORDS_MAX_RESULTS]
 
+    scoped_claims = _filter_claims_for_scope(top_claims, scope)
     contradicted_ids = _recently_contradicted_claim_ids(
-        [claim["id"] for claim in top_claims],
+        [claim["id"] for claim in scoped_claims],
         as_of=as_of,
     )
     low_conf_count = 0
     contradicted_count = 0
-    for claim in top_claims:
+    for claim in scoped_claims:
         signals: list[str] = []
         if claim["confidence"] < _LOW_CONFIDENCE_THRESHOLD:
             signals.append(_LOW_CONFIDENCE_WARNING)
@@ -474,7 +516,7 @@ def _search_claims(
             f"(last {cfg.EVOLVING_TOPIC_LOOKBACK_DAYS} days)"
         )
 
-    return top_claims, warnings
+    return scoped_claims, warnings
 
 
 # ── Main retrieval ────────────────────────────────────────────────────────────
@@ -491,6 +533,7 @@ def recall(
     before: str | None = None,
     include_expired: bool = False,
     as_of: str | None = None,
+    scope: dict[str, str | None] | None = None,
 ) -> dict:
     """Main retrieval function. Returns ranked episodes + knowledge + claims.
 
@@ -505,6 +548,7 @@ def recall(
             records that have since been superseded and excluding records
             that did not yet exist. Implicitly caps episode results to
             episodes created on or before this time.
+        scope: Canonical scope filter dict for namespace/project/client isolation.
     """
     cfg = get_config()
     n_results = min(n_results, cfg.RECALL_MAX_N)
@@ -523,6 +567,8 @@ def recall(
 
     # Fetch more candidates when filtering, since many will be discarded
     fetch_k = n_results * 5 if (content_types or tags or after or before) else n_results * 3
+    if scope:
+        fetch_k = max(fetch_k, n_results * 8)
 
     query_vec = backends.encode_query(query)
     if vector_store is None:
@@ -567,6 +613,9 @@ def recall(
     for episode_id in all_candidate_ids:
         ep = episodes_by_id.get(episode_id)
         if ep is None:
+            continue
+
+        if scope and not _matches_scope_filter(ep, scope):
             continue
 
         # Apply filters
@@ -631,13 +680,13 @@ def recall(
     claims: list[dict] = []
     warnings = []
     if include_knowledge:
-        knowledge, kw_warnings = _search_knowledge(query, query_vec, as_of=as_of)
+        knowledge, kw_warnings = _search_knowledge(query, query_vec, as_of=as_of, scope=scope)
         warnings.extend(kw_warnings)
         records, rec_warnings = _search_records(
-            query, query_vec, include_expired=include_expired, as_of=as_of,
+            query, query_vec, include_expired=include_expired, as_of=as_of, scope=scope,
         )
         warnings.extend(rec_warnings)
-        claims, claim_warnings = _search_claims(query, query_vec, as_of=as_of)
+        claims, claim_warnings = _search_claims(query, query_vec, as_of=as_of, scope=scope)
         warnings.extend(claim_warnings)
 
         # Source traceability: enrich records and topics with source dates
@@ -660,13 +709,25 @@ def recall(
 
 
 def _search_knowledge(
-    query: str, query_vec: np.ndarray | None = None, *, as_of: str | None = None,
+    query: str,
+    query_vec: np.ndarray | None = None,
+    *,
+    as_of: str | None = None,
+    scope: dict[str, str | None] | None = None,
 ) -> tuple[list[dict], list[str]]:
     cfg = get_config()
     warnings: list[str] = []
     topics, summary_vecs = topic_cache.get_topic_vecs()
     if not topics:
         return [], warnings
+
+    if scope:
+        scope_indices = [i for i, topic in enumerate(topics) if _matches_scope_filter(topic, scope)]
+        topics = [topics[i] for i in scope_indices]
+        if summary_vecs is not None:
+            summary_vecs = summary_vecs[scope_indices] if scope_indices else None
+        if not topics:
+            return [], warnings
 
     # Temporal belief query: filter topics to those that existed at as_of
     if as_of:
@@ -775,6 +836,7 @@ def _search_records(
     *,
     include_expired: bool = False,
     as_of: str | None = None,
+    scope: dict[str, str | None] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Search individual knowledge records by semantic + keyword similarity.
 
@@ -785,10 +847,16 @@ def _search_records(
     cfg = get_config()
     warnings: list[str] = []
 
-    if as_of:
+    if as_of or scope:
         # Temporal query: fetch records valid at that point in time directly
         # from the database — the cache only holds current state.
-        records = get_records_as_of(as_of)
+        if as_of:
+            if scope:
+                records = get_records_as_of(as_of, scope=scope)
+            else:
+                records = get_records_as_of(as_of)
+        else:
+            records = get_all_active_records(include_expired=include_expired, scope=scope)
         if not records:
             return [], warnings
         texts = [r["embedding_text"] for r in records]

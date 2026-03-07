@@ -55,6 +55,26 @@ class TestStoreEndpoint:
         assert data["id"] is not None
         assert data["content_type"] == "fact"
 
+    def test_store_with_scope_uses_scoped_client_method(self, api_client):
+        from consolidation_memory.types import StoreResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.store_with_scope",
+            return_value=StoreResult(status="stored", id="scoped-id", content_type="fact"),
+        ) as mock_store_with_scope:
+            resp = api_client.post(
+                "/memory/store",
+                json={
+                    "content": "scoped store",
+                    "content_type": "fact",
+                    "scope": {"namespace": {"slug": "team-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "scoped-id"
+        assert mock_store_with_scope.call_count == 1
+
 
 class TestRecallEndpoint:
     @patch("consolidation_memory.backends.encode_query")
@@ -74,6 +94,25 @@ class TestRecallEndpoint:
         assert data["total_episodes"] == 1
         assert len(data["episodes"]) >= 1
 
+    def test_recall_with_scope_uses_scoped_client_method(self, api_client):
+        from consolidation_memory.types import RecallResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.recall_with_scope",
+            return_value=RecallResult(episodes=[], knowledge=[], total_episodes=0, total_knowledge_topics=0),
+        ) as mock_recall_with_scope:
+            resp = api_client.post(
+                "/memory/recall",
+                json={
+                    "query": "scope",
+                    "scope": {"namespace": {"slug": "team-a", "sharing_mode": "shared"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["total_episodes"] == 0
+        assert mock_recall_with_scope.call_count == 1
+
 
 class TestStatusEndpoint:
     def test_status(self, api_client):
@@ -82,6 +121,27 @@ class TestStatusEndpoint:
         data = resp.json()
         assert "episodic_buffer" in data
         assert "version" in data
+
+
+class TestSearchEndpoint:
+    def test_search_with_scope_uses_scoped_client_method(self, api_client):
+        from consolidation_memory.types import SearchResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.search_with_scope",
+            return_value=SearchResult(episodes=[], total_matches=0, query="scope"),
+        ) as mock_search_with_scope:
+            resp = api_client.post(
+                "/memory/search",
+                json={
+                    "query": "scope",
+                    "scope": {"project": {"slug": "repo-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["total_matches"] == 0
+        assert mock_search_with_scope.call_count == 1
 
 
 class TestForgetEndpoint:
@@ -118,6 +178,25 @@ class TestBatchStoreEndpoint:
         data = resp.json()
         assert data["status"] == "stored"
         assert data["stored"] == 2
+
+    def test_batch_store_with_scope_uses_scoped_client_method(self, api_client):
+        from consolidation_memory.types import BatchStoreResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.store_batch_with_scope",
+            return_value=BatchStoreResult(status="stored", stored=1, duplicates=0),
+        ) as mock_store_batch_with_scope:
+            resp = api_client.post(
+                "/memory/store/batch",
+                json={
+                    "episodes": [{"content": "Episode 1"}],
+                    "scope": {"project": {"slug": "repo-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "stored"
+        assert mock_store_batch_with_scope.call_count == 1
 
     def test_batch_store_malformed_episode(self, api_client):
         """Missing required 'content' field should return 422, not 500."""

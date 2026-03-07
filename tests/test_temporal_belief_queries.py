@@ -137,6 +137,36 @@ class TestGetRecordsAsOf:
         records = get_records_as_of(equivalent_as_of)
         assert any(r["id"] == rec_id for r in records)
 
+    def test_as_of_excludes_records_before_valid_from(self, tmp_data_dir):
+        """Records should stay hidden until their valid_from time, even if created earlier."""
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="future-valid-from.md",
+            title="Future Valid From",
+            summary="S",
+            source_episodes=[],
+        )
+        rec_id = insert_knowledge_records(
+            tid,
+            [{"record_type": "fact", "content": {"subject": "X", "info": "future"}, "embedding_text": "X: future"}],
+        )[0]
+
+        from consolidation_memory.database import get_connection
+
+        created_at = "2026-01-01T00:00:00+00:00"
+        valid_from = "2026-01-03T00:00:00+00:00"
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE knowledge_records SET created_at = ?, updated_at = ?, valid_from = ? WHERE id = ?",
+                (created_at, created_at, valid_from, rec_id),
+            )
+
+        early_records = get_records_as_of("2026-01-02T12:00:00+00:00")
+        assert all(r["id"] != rec_id for r in early_records)
+
+        active_records = get_records_as_of(valid_from)
+        assert any(r["id"] == rec_id for r in active_records)
+
     def test_as_of_before_any_records(self, tmp_data_dir):
         """Querying before any records existed should return nothing."""
         tid, old_id, new_id, t0, t1 = self._setup_timeline()

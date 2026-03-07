@@ -17,6 +17,7 @@ from consolidation_memory.database import (
     soft_delete_records_by_ids,
     upsert_knowledge_topic,
 )
+from tests.helpers import mock_encode
 
 
 # ── Schema migration ──────────────────────────────────────────────────────────
@@ -146,6 +147,57 @@ class TestTemporalFiltering:
         # Should still appear since valid_until is in the future
         records = get_all_active_records(include_expired=False)
         assert len(records) == 1
+
+    def test_future_valid_from_is_excluded_from_current_views(self, tmp_data_dir):
+        """Future-dated records should be hidden from current active views."""
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="future-window.md", title="Future Window", summary="S", source_episodes=[],
+        )
+        record_id = insert_knowledge_records(tid, [
+            {"record_type": "fact", "content": {}, "embedding_text": "future-window"},
+        ])[0]
+
+        from consolidation_memory.database import get_connection
+
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE knowledge_records SET valid_from = ?, updated_at = ? WHERE id = ?",
+                (future, future, record_id),
+            )
+
+        assert all(r["id"] != record_id for r in get_all_active_records(include_expired=False))
+        assert get_records_by_topic(tid, include_expired=False) == []
+        assert get_record_count(include_expired=False) == 0
+
+    def test_record_cache_excludes_future_valid_from_when_filtering_cached_records(self, tmp_data_dir):
+        """The unexpired cache should also hide records that are not yet valid."""
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="cache-future.md", title="Cache Future", summary="S", source_episodes=[],
+        )
+        record_id = insert_knowledge_records(tid, [
+            {"record_type": "fact", "content": {}, "embedding_text": "cache-future"},
+        ])[0]
+
+        from consolidation_memory import record_cache
+        from consolidation_memory.database import get_connection
+
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE knowledge_records SET valid_from = ?, updated_at = ? WHERE id = ?",
+                (future, future, record_id),
+            )
+
+        record_cache.invalidate()
+        with patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode):
+            all_records, _ = record_cache.get_record_vecs(include_expired=True)
+            current_records, _ = record_cache.get_record_vecs(include_expired=False)
+
+        assert any(r["id"] == record_id for r in all_records)
+        assert all(r["id"] != record_id for r in current_records)
 
 
 # ── valid_from on insert ────────────────────────────────────────────────────

@@ -13,6 +13,7 @@ from consolidation_memory.database import (
     insert_claim_sources,
     insert_episode,
     insert_episode_anchors,
+    mark_claims_challenged_by_anchors,
     upsert_claim,
 )
 
@@ -93,6 +94,84 @@ class TestClaimGraphMethods:
         at_dec15 = get_claims_as_of("2025-12-15T00:00:00+00:00", claim_type="fact")
         dec15_ids = {row["id"] for row in at_dec15}
         assert "claim-expired" in dec15_ids
+
+    def test_claims_as_of_treats_equivalent_offset_instants_equally(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-offset",
+            claim_type="fact",
+            canonical_text="offset claim",
+            payload={"k": "v"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+
+        rows = get_claims_as_of("2025-12-31T19:00:00-05:00", claim_type="fact")
+        assert {row["id"] for row in rows} == {"claim-offset"}
+
+    def test_claims_as_of_restores_active_status_before_challenge(self, tmp_data_dir):
+        ensure_schema()
+        episode_id = insert_episode("claim history episode")
+        insert_episode_anchors(
+            episode_id,
+            [{"anchor_type": "path", "anchor_value": "src/history.py"}],
+        )
+        upsert_claim(
+            claim_id="claim-history",
+            claim_type="fact",
+            canonical_text="history claim",
+            payload={"k": "v"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources("claim-history", [{"source_episode_id": episode_id}])
+
+        challenged_ids = mark_claims_challenged_by_anchors(
+            [{"anchor_type": "path", "anchor_value": "src/history.py"}],
+            challenged_at="2026-02-01T00:00:00+00:00",
+        )
+
+        assert challenged_ids == ["claim-history"]
+
+        before = {
+            row["id"]: row
+            for row in get_claims_as_of("2026-01-15T00:00:00+00:00", claim_type="fact")
+        }
+        after = {
+            row["id"]: row
+            for row in get_claims_as_of("2026-02-02T00:00:00+00:00", claim_type="fact")
+        }
+
+        assert before["claim-history"]["status"] == "active"
+        assert after["claim-history"]["status"] == "challenged"
+
+    def test_mark_claims_challenged_by_anchors_skips_future_claims(self, tmp_data_dir):
+        ensure_schema()
+        episode_id = insert_episode("future claim episode")
+        insert_episode_anchors(
+            episode_id,
+            [{"anchor_type": "path", "anchor_value": "src/future.py"}],
+        )
+        upsert_claim(
+            claim_id="claim-future-anchor",
+            claim_type="fact",
+            canonical_text="future claim",
+            payload={"k": "future"},
+            valid_from="2026-03-01T00:00:00+00:00",
+        )
+        insert_claim_sources("claim-future-anchor", [{"source_episode_id": episode_id}])
+
+        challenged_ids = mark_claims_challenged_by_anchors(
+            [{"anchor_type": "path", "anchor_value": "src/future.py"}],
+            challenged_at="2026-02-01T00:00:00+00:00",
+        )
+
+        assert challenged_ids == []
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT status FROM claims WHERE id = ?",
+                ("claim-future-anchor",),
+            ).fetchone()
+        assert row is not None
+        assert row["status"] == "active"
 
     def test_claim_edge_insert_read(self, tmp_data_dir):
         ensure_schema()

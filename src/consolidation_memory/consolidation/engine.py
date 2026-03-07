@@ -73,6 +73,92 @@ from consolidation_memory.utils import parse_json_list
 logger = logging.getLogger(__name__)
 
 
+def _episode_scope_row(episode: dict[str, object]) -> dict[str, str | None]:
+    """Extract canonical scope columns from an episode row."""
+    return {
+        "namespace_slug": str(episode.get("namespace_slug") or "default"),
+        "namespace_sharing_mode": str(episode.get("namespace_sharing_mode") or "private"),
+        "app_client_name": str(episode.get("app_client_name") or "legacy_client"),
+        "app_client_type": str(episode.get("app_client_type") or "python_sdk"),
+        "app_client_provider": str(episode.get("app_client_provider")) if episode.get("app_client_provider") else None,
+        "app_client_external_key": (
+            str(episode.get("app_client_external_key"))
+            if episode.get("app_client_external_key")
+            else None
+        ),
+        "agent_name": str(episode.get("agent_name")) if episode.get("agent_name") else None,
+        "agent_external_key": (
+            str(episode.get("agent_external_key")) if episode.get("agent_external_key") else None
+        ),
+        "session_external_key": (
+            str(episode.get("session_external_key"))
+            if episode.get("session_external_key")
+            else None
+        ),
+        "session_kind": str(episode.get("session_kind")) if episode.get("session_kind") else None,
+        "project_slug": str(episode.get("project_slug") or "default"),
+        "project_display_name": (
+            str(episode.get("project_display_name")) if episode.get("project_display_name") else None
+        ),
+        "project_root_uri": str(episode.get("project_root_uri")) if episode.get("project_root_uri") else None,
+        "project_repo_remote": (
+            str(episode.get("project_repo_remote")) if episode.get("project_repo_remote") else None
+        ),
+        "project_default_branch": (
+            str(episode.get("project_default_branch")) if episode.get("project_default_branch") else None
+        ),
+    }
+
+
+def _default_scope_row() -> dict[str, str | None]:
+    return {
+        "namespace_slug": "default",
+        "namespace_sharing_mode": "private",
+        "app_client_name": "legacy_client",
+        "app_client_type": "python_sdk",
+        "app_client_provider": None,
+        "app_client_external_key": None,
+        "agent_name": None,
+        "agent_external_key": None,
+        "session_external_key": None,
+        "session_kind": None,
+        "project_slug": "default",
+        "project_display_name": "default",
+        "project_root_uri": None,
+        "project_repo_remote": None,
+        "project_default_branch": None,
+    }
+
+
+def _scope_key(scope: dict[str, str | None]) -> tuple[str, ...]:
+    """Deterministic key for scope isolation in consolidation clustering."""
+    return (
+        scope.get("namespace_slug") or "default",
+        scope.get("project_slug") or "default",
+        scope.get("app_client_name") or "legacy_client",
+        scope.get("app_client_type") or "python_sdk",
+        scope.get("app_client_provider") or "",
+        scope.get("app_client_external_key") or "",
+        scope.get("agent_external_key") or "",
+        scope.get("agent_name") or "",
+        scope.get("session_external_key") or "",
+        scope.get("session_kind") or "",
+    )
+
+
+def _scope_filename_prefix(scope: dict[str, str | None]) -> str:
+    """Build a stable scope prefix so topic filenames remain scope-safe."""
+    parts: list[str] = [
+        scope.get("namespace_slug") or "default",
+        scope.get("project_slug") or "default",
+    ]
+    if scope.get("namespace_sharing_mode") == "private":
+        parts.append(scope.get("app_client_name") or "legacy_client")
+        parts.append(scope.get("app_client_type") or "python_sdk")
+    cleaned = [_slugify(part) for part in parts if part]
+    return "_".join(part for part in cleaned if part)
+
+
 # ── Knowledge versioning ─────────────────────────────────────────────────────
 
 
@@ -487,6 +573,7 @@ def _merge_into_existing(
     cluster_episodes: list[dict],
     cluster_ep_ids: list[str],
     confidence: float,
+    cluster_scope: dict[str, str | None] | None = None,
 ) -> tuple[str, int]:
     """Merge new extracted records into an existing topic.
 
@@ -496,6 +583,9 @@ def _merge_into_existing(
     Raises:
         Exception: Propagated from LLM or file I/O failures (caller handles).
     """
+    if cluster_scope is None:
+        cluster_scope = _episode_scope_row(cluster_episodes[0]) if cluster_episodes else _default_scope_row()
+
     # Load existing records from DB
     existing_db_records = get_records_by_topic(existing["id"])
     existing_records = []
@@ -833,6 +923,7 @@ def _merge_into_existing(
             existing["id"],
             record_rows,
             source_episodes=cluster_ep_ids,
+            scope=cluster_scope,
             conn=conn,
         )
     _emit_claims_for_records(
@@ -860,6 +951,7 @@ def _merge_into_existing(
         source_episodes=cluster_ep_ids,
         fact_count=len(merged_records),
         confidence=confidence,
+        scope=cluster_scope,
     )
     mark_consolidated(cluster_ep_ids, existing["filename"])
     topic_cache.invalidate()
@@ -934,6 +1026,7 @@ def _process_cluster(
         "Extracting records from cluster %d (%d episodes)...", cluster_id, len(cluster_episodes)
     )
     cluster_ep_ids = [ep["id"] for ep in cluster_episodes]
+    cluster_scope = _episode_scope_row(cluster_episodes[0]) if cluster_episodes else _default_scope_row()
     api_calls = 0
 
     try:
@@ -949,7 +1042,7 @@ def _process_cluster(
     tags = extraction_data.get("tags", [t for t, _ in tag_counts])
     records = extraction_data.get("records", [])
 
-    existing = _find_similar_topic(title, summary, tags)
+    existing = _find_similar_topic(title, summary, tags, scope=cluster_scope)
 
     if existing:
         try:
@@ -959,6 +1052,7 @@ def _process_cluster(
                 cluster_episodes,
                 cluster_ep_ids,
                 confidence,
+                cluster_scope,
             )
             api_calls += merge_calls
             if status == "failed":
@@ -969,7 +1063,10 @@ def _process_cluster(
             increment_consolidation_attempts(cluster_ep_ids)
             return {"status": "failed", "api_calls": api_calls, "failed_ep_ids": cluster_ep_ids}
     else:
+        scope_prefix = _scope_filename_prefix(cluster_scope)
         base_slug = _slugify(title)
+        if scope_prefix:
+            base_slug = f"{scope_prefix}__{base_slug}"
         filename = base_slug + ".md"
         filepath = cfg.KNOWLEDGE_DIR / filename
         counter = 2
@@ -986,6 +1083,7 @@ def _process_cluster(
             source_episodes=cluster_ep_ids,
             fact_count=len(records),
             confidence=confidence,
+            scope=cluster_scope,
         )
         record_rows = []
         for rec in records:
@@ -1001,6 +1099,7 @@ def _process_cluster(
             topic_id,
             record_rows,
             source_episodes=cluster_ep_ids,
+            scope=cluster_scope,
         )
         _emit_claims_for_records(
             records,
@@ -1111,6 +1210,17 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             np.fill_diagonal(sim_matrix, 1.0)
             dist_matrix = 1.0 - sim_matrix
             dist_matrix = np.clip(dist_matrix, 0, 2)
+
+            # Scope isolation guard: never cluster episodes from different
+            # namespace/project/client/agent/session scopes together.
+            scope_keys = [_scope_key(_episode_scope_row(ep)) for ep in valid_episodes]
+            for i in range(len(scope_keys)):
+                for j in range(i + 1, len(scope_keys)):
+                    if scope_keys[i] != scope_keys[j]:
+                        dist_matrix[i, j] = 2.0
+                        dist_matrix[j, i] = 2.0
+                        sim_matrix[i, j] = 0.0
+                        sim_matrix[j, i] = 0.0
 
             if len(valid_episodes) < 2:
                 logger.info("Only 1 valid episode — skipping clustering.")

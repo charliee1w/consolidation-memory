@@ -52,10 +52,35 @@ class TestDatabase:
         assert ep["content_type"] == "fact"
         assert ep["surprise_score"] == 0.7
         assert json.loads(ep["tags"]) == ["test"]
+        assert ep["namespace_slug"] == "default"
+        assert ep["app_client_name"] == "legacy_client"
+        assert ep["app_client_type"] == "python_sdk"
+        assert ep["project_slug"] not in {"", None}
 
         deleted = soft_delete_episode(ep_id)
         assert deleted is True
         assert get_episode(ep_id) is None
+
+    def test_scope_columns_exist_after_schema_upgrade(self):
+        from consolidation_memory.database import ensure_schema, get_connection
+
+        ensure_schema()
+        expected = {
+            "namespace_slug",
+            "namespace_sharing_mode",
+            "app_client_name",
+            "app_client_type",
+            "agent_external_key",
+            "session_external_key",
+            "project_slug",
+        }
+        with get_connection() as conn:
+            for table in ("episodes", "knowledge_records", "knowledge_topics"):
+                cols = {
+                    str(row["name"])
+                    for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+                assert expected.issubset(cols)
 
     def test_get_connection_depth_restored_on_commit_failure(self):
         import consolidation_memory.database as database
@@ -127,6 +152,71 @@ class TestDatabase:
         with get_connection() as conn:
             row = conn.execute("SELECT MAX(version) as v FROM schema_version").fetchone()
         assert row["v"] == CURRENT_SCHEMA_VERSION
+
+    def test_scheduler_state_bootstraps(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_consolidation_scheduler_state,
+        )
+
+        ensure_schema()
+        state = get_consolidation_scheduler_state()
+        assert state["id"] == "global"
+        assert state["last_status"] == "idle"
+        assert state["next_due_at"] is not None
+
+    def test_scheduler_lease_conflict_and_release(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            release_consolidation_lease,
+            try_acquire_consolidation_lease,
+        )
+
+        ensure_schema()
+        assert try_acquire_consolidation_lease("owner-a", lease_seconds=60) is True
+        assert try_acquire_consolidation_lease("owner-b", lease_seconds=60) is False
+        release_consolidation_lease("owner-a")
+        assert try_acquire_consolidation_lease("owner-b", lease_seconds=60) is True
+
+    def test_search_episodes_respects_scope_filters(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_episode,
+            search_episodes,
+        )
+
+        ensure_schema()
+        ep_a = insert_episode(
+            content="scoped search token",
+            scope={
+                "namespace_slug": "team-a",
+                "namespace_sharing_mode": "private",
+                "app_client_name": "app-a",
+                "app_client_type": "rest",
+                "project_slug": "repo-a",
+            },
+        )
+        insert_episode(
+            content="scoped search token",
+            scope={
+                "namespace_slug": "team-a",
+                "namespace_sharing_mode": "private",
+                "app_client_name": "app-b",
+                "app_client_type": "rest",
+                "project_slug": "repo-a",
+            },
+        )
+
+        results = search_episodes(
+            query="scoped search token",
+            scope={
+                "namespace_slug": "team-a",
+                "project_slug": "repo-a",
+                "app_client_name": "app-a",
+                "app_client_type": "rest",
+            },
+        )
+        assert [row["id"] for row in results] == [ep_a]
 
 
 # ── Vector store tests ────────────────────────────────────────────────────────

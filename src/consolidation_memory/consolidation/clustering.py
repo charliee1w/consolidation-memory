@@ -14,6 +14,21 @@ from consolidation_memory import topic_cache
 logger = logging.getLogger(__name__)
 
 
+def _matches_scope(
+    row: dict,
+    scope: dict[str, str | None] | None,
+) -> bool:
+    if not scope:
+        return True
+    for key, expected in scope.items():
+        if expected is None:
+            continue
+        actual = row.get(key)
+        if actual is None or str(actual) != expected:
+            return False
+    return True
+
+
 def _compute_cluster_confidence(
     cluster_episodes: list[dict],
     sim_matrix: np.ndarray,
@@ -39,12 +54,26 @@ def _compute_cluster_confidence(
     return round(max(0.5, min(0.95, confidence)), 2)
 
 
-def _find_similar_topic(title: str, summary: str, tags: list[str]) -> dict | None:
+def _find_similar_topic(
+    title: str,
+    summary: str,
+    tags: list[str],
+    *,
+    scope: dict[str, str | None] | None = None,
+) -> dict | None:
     from consolidation_memory.backends import encode_documents
 
     topics, existing_vecs = topic_cache.get_topic_vecs()
     if not topics:
         return None
+
+    if scope:
+        filtered_indices = [i for i, topic in enumerate(topics) if _matches_scope(topic, scope)]
+        topics = [topics[i] for i in filtered_indices]
+        if existing_vecs is not None:
+            existing_vecs = existing_vecs[filtered_indices] if filtered_indices else None
+        if not topics:
+            return None
 
     try:
         new_text = f"{title}. {summary}"

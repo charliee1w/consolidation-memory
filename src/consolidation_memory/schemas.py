@@ -35,6 +35,83 @@ if TYPE_CHECKING:
 
 # ── Tool Schemas ─────────────────────────────────────────────────────────────
 
+SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Optional canonical scope envelope for universal shared memory. "
+        "If omitted, legacy single-project defaults are used."
+    ),
+    "properties": {
+        "namespace": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "slug": {"type": "string"},
+                "display_name": {"type": "string"},
+                "sharing_mode": {
+                    "type": "string",
+                    "enum": ["private", "shared", "team", "managed"],
+                },
+            },
+        },
+        "app_client": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "app_type": {
+                    "type": "string",
+                    "enum": [
+                        "mcp",
+                        "python_sdk",
+                        "rest",
+                        "openai_agents",
+                        "langgraph",
+                        "adk",
+                        "letta",
+                        "cli",
+                        "other",
+                    ],
+                },
+                "name": {"type": "string"},
+                "provider": {"type": "string"},
+                "external_key": {"type": "string"},
+            },
+        },
+        "agent": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "name": {"type": "string"},
+                "external_key": {"type": "string"},
+                "model_provider": {"type": "string"},
+                "model_name": {"type": "string"},
+            },
+        },
+        "session": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "external_key": {"type": "string"},
+                "session_kind": {
+                    "type": "string",
+                    "enum": ["conversation", "thread", "workflow", "job"],
+                },
+            },
+        },
+        "project": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "slug": {"type": "string"},
+                "display_name": {"type": "string"},
+                "root_uri": {"type": "string"},
+                "repo_remote": {"type": "string"},
+                "default_branch": {"type": "string"},
+            },
+        },
+    },
+}
+
 MEMORY_STORE_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -76,6 +153,7 @@ MEMORY_STORE_SCHEMA: dict[str, Any] = {
                     "description": "How novel this is, 0.0 (routine) to 1.0 (very surprising).",
                     "default": 0.5,
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": ["content"],
         },
@@ -122,6 +200,7 @@ MEMORY_STORE_BATCH_SCHEMA: dict[str, Any] = {
                     },
                     "description": "List of episode objects to store.",
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": ["episodes"],
         },
@@ -193,6 +272,7 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
                         "been superseded (e.g. '2025-06-15T00:00:00+00:00')."
                     ),
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": ["query"],
         },
@@ -320,6 +400,7 @@ MEMORY_SEARCH_SCHEMA: dict[str, Any] = {
                     "description": "Maximum results to return.",
                     "default": 20,
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": [],
         },
@@ -677,12 +758,22 @@ def dispatch_tool_call(
                         f"Maximum is {_MAX_CONTENT_LENGTH} characters."
                     )
                 }
-            store_result = client.store(
-                content=content,
-                content_type=arguments.get("content_type", "exchange"),
-                tags=arguments.get("tags"),
-                surprise=arguments.get("surprise", 0.5),
-            )
+            scope = arguments.get("scope")
+            if scope is not None and hasattr(client, "store_with_scope"):
+                store_result = client.store_with_scope(
+                    content=content,
+                    content_type=arguments.get("content_type", "exchange"),
+                    tags=arguments.get("tags"),
+                    surprise=arguments.get("surprise", 0.5),
+                    scope=scope,
+                )
+            else:
+                store_result = client.store(
+                    content=content,
+                    content_type=arguments.get("content_type", "exchange"),
+                    tags=arguments.get("tags"),
+                    surprise=arguments.get("surprise", 0.5),
+                )
             return dataclasses.asdict(store_result)
 
         elif name == "memory_store_batch":
@@ -691,33 +782,64 @@ def dispatch_tool_call(
                 return {
                     "error": f"Batch size {len(episodes)} exceeds maximum of {_MAX_BATCH_SIZE}"
                 }
-            batch_result = client.store_batch(episodes=episodes)
+            scope = arguments.get("scope")
+            if scope is not None and hasattr(client, "store_batch_with_scope"):
+                batch_result = client.store_batch_with_scope(episodes=episodes, scope=scope)
+            else:
+                batch_result = client.store_batch(episodes=episodes)
             return dataclasses.asdict(batch_result)
 
         elif name == "memory_recall":
             n_results = max(1, min(arguments.get("n_results", 10), 50))
-            recall_result = client.recall(
-                query=arguments["query"],
-                n_results=n_results,
-                include_knowledge=arguments.get("include_knowledge", True),
-                content_types=arguments.get("content_types"),
-                tags=arguments.get("tags"),
-                after=arguments.get("after"),
-                before=arguments.get("before"),
-                include_expired=arguments.get("include_expired", False),
-                as_of=arguments.get("as_of"),
-            )
+            scope = arguments.get("scope")
+            if scope is not None and hasattr(client, "recall_with_scope"):
+                recall_result = client.recall_with_scope(
+                    query=arguments["query"],
+                    n_results=n_results,
+                    include_knowledge=arguments.get("include_knowledge", True),
+                    content_types=arguments.get("content_types"),
+                    tags=arguments.get("tags"),
+                    after=arguments.get("after"),
+                    before=arguments.get("before"),
+                    include_expired=arguments.get("include_expired", False),
+                    as_of=arguments.get("as_of"),
+                    scope=scope,
+                )
+            else:
+                recall_result = client.recall(
+                    query=arguments["query"],
+                    n_results=n_results,
+                    include_knowledge=arguments.get("include_knowledge", True),
+                    content_types=arguments.get("content_types"),
+                    tags=arguments.get("tags"),
+                    after=arguments.get("after"),
+                    before=arguments.get("before"),
+                    include_expired=arguments.get("include_expired", False),
+                    as_of=arguments.get("as_of"),
+                )
             return dataclasses.asdict(recall_result)
 
         elif name == "memory_search":
-            search_result = client.search(
-                query=arguments.get("query"),
-                content_types=arguments.get("content_types"),
-                tags=arguments.get("tags"),
-                after=arguments.get("after"),
-                before=arguments.get("before"),
-                limit=min(arguments.get("limit", 20), 50),
-            )
+            scope = arguments.get("scope")
+            if scope is not None and hasattr(client, "search_with_scope"):
+                search_result = client.search_with_scope(
+                    query=arguments.get("query"),
+                    content_types=arguments.get("content_types"),
+                    tags=arguments.get("tags"),
+                    after=arguments.get("after"),
+                    before=arguments.get("before"),
+                    limit=min(arguments.get("limit", 20), 50),
+                    scope=scope,
+                )
+            else:
+                search_result = client.search(
+                    query=arguments.get("query"),
+                    content_types=arguments.get("content_types"),
+                    tags=arguments.get("tags"),
+                    after=arguments.get("after"),
+                    before=arguments.get("before"),
+                    limit=min(arguments.get("limit", 20), 50),
+                )
             return dataclasses.asdict(search_result)
 
         elif name == "memory_claim_browse":

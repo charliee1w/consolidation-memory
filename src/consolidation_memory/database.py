@@ -12,12 +12,17 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from consolidation_memory.config import get_config as _get_config
-from consolidation_memory.types import RUN_STATUS_COMPLETED, RunStatus, StatsDict
+from consolidation_memory.types import (
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_RUNNING,
+    RunStatus,
+    StatsDict,
+)
 from consolidation_memory.utils import parse_datetime, parse_json_list
 
 logger = logging.getLogger(__name__)
@@ -32,7 +37,12 @@ _fts5_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = 13
+
+_DEFAULT_NAMESPACE_SLUG = "default"
+_DEFAULT_NAMESPACE_SHARING_MODE = "private"
+_DEFAULT_APP_CLIENT_NAME = "legacy_client"
+_DEFAULT_APP_CLIENT_TYPE = "python_sdk"
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -178,11 +188,108 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_episode_anchors_lookup ON episode_anchors(anchor_type, anchor_value)",
         "CREATE INDEX IF NOT EXISTS idx_episode_anchors_episode ON episode_anchors(episode_id)",
     ],
+    12: [
+        """CREATE TABLE IF NOT EXISTS consolidation_scheduler (
+            id                      TEXT PRIMARY KEY,
+            last_run_started_at     TEXT,
+            last_run_completed_at   TEXT,
+            last_status             TEXT NOT NULL DEFAULT 'idle',
+            last_error              TEXT,
+            last_trigger            TEXT,
+            last_utility_score      REAL,
+            next_due_at             TEXT,
+            lease_owner             TEXT,
+            lease_expires_at        TEXT,
+            updated_at              TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_scheduler_next_due ON consolidation_scheduler(next_due_at)",
+        "CREATE INDEX IF NOT EXISTS idx_scheduler_lease_expires ON consolidation_scheduler(lease_expires_at)",
+    ],
+    # Migration 13 is applied specially in _apply_migration() so we can add
+    # scope columns idempotently (only when a column does not already exist).
+    13: [],
 }
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_utc_timestamp(value: str | datetime) -> str:
+    """Normalize a timestamp to a UTC ISO 8601 string."""
+    dt = parse_datetime(value) if isinstance(value, str) else value
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _normalize_scope_token(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _default_project_slug() -> str:
+    project = _normalize_scope_token(getattr(_get_config(), "active_project", None))
+    return project or "default"
+
+
+def _coerce_scope_row(scope: Mapping[str, Any] | None = None) -> dict[str, str | None]:
+    raw = scope or {}
+    project_slug = _normalize_scope_token(raw.get("project_slug")) or _default_project_slug()
+    project_display_name = _normalize_scope_token(raw.get("project_display_name")) or project_slug
+    return {
+        "namespace_slug": _normalize_scope_token(raw.get("namespace_slug")) or _DEFAULT_NAMESPACE_SLUG,
+        "namespace_sharing_mode": (
+            _normalize_scope_token(raw.get("namespace_sharing_mode"))
+            or _DEFAULT_NAMESPACE_SHARING_MODE
+        ),
+        "app_client_name": _normalize_scope_token(raw.get("app_client_name")) or _DEFAULT_APP_CLIENT_NAME,
+        "app_client_type": _normalize_scope_token(raw.get("app_client_type")) or _DEFAULT_APP_CLIENT_TYPE,
+        "app_client_provider": _normalize_scope_token(raw.get("app_client_provider")),
+        "app_client_external_key": _normalize_scope_token(raw.get("app_client_external_key")),
+        "agent_name": _normalize_scope_token(raw.get("agent_name")),
+        "agent_external_key": _normalize_scope_token(raw.get("agent_external_key")),
+        "session_external_key": _normalize_scope_token(raw.get("session_external_key")),
+        "session_kind": _normalize_scope_token(raw.get("session_kind")),
+        "project_slug": project_slug,
+        "project_display_name": project_display_name,
+        "project_root_uri": _normalize_scope_token(raw.get("project_root_uri")),
+        "project_repo_remote": _normalize_scope_token(raw.get("project_repo_remote")),
+        "project_default_branch": _normalize_scope_token(raw.get("project_default_branch")),
+    }
+
+
+def _apply_scope_filters(
+    conditions: list[str],
+    params: list[Any],
+    scope: Mapping[str, Any] | None = None,
+    *,
+    table_alias: str = "",
+) -> None:
+    if not scope:
+        return
+
+    prefix = f"{table_alias}." if table_alias else ""
+    filter_keys = (
+        "namespace_slug",
+        "project_slug",
+        "app_client_name",
+        "app_client_type",
+        "app_client_provider",
+        "app_client_external_key",
+        "agent_name",
+        "agent_external_key",
+        "session_external_key",
+        "session_kind",
+    )
+    for key in filter_keys:
+        value = _normalize_scope_token(scope.get(key))
+        if value is None:
+            continue
+        conditions.append(f"{prefix}{key} = ?")
+        params.append(value)
 
 
 def _ensure_parent(path: Path) -> None:
@@ -405,6 +512,8 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
         # FTS5 migration — may fail if FTS5 extension is not compiled in
         if version == 10:
             _apply_fts5_migration(conn)
+        if version == 13:
+            _apply_scope_migration(conn)
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
     except Exception:
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -433,6 +542,112 @@ def _apply_fts5_migration(conn: sqlite3.Connection) -> None:
     )
 
 
+def _get_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    column_name: str,
+    column_sql: str,
+) -> None:
+    existing = _get_table_columns(conn, table_name)
+    if column_name in existing:
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+
+def _apply_scope_migration(conn: sqlite3.Connection) -> None:
+    """Apply schema v13: persistent scope columns for shared memory isolation."""
+    shared_columns = (
+        ("namespace_slug", "namespace_slug TEXT NOT NULL DEFAULT 'default'"),
+        ("namespace_sharing_mode", "namespace_sharing_mode TEXT NOT NULL DEFAULT 'private'"),
+        ("app_client_name", "app_client_name TEXT NOT NULL DEFAULT 'legacy_client'"),
+        ("app_client_type", "app_client_type TEXT NOT NULL DEFAULT 'python_sdk'"),
+        ("app_client_provider", "app_client_provider TEXT"),
+        ("app_client_external_key", "app_client_external_key TEXT"),
+        ("agent_name", "agent_name TEXT"),
+        ("agent_external_key", "agent_external_key TEXT"),
+        ("session_external_key", "session_external_key TEXT"),
+        ("session_kind", "session_kind TEXT"),
+        ("project_slug", "project_slug TEXT NOT NULL DEFAULT 'default'"),
+        ("project_display_name", "project_display_name TEXT"),
+        ("project_root_uri", "project_root_uri TEXT"),
+        ("project_repo_remote", "project_repo_remote TEXT"),
+        ("project_default_branch", "project_default_branch TEXT"),
+    )
+
+    for table_name in ("episodes", "knowledge_records", "knowledge_topics"):
+        for column_name, column_sql in shared_columns:
+            _add_column_if_missing(
+                conn,
+                table_name=table_name,
+                column_name=column_name,
+                column_sql=column_sql,
+            )
+
+    project_slug = _default_project_slug()
+    for table_name in ("episodes", "knowledge_records", "knowledge_topics"):
+        conn.execute(
+            f"""UPDATE {table_name}
+                SET namespace_slug = COALESCE(NULLIF(namespace_slug, ''), ?),
+                    namespace_sharing_mode = COALESCE(NULLIF(namespace_sharing_mode, ''), ?),
+                    app_client_name = COALESCE(NULLIF(app_client_name, ''), ?),
+                    app_client_type = COALESCE(NULLIF(app_client_type, ''), ?),
+                    project_slug = CASE
+                        WHEN project_slug IS NULL OR project_slug = '' OR project_slug = 'default'
+                        THEN ?
+                        ELSE project_slug
+                    END,
+                    project_display_name = COALESCE(
+                        NULLIF(project_display_name, ''),
+                        CASE
+                            WHEN project_slug IS NULL OR project_slug = '' OR project_slug = 'default'
+                            THEN ?
+                            ELSE project_slug
+                        END
+                    )""",
+            (
+                _DEFAULT_NAMESPACE_SLUG,
+                _DEFAULT_NAMESPACE_SHARING_MODE,
+                _DEFAULT_APP_CLIENT_NAME,
+                _DEFAULT_APP_CLIENT_TYPE,
+                project_slug,
+                project_slug,
+            ),
+        )
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_episodes_scope_ns_project ON episodes(namespace_slug, project_slug)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_episodes_scope_app ON episodes(namespace_slug, project_slug, app_client_name, app_client_type)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_episodes_scope_agent_session ON episodes(namespace_slug, project_slug, agent_external_key, session_external_key)"
+    )
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_records_scope_ns_project ON knowledge_records(namespace_slug, project_slug)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_records_scope_app ON knowledge_records(namespace_slug, project_slug, app_client_name, app_client_type)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_records_scope_agent_session ON knowledge_records(namespace_slug, project_slug, agent_external_key, session_external_key)"
+    )
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_topics_scope_ns_project ON knowledge_topics(namespace_slug, project_slug)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_topics_scope_app ON knowledge_topics(namespace_slug, project_slug, app_client_name, app_client_type)"
+    )
+
+
 # ── Episode CRUD ─────────────────────────────────────────────────────────────
 
 def insert_episode(
@@ -441,19 +656,35 @@ def insert_episode(
     tags: list[str] | None = None,
     surprise_score: float = 0.5,
     source_session: str | None = None,
+    scope: Mapping[str, Any] | None = None,
     episode_id: str | None = None,
 ) -> str:
     if episode_id is None:
         episode_id = str(uuid.uuid4())
     now = _now()
+    scope_row = _coerce_scope_row(scope)
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO episodes
                (id, created_at, updated_at, content, content_type, tags,
-                surprise_score, source_session)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                surprise_score, source_session,
+                namespace_slug, namespace_sharing_mode,
+                app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                agent_name, agent_external_key,
+                session_external_key, session_kind,
+                project_slug, project_display_name, project_root_uri,
+                project_repo_remote, project_default_branch)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (episode_id, now, now, content, content_type,
-             json.dumps(tags or []), surprise_score, source_session),
+             json.dumps(tags or []), surprise_score, source_session,
+             scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
+             scope_row["app_client_name"], scope_row["app_client_type"],
+             scope_row["app_client_provider"], scope_row["app_client_external_key"],
+             scope_row["agent_name"], scope_row["agent_external_key"],
+             scope_row["session_external_key"], scope_row["session_kind"],
+             scope_row["project_slug"], scope_row["project_display_name"],
+             scope_row["project_root_uri"], scope_row["project_repo_remote"],
+             scope_row["project_default_branch"]),
         )
         # FTS insert within the same transaction for atomicity
         fts_insert(episode_id, content)
@@ -729,10 +960,11 @@ def get_low_confidence_records(threshold: float = 0.5) -> list[dict[str, Any]]:
                FROM knowledge_records kr
                JOIN knowledge_topics kt ON kr.topic_id = kt.id
                WHERE kr.deleted = 0
-                 AND (kr.valid_until IS NULL OR kr.valid_until > ?)
+                 AND (kr.valid_from IS NULL OR julianday(kr.valid_from) <= julianday(?))
+                 AND (kr.valid_until IS NULL OR julianday(kr.valid_until) > julianday(?))
                  AND kr.confidence < ?
                ORDER BY kr.confidence ASC""",
-            (now, threshold),
+            (now, now, threshold),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -746,8 +978,10 @@ def upsert_knowledge_topic(
     source_episodes: list[str],
     fact_count: int = 0,
     confidence: float = 0.8,
+    scope: Mapping[str, Any] | None = None,
 ) -> str:
     now = _now()
+    scope_row = _coerce_scope_row(scope)
     with get_connection() as conn:
         existing = conn.execute(
             "SELECT id, source_episodes FROM knowledge_topics WHERE filename = ?",
@@ -761,10 +995,24 @@ def upsert_knowledge_topic(
             conn.execute(
                 """UPDATE knowledge_topics
                    SET title = ?, summary = ?, updated_at = ?,
-                       source_episodes = ?, fact_count = ?, confidence = ?
+                       source_episodes = ?, fact_count = ?, confidence = ?,
+                       namespace_slug = ?, namespace_sharing_mode = ?,
+                       app_client_name = ?, app_client_type = ?, app_client_provider = ?, app_client_external_key = ?,
+                       agent_name = ?, agent_external_key = ?,
+                       session_external_key = ?, session_kind = ?,
+                       project_slug = ?, project_display_name = ?, project_root_uri = ?,
+                       project_repo_remote = ?, project_default_branch = ?
                    WHERE id = ?""",
                 (title, summary, now, json.dumps(merged),
-                 fact_count, confidence, topic_id),
+                 fact_count, confidence,
+                 scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
+                 scope_row["app_client_name"], scope_row["app_client_type"],
+                 scope_row["app_client_provider"], scope_row["app_client_external_key"],
+                 scope_row["agent_name"], scope_row["agent_external_key"],
+                 scope_row["session_external_key"], scope_row["session_kind"],
+                 scope_row["project_slug"], scope_row["project_display_name"],
+                 scope_row["project_root_uri"], scope_row["project_repo_remote"],
+                 scope_row["project_default_branch"], topic_id),
             )
         else:
             topic_id = str(uuid.uuid4())
@@ -772,10 +1020,24 @@ def upsert_knowledge_topic(
                 conn.execute(
                     """INSERT INTO knowledge_topics
                        (id, filename, title, summary, created_at, updated_at,
-                        source_episodes, fact_count, confidence)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        source_episodes, fact_count, confidence,
+                        namespace_slug, namespace_sharing_mode,
+                        app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                        agent_name, agent_external_key,
+                        session_external_key, session_kind,
+                        project_slug, project_display_name, project_root_uri,
+                        project_repo_remote, project_default_branch)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (topic_id, filename, title, summary, now, now,
-                     json.dumps(source_episodes), fact_count, confidence),
+                     json.dumps(source_episodes), fact_count, confidence,
+                     scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
+                     scope_row["app_client_name"], scope_row["app_client_type"],
+                     scope_row["app_client_provider"], scope_row["app_client_external_key"],
+                     scope_row["agent_name"], scope_row["agent_external_key"],
+                     scope_row["session_external_key"], scope_row["session_kind"],
+                     scope_row["project_slug"], scope_row["project_display_name"],
+                     scope_row["project_root_uri"], scope_row["project_repo_remote"],
+                     scope_row["project_default_branch"]),
                 )
             except sqlite3.IntegrityError:
                 # Race: concurrent insert won — fall back to update
@@ -791,18 +1053,39 @@ def upsert_knowledge_topic(
                 conn.execute(
                     """UPDATE knowledge_topics
                        SET title = ?, summary = ?, updated_at = ?,
-                           source_episodes = ?, fact_count = ?, confidence = ?
+                           source_episodes = ?, fact_count = ?, confidence = ?,
+                           namespace_slug = ?, namespace_sharing_mode = ?,
+                           app_client_name = ?, app_client_type = ?, app_client_provider = ?, app_client_external_key = ?,
+                           agent_name = ?, agent_external_key = ?,
+                           session_external_key = ?, session_kind = ?,
+                           project_slug = ?, project_display_name = ?, project_root_uri = ?,
+                           project_repo_remote = ?, project_default_branch = ?
                        WHERE id = ?""",
                     (title, summary, now, json.dumps(merged),
-                     fact_count, confidence, topic_id),
+                     fact_count, confidence,
+                     scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
+                     scope_row["app_client_name"], scope_row["app_client_type"],
+                     scope_row["app_client_provider"], scope_row["app_client_external_key"],
+                     scope_row["agent_name"], scope_row["agent_external_key"],
+                     scope_row["session_external_key"], scope_row["session_kind"],
+                     scope_row["project_slug"], scope_row["project_display_name"],
+                     scope_row["project_root_uri"], scope_row["project_repo_remote"],
+                     scope_row["project_default_branch"], topic_id),
                 )
     return topic_id
 
 
-def get_all_knowledge_topics() -> list[dict[str, Any]]:
+def get_all_knowledge_topics(
+    scope: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    _apply_scope_filters(conditions, params, scope)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT * FROM knowledge_topics ORDER BY updated_at DESC"
+            f"SELECT * FROM knowledge_topics {where} ORDER BY updated_at DESC",
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -825,6 +1108,7 @@ def insert_knowledge_records(
     topic_id: str,
     records: list[dict[str, Any]],
     source_episodes: list[str] | None = None,
+    scope: Mapping[str, Any] | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> list[str]:
     """Insert multiple knowledge records for a topic.
@@ -838,6 +1122,7 @@ def insert_knowledge_records(
         return []
     now = _now()
     src = json.dumps(source_episodes or [])
+    scope_row = _coerce_scope_row(scope)
     ids: list[str] = []
 
     def _insert_rows(active_conn: sqlite3.Connection) -> None:
@@ -848,11 +1133,25 @@ def insert_knowledge_records(
             active_conn.execute(
                 """INSERT INTO knowledge_records
                    (id, topic_id, record_type, content, embedding_text,
-                    source_episodes, confidence, created_at, updated_at, valid_from)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    source_episodes, confidence, created_at, updated_at, valid_from,
+                    namespace_slug, namespace_sharing_mode,
+                    app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                    agent_name, agent_external_key,
+                    session_external_key, session_kind,
+                    project_slug, project_display_name, project_root_uri,
+                    project_repo_remote, project_default_branch)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (rec_id, topic_id, rec["record_type"], content,
                  rec["embedding_text"], src, rec.get("confidence", 0.8),
-                 now, now, valid_from),
+                 now, now, valid_from,
+                 scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
+                 scope_row["app_client_name"], scope_row["app_client_type"],
+                 scope_row["app_client_provider"], scope_row["app_client_external_key"],
+                 scope_row["agent_name"], scope_row["agent_external_key"],
+                 scope_row["session_external_key"], scope_row["session_kind"],
+                 scope_row["project_slug"], scope_row["project_display_name"],
+                 scope_row["project_root_uri"], scope_row["project_repo_remote"],
+                 scope_row["project_default_branch"]),
             )
             ids.append(rec_id)
 
@@ -1051,37 +1350,54 @@ def get_tag_pairs_in_set(tags: list[str], min_count: int = 2) -> list[tuple[str,
     return [(row["tag_a"], row["tag_b"], row["count"]) for row in rows]
 
 
-def get_all_active_records(include_expired: bool = False) -> list[dict[str, Any]]:
+def get_all_active_records(
+    include_expired: bool = False,
+    scope: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Return all non-deleted knowledge records.
 
     Args:
         include_expired: If False (default), exclude records where
-            valid_until is set and in the past.
+            the validity window does not include the current time.
     """
     now = _now()
+    base_conditions: list[str] = ["kr.deleted = 0"]
+    base_params: list[Any] = []
+    _apply_scope_filters(base_conditions, base_params, scope, table_alias="kr")
     with get_connection() as conn:
         if include_expired:
             rows = conn.execute(
                 """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
                    FROM knowledge_records kr
                    JOIN knowledge_topics kt ON kr.topic_id = kt.id
-                   WHERE kr.deleted = 0
+                   WHERE {where_clause}
                    ORDER BY kr.updated_at DESC"""
+                .format(where_clause=" AND ".join(base_conditions)),
+                base_params,
             ).fetchall()
         else:
+            timed_conditions = [
+                *base_conditions,
+                "(kr.valid_from IS NULL OR julianday(kr.valid_from) <= julianday(?))",
+                "(kr.valid_until IS NULL OR julianday(kr.valid_until) > julianday(?))",
+            ]
+            timed_params = [*base_params, now, now]
             rows = conn.execute(
                 """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
                    FROM knowledge_records kr
                    JOIN knowledge_topics kt ON kr.topic_id = kt.id
-                   WHERE kr.deleted = 0
-                     AND (kr.valid_until IS NULL OR kr.valid_until > ?)
-                   ORDER BY kr.updated_at DESC""",
-                (now,),
+                   WHERE {where_clause}
+                   ORDER BY kr.updated_at DESC"""
+                .format(where_clause=" AND ".join(timed_conditions)),
+                timed_params,
             ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_records_as_of(as_of: str) -> list[dict[str, Any]]:
+def get_records_as_of(
+    as_of: str,
+    scope: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Return knowledge records as they existed at a specific point in time.
 
     Returns non-deleted records that were created on or before ``as_of`` and
@@ -1090,23 +1406,30 @@ def get_records_as_of(as_of: str) -> list[dict[str, Any]]:
 
     A record is considered valid at time T when:
     - ``created_at <= T`` (the record existed)
+    - ``valid_from IS NULL OR valid_from <= T`` (it had become visible)
     - ``valid_until IS NULL OR valid_until > T`` (not yet superseded)
 
     Args:
         as_of: ISO 8601 datetime string representing the point in time.
     """
-    # Normalize to UTC so equivalent instants with different offsets compare correctly.
-    as_of_utc = parse_datetime(as_of).astimezone(timezone.utc).isoformat()
+    as_of_utc = _normalize_utc_timestamp(as_of)
+    conditions: list[str] = [
+        "kr.deleted = 0",
+        "julianday(kr.created_at) <= julianday(?)",
+        "(kr.valid_from IS NULL OR julianday(kr.valid_from) <= julianday(?))",
+        "(kr.valid_until IS NULL OR julianday(kr.valid_until) > julianday(?))",
+    ]
+    params: list[Any] = [as_of_utc, as_of_utc, as_of_utc]
+    _apply_scope_filters(conditions, params, scope, table_alias="kr")
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
                FROM knowledge_records kr
                JOIN knowledge_topics kt ON kr.topic_id = kt.id
-               WHERE kr.deleted = 0
-                 AND julianday(kr.created_at) <= julianday(?)
-                 AND (kr.valid_until IS NULL OR julianday(kr.valid_until) > julianday(?))
-               ORDER BY kr.updated_at DESC""",
-            (as_of_utc, as_of_utc),
+               WHERE {where_clause}
+               ORDER BY kr.updated_at DESC"""
+            .format(where_clause=" AND ".join(conditions)),
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1115,7 +1438,8 @@ def get_records_by_topic(topic_id: str, include_expired: bool = False) -> list[d
     """Return all active records for a specific topic.
 
     Args:
-        include_expired: If False (default), exclude temporally expired records.
+        include_expired: If False (default), exclude records outside the current
+            validity window.
     """
     with get_connection() as conn:
         if include_expired:
@@ -1127,8 +1451,9 @@ def get_records_by_topic(topic_id: str, include_expired: bool = False) -> list[d
             now = _now()
             rows = conn.execute(
                 """SELECT * FROM knowledge_records WHERE topic_id = ? AND deleted = 0
-                   AND (valid_until IS NULL OR valid_until > ?)""",
-                (topic_id, now),
+                   AND (valid_from IS NULL OR julianday(valid_from) <= julianday(?))
+                   AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))""",
+                (topic_id, now, now),
             ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1181,8 +1506,10 @@ def get_record_count(include_expired: bool = False) -> int:
             now = _now()
             row = conn.execute(
                 """SELECT COUNT(*) as cnt FROM knowledge_records
-                   WHERE deleted = 0 AND (valid_until IS NULL OR valid_until > ?)""",
-                (now,),
+                   WHERE deleted = 0
+                     AND (valid_from IS NULL OR julianday(valid_from) <= julianday(?))
+                     AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))""",
+                (now, now),
             ).fetchone()
     return row["cnt"] if row else 0
 
@@ -1243,8 +1570,8 @@ def get_active_claims(
     now = _now()
     conditions = [
         "status = ?",
-        "valid_from <= ?",
-        "(valid_until IS NULL OR valid_until > ?)",
+        "julianday(valid_from) <= julianday(?)",
+        "(valid_until IS NULL OR julianday(valid_until) > julianday(?))",
     ]
     params: list[Any] = ["active", now, now]
 
@@ -1272,11 +1599,12 @@ def get_claims_as_of(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Return claims valid at a specific point in time."""
+    as_of_utc = _normalize_utc_timestamp(as_of)
     conditions = [
-        "valid_from <= ?",
-        "(valid_until IS NULL OR valid_until > ?)",
+        "julianday(valid_from) <= julianday(?)",
+        "(valid_until IS NULL OR julianday(valid_until) > julianday(?))",
     ]
-    params: list[Any] = [as_of, as_of]
+    params: list[Any] = [as_of_utc, as_of_utc]
 
     if claim_type:
         conditions.append("claim_type = ?")
@@ -1287,13 +1615,65 @@ def get_claims_as_of(
 
     with get_connection() as conn:
         rows = conn.execute(
-            f"""SELECT * FROM claims
+            f"""SELECT c.*,
+                       CASE
+                           WHEN c.status = 'expired' THEN 'active'
+                           WHEN c.status = 'challenged'
+                                AND COALESCE(
+                                    (
+                                        SELECT MIN(julianday(ce.created_at))
+                                        FROM claim_events ce
+                                        WHERE ce.claim_id = c.id
+                                          AND ce.event_type = 'challenged'
+                                    ),
+                                    julianday(c.updated_at)
+                                ) > julianday(?) THEN 'active'
+                           ELSE c.status
+                       END AS snapshot_status
+                FROM claims c
                 WHERE {where}
-                ORDER BY updated_at DESC, id ASC
+                ORDER BY c.updated_at DESC, c.id ASC
                 LIMIT ?""",
-            params,
+            [as_of_utc, *params],
         ).fetchall()
-    return [dict(r) for r in rows]
+    claims = [dict(r) for r in rows]
+    for claim in claims:
+        claim["status"] = claim.pop("snapshot_status")
+    return claims
+
+
+def get_claim_source_scope_rows(
+    claim_ids: Sequence[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Return scope metadata for each claim based on its provenance sources."""
+    if not claim_ids:
+        return {}
+    placeholders = ",".join("?" for _ in claim_ids)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT
+                    cs.claim_id,
+                    COALESCE(e.namespace_slug, kr.namespace_slug) AS namespace_slug,
+                    COALESCE(e.project_slug, kr.project_slug) AS project_slug,
+                    COALESCE(e.app_client_name, kr.app_client_name) AS app_client_name,
+                    COALESCE(e.app_client_type, kr.app_client_type) AS app_client_type,
+                    COALESCE(e.app_client_provider, kr.app_client_provider) AS app_client_provider,
+                    COALESCE(e.app_client_external_key, kr.app_client_external_key) AS app_client_external_key,
+                    COALESCE(e.agent_name, kr.agent_name) AS agent_name,
+                    COALESCE(e.agent_external_key, kr.agent_external_key) AS agent_external_key,
+                    COALESCE(e.session_external_key, kr.session_external_key) AS session_external_key,
+                    COALESCE(e.session_kind, kr.session_kind) AS session_kind
+                FROM claim_sources cs
+                LEFT JOIN episodes e ON cs.source_episode_id = e.id
+                LEFT JOIN knowledge_records kr ON cs.source_record_id = kr.id
+                WHERE cs.claim_id IN ({placeholders})""",
+            list(claim_ids),
+        ).fetchall()
+
+    grouped: dict[str, list[dict[str, Any]]] = {str(cid): [] for cid in claim_ids}
+    for row in rows:
+        grouped[str(row["claim_id"])].append(dict(row))
+    return grouped
 
 
 def expire_claim(claim_id: str, valid_until: str | None = None) -> bool:
@@ -1316,14 +1696,14 @@ def expire_claim(claim_id: str, valid_until: str | None = None) -> bool:
 
 def count_active_challenged_claims(as_of: str | None = None) -> int:
     """Return count of challenged claims that are still temporally valid."""
-    ts = as_of or _now()
+    ts = _normalize_utc_timestamp(as_of or _now())
     with get_connection() as conn:
         row = conn.execute(
             """SELECT COUNT(*) AS c
                FROM claims
                WHERE status = 'challenged'
-                 AND valid_from <= ?
-                 AND (valid_until IS NULL OR valid_until > ?)""",
+                 AND julianday(valid_from) <= julianday(?)
+                 AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))""",
             (ts, ts),
         ).fetchone()
     return int(row["c"]) if row else 0
@@ -1468,8 +1848,8 @@ def get_claims_by_anchor(
         params.append(anchor_value)
     if not include_expired:
         now = _now()
-        conditions.append("c.valid_from <= ?")
-        conditions.append("(c.valid_until IS NULL OR c.valid_until > ?)")
+        conditions.append("julianday(c.valid_from) <= julianday(?)")
+        conditions.append("(c.valid_until IS NULL OR julianday(c.valid_until) > julianday(?))")
         params.extend([now, now])
 
     where = " AND ".join(conditions)
@@ -1515,7 +1895,7 @@ def mark_claims_challenged_by_anchors(
     if not anchor_pairs:
         return []
 
-    challenged_ts = challenged_at or _now()
+    challenged_ts = _normalize_utc_timestamp(challenged_at or _now())
     anchor_clauses = []
     anchor_params: list[Any] = []
     for anchor_type, anchor_value in anchor_pairs:
@@ -1529,10 +1909,11 @@ def mark_claims_challenged_by_anchors(
                 JOIN claim_sources cs ON cs.claim_id = c.id
                 JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
                 WHERE c.status = 'active'
-                  AND (c.valid_until IS NULL OR c.valid_until > ?)
+                  AND julianday(c.valid_from) <= julianday(?)
+                  AND (c.valid_until IS NULL OR julianday(c.valid_until) > julianday(?))
                   AND ({' OR '.join(anchor_clauses)})
                 ORDER BY c.id ASC""",
-            [challenged_ts, *anchor_params],
+            [challenged_ts, challenged_ts, *anchor_params],
         ).fetchall()
 
         claim_ids = [row["id"] for row in rows]
@@ -1543,14 +1924,202 @@ def mark_claims_challenged_by_anchors(
         conn.execute(
             f"""UPDATE claims
                 SET status = 'challenged', updated_at = ?
-                WHERE id IN ({placeholders})""",
+                WHERE id IN ({placeholders})
+                  AND status = 'active'""",
             [challenged_ts, *claim_ids],
+        )
+        # Record the transition so temporal as_of queries can reconstruct the prior active state.
+        conn.executemany(
+            """INSERT INTO claim_events
+               (id, claim_id, event_type, details, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                (
+                    str(uuid.uuid4()),
+                    claim_id,
+                    "challenged",
+                    json.dumps({"challenged_at": challenged_ts}),
+                    challenged_ts,
+                )
+                for claim_id in claim_ids
+            ],
         )
 
     return claim_ids
 
 
 # -- Consolidation Run Tracking -----------------------------------------------
+
+_SCHEDULER_ROW_ID = "global"
+
+
+def _ensure_consolidation_scheduler_row(conn: sqlite3.Connection) -> sqlite3.Row:
+    """Ensure the singleton scheduler row exists and return it."""
+    row = conn.execute(
+        "SELECT * FROM consolidation_scheduler WHERE id = ?",
+        (_SCHEDULER_ROW_ID,),
+    ).fetchone()
+    if row is not None:
+        return row
+
+    now = _now()
+    conn.execute(
+        """INSERT INTO consolidation_scheduler
+           (id, last_status, next_due_at, updated_at)
+           VALUES (?, 'idle', ?, ?)""",
+        (_SCHEDULER_ROW_ID, now, now),
+    )
+    created = conn.execute(
+        "SELECT * FROM consolidation_scheduler WHERE id = ?",
+        (_SCHEDULER_ROW_ID,),
+    ).fetchone()
+    if created is None:
+        raise RuntimeError("Failed to initialize consolidation scheduler state")
+    return created
+
+
+def get_consolidation_scheduler_state() -> dict[str, Any]:
+    """Return persisted scheduler state for automatic consolidation."""
+    with get_connection() as conn:
+        row = _ensure_consolidation_scheduler_row(conn)
+    return dict(row)
+
+
+def try_acquire_consolidation_lease(owner: str, lease_seconds: float) -> bool:
+    """Try to acquire the scheduler lease for a consolidation worker.
+
+    Returns True when the lease is acquired, False when held by another owner.
+    """
+    owner_token = owner.strip()
+    if not owner_token:
+        raise ValueError("owner must be non-empty")
+
+    lease_ttl = max(float(lease_seconds), 1.0)
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    lease_expires_at = (now_dt + timedelta(seconds=lease_ttl)).isoformat()
+
+    with get_connection() as conn:
+        _ensure_consolidation_scheduler_row(conn)
+        cursor = conn.execute(
+            """UPDATE consolidation_scheduler
+               SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
+               WHERE id = ?
+                 AND (
+                   lease_owner IS NULL
+                   OR lease_expires_at IS NULL
+                   OR julianday(lease_expires_at) <= julianday(?)
+                   OR lease_owner = ?
+                 )""",
+            (
+                owner_token,
+                lease_expires_at,
+                now,
+                _SCHEDULER_ROW_ID,
+                now,
+                owner_token,
+            ),
+        )
+    return bool(cursor.rowcount and cursor.rowcount > 0)
+
+
+def mark_consolidation_scheduler_started(
+    owner: str,
+    *,
+    trigger_reason: str,
+    utility_score: float | None = None,
+    started_at: str | None = None,
+) -> None:
+    """Persist scheduler state when a consolidation run starts."""
+    owner_token = owner.strip()
+    if not owner_token:
+        raise ValueError("owner must be non-empty")
+
+    ts = started_at or _now()
+    score_value = float(utility_score) if utility_score is not None else None
+    with get_connection() as conn:
+        _ensure_consolidation_scheduler_row(conn)
+        conn.execute(
+            """UPDATE consolidation_scheduler
+               SET last_run_started_at = ?,
+                   last_status = ?,
+                   last_error = NULL,
+                   last_trigger = ?,
+                   last_utility_score = ?,
+                   updated_at = ?
+               WHERE id = ?
+                 AND (lease_owner = ? OR lease_owner IS NULL)""",
+            (
+                ts,
+                RUN_STATUS_RUNNING,
+                trigger_reason,
+                score_value,
+                ts,
+                _SCHEDULER_ROW_ID,
+                owner_token,
+            ),
+        )
+
+
+def mark_consolidation_scheduler_finished(
+    owner: str,
+    *,
+    status: RunStatus,
+    interval_hours: float,
+    error_message: str | None = None,
+    completed_at: str | None = None,
+) -> None:
+    """Persist scheduler state and release the lease after a run completes."""
+    owner_token = owner.strip()
+    if not owner_token:
+        raise ValueError("owner must be non-empty")
+
+    completed_ts = completed_at or _now()
+    completed_dt = parse_datetime(completed_ts)
+    next_due = (completed_dt + timedelta(hours=max(float(interval_hours), 0.01))).isoformat()
+
+    with get_connection() as conn:
+        _ensure_consolidation_scheduler_row(conn)
+        conn.execute(
+            """UPDATE consolidation_scheduler
+               SET last_run_completed_at = ?,
+                   last_status = ?,
+                   last_error = ?,
+                   next_due_at = ?,
+                   lease_owner = NULL,
+                   lease_expires_at = NULL,
+                   updated_at = ?
+               WHERE id = ?
+                 AND (lease_owner = ? OR lease_owner IS NULL)""",
+            (
+                completed_ts,
+                status,
+                error_message,
+                next_due,
+                completed_ts,
+                _SCHEDULER_ROW_ID,
+                owner_token,
+            ),
+        )
+
+
+def release_consolidation_lease(owner: str) -> None:
+    """Release the scheduler lease without mutating run outcome fields."""
+    owner_token = owner.strip()
+    if not owner_token:
+        return
+    now = _now()
+    with get_connection() as conn:
+        _ensure_consolidation_scheduler_row(conn)
+        conn.execute(
+            """UPDATE consolidation_scheduler
+               SET lease_owner = NULL,
+                   lease_expires_at = NULL,
+                   updated_at = ?
+               WHERE id = ?
+                 AND lease_owner = ?""",
+            (now, _SCHEDULER_ROW_ID, owner_token),
+        )
 
 def start_consolidation_run() -> str:
     run_id = str(uuid.uuid4())
@@ -2023,6 +2592,7 @@ def search_episodes(
     tags: list[str] | None = None,
     after: str | None = None,
     before: str | None = None,
+    scope: Mapping[str, Any] | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     """Keyword/metadata search over episodes. No embeddings required.
@@ -2040,6 +2610,7 @@ def search_episodes(
     """
     conditions: list[str] = ["deleted = 0"]
     params: list[Any] = []
+    _apply_scope_filters(conditions, params, scope)
 
     if query:
         # Escape LIKE wildcards in user input to prevent unintended pattern matching

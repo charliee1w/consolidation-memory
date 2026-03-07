@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from consolidation_memory.schemas import openai_tools, dispatch_tool_call
 from consolidation_memory.types import (
     StoreResult,
+    BatchStoreResult,
     RecallResult,
     SearchResult,
     ClaimBrowseResult,
@@ -70,6 +71,16 @@ class TestSchemaStructure:
         assert "topic_filename" in required
         assert "correction" in required
 
+    def test_scope_schema_present_for_store_recall_batch_and_search(self):
+        store = next(t for t in openai_tools if t["function"]["name"] == "memory_store")
+        store_batch = next(t for t in openai_tools if t["function"]["name"] == "memory_store_batch")
+        recall = next(t for t in openai_tools if t["function"]["name"] == "memory_recall")
+        search = next(t for t in openai_tools if t["function"]["name"] == "memory_search")
+        assert "scope" in store["function"]["parameters"]["properties"]
+        assert "scope" in store_batch["function"]["parameters"]["properties"]
+        assert "scope" in recall["function"]["parameters"]["properties"]
+        assert "scope" in search["function"]["parameters"]["properties"]
+
 
 class TestDispatch:
     def test_dispatch_store(self):
@@ -82,6 +93,30 @@ class TestDispatch:
         client.store.assert_called_once_with(
             content="test", content_type="fact", tags=None, surprise=0.5,
         )
+
+    def test_dispatch_store_with_scope(self):
+        client = MagicMock()
+        client.store_with_scope.return_value = StoreResult(status="stored", id="scoped-store")
+
+        result = dispatch_tool_call(
+            client,
+            "memory_store",
+            {
+                "content": "test",
+                "content_type": "fact",
+                "scope": {"namespace": {"slug": "team-a"}},
+            },
+        )
+
+        assert result["id"] == "scoped-store"
+        client.store_with_scope.assert_called_once_with(
+            content="test",
+            content_type="fact",
+            tags=None,
+            surprise=0.5,
+            scope={"namespace": {"slug": "team-a"}},
+        )
+        client.store.assert_not_called()
 
     def test_dispatch_recall(self):
         client = MagicMock()
@@ -99,6 +134,30 @@ class TestDispatch:
             content_types=None, tags=None, after=None, before=None,
             include_expired=False, as_of=None,
         )
+
+    def test_dispatch_recall_with_scope(self):
+        client = MagicMock()
+        client.recall_with_scope.return_value = RecallResult(episodes=[], knowledge=[])
+
+        result = dispatch_tool_call(
+            client,
+            "memory_recall",
+            {"query": "test", "scope": {"project": {"slug": "repo-a"}}},
+        )
+        assert "episodes" in result
+        client.recall_with_scope.assert_called_once_with(
+            query="test",
+            n_results=10,
+            include_knowledge=True,
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            include_expired=False,
+            as_of=None,
+            scope={"project": {"slug": "repo-a"}},
+        )
+        client.recall.assert_not_called()
 
     def test_dispatch_status(self):
         client = MagicMock()
@@ -133,6 +192,55 @@ class TestDispatch:
             before=None,
             limit=20,
         )
+
+    def test_dispatch_store_batch_with_scope(self):
+        client = MagicMock()
+        client.store_batch_with_scope.return_value = BatchStoreResult(
+            status="stored",
+            stored=1,
+            duplicates=0,
+        )
+
+        result = dispatch_tool_call(
+            client,
+            "memory_store_batch",
+            {
+                "episodes": [{"content": "x"}],
+                "scope": {"namespace": {"slug": "team-a"}},
+            },
+        )
+
+        assert result["status"] == "stored"
+        client.store_batch_with_scope.assert_called_once_with(
+            episodes=[{"content": "x"}],
+            scope={"namespace": {"slug": "team-a"}},
+        )
+        client.store_batch.assert_not_called()
+
+    def test_dispatch_search_with_scope(self):
+        client = MagicMock()
+        client.search_with_scope.return_value = SearchResult(
+            episodes=[],
+            total_matches=0,
+            query="test",
+        )
+
+        result = dispatch_tool_call(
+            client,
+            "memory_search",
+            {"query": "test", "scope": {"project": {"slug": "repo-a"}}},
+        )
+        assert result["total_matches"] == 0
+        client.search_with_scope.assert_called_once_with(
+            query="test",
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            limit=20,
+            scope={"project": {"slug": "repo-a"}},
+        )
+        client.search.assert_not_called()
 
     def test_dispatch_claim_browse(self):
         client = MagicMock()

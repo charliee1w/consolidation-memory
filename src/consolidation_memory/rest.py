@@ -53,6 +53,7 @@ class StoreRequest(BaseModel):
     content_type: _ContentTypeLiteral = "exchange"
     tags: list[str] | None = None
     surprise: float = Field(default=0.5, ge=0.0, le=1.0)
+    scope: dict[str, object] | None = None
 
 
 class RecallRequest(BaseModel):
@@ -65,6 +66,7 @@ class RecallRequest(BaseModel):
     before: str | None = None
     include_expired: bool = False
     as_of: str | None = None
+    scope: dict[str, object] | None = None
 
 
 class EpisodeInput(BaseModel):
@@ -76,6 +78,7 @@ class EpisodeInput(BaseModel):
 
 class BatchStoreRequest(BaseModel):
     episodes: list[EpisodeInput] = Field(max_length=_MAX_BATCH_SIZE)
+    scope: dict[str, object] | None = None
 
 
 class SearchRequest(BaseModel):
@@ -85,6 +88,7 @@ class SearchRequest(BaseModel):
     after: str | None = None
     before: str | None = None
     limit: int = Field(default=20, ge=1, le=50)
+    scope: dict[str, object] | None = None
 
 
 class ClaimBrowseRequest(BaseModel):
@@ -174,13 +178,23 @@ def create_app() -> FastAPI:
     async def store(req: StoreRequest):
         """Store a memory episode."""
         client = _require_client()
-        result = await asyncio.to_thread(
-            client.store,
-            content=req.content,
-            content_type=req.content_type,
-            tags=req.tags,
-            surprise=req.surprise,
-        )
+        if req.scope is not None:
+            result = await asyncio.to_thread(
+                client.store_with_scope,
+                content=req.content,
+                content_type=req.content_type,
+                tags=req.tags,
+                surprise=req.surprise,
+                scope=req.scope,
+            )
+        else:
+            result = await asyncio.to_thread(
+                client.store,
+                content=req.content,
+                content_type=req.content_type,
+                tags=req.tags,
+                surprise=req.surprise,
+            )
         return dataclasses.asdict(result)
 
     @app.post("/memory/store/batch")
@@ -188,7 +202,14 @@ def create_app() -> FastAPI:
         """Store multiple memory episodes in a single operation."""
         client = _require_client()
         episodes = [ep.model_dump() for ep in req.episodes]
-        result = await asyncio.to_thread(client.store_batch, episodes=episodes)
+        if req.scope is not None:
+            result = await asyncio.to_thread(
+                client.store_batch_with_scope,
+                episodes=episodes,
+                scope=req.scope,
+            )
+        else:
+            result = await asyncio.to_thread(client.store_batch, episodes=episodes)
         return dataclasses.asdict(result)
 
     @app.post("/memory/recall")
@@ -197,18 +218,33 @@ def create_app() -> FastAPI:
         client = _require_client()
         # cast() widens list[Literal[...]] to list[str] for mypy invariance.
         ct = cast(list[str] | None, req.content_types)
-        result = await asyncio.to_thread(
-            client.recall,
-            query=req.query,
-            n_results=req.n_results,
-            include_knowledge=req.include_knowledge,
-            content_types=ct,
-            tags=req.tags,
-            after=req.after,
-            before=req.before,
-            include_expired=req.include_expired,
-            as_of=req.as_of,
-        )
+        if req.scope is not None:
+            result = await asyncio.to_thread(
+                client.recall_with_scope,
+                query=req.query,
+                n_results=req.n_results,
+                include_knowledge=req.include_knowledge,
+                content_types=ct,
+                tags=req.tags,
+                after=req.after,
+                before=req.before,
+                include_expired=req.include_expired,
+                as_of=req.as_of,
+                scope=req.scope,
+            )
+        else:
+            result = await asyncio.to_thread(
+                client.recall,
+                query=req.query,
+                n_results=req.n_results,
+                include_knowledge=req.include_knowledge,
+                content_types=ct,
+                tags=req.tags,
+                after=req.after,
+                before=req.before,
+                include_expired=req.include_expired,
+                as_of=req.as_of,
+            )
         return dataclasses.asdict(result)
 
     @app.post("/memory/search")
@@ -216,15 +252,27 @@ def create_app() -> FastAPI:
         """Keyword/metadata search over episodes (no embedding needed)."""
         client = _require_client()
         ct = cast(list[str] | None, req.content_types)
-        result = await asyncio.to_thread(
-            client.search,
-            query=req.query,
-            content_types=ct,
-            tags=req.tags,
-            after=req.after,
-            before=req.before,
-            limit=req.limit,
-        )
+        if req.scope is not None:
+            result = await asyncio.to_thread(
+                client.search_with_scope,
+                query=req.query,
+                content_types=ct,
+                tags=req.tags,
+                after=req.after,
+                before=req.before,
+                limit=req.limit,
+                scope=req.scope,
+            )
+        else:
+            result = await asyncio.to_thread(
+                client.search,
+                query=req.query,
+                content_types=ct,
+                tags=req.tags,
+                after=req.after,
+                before=req.before,
+                limit=req.limit,
+            )
         return dataclasses.asdict(result)
 
     @app.post("/memory/claims/browse")

@@ -654,12 +654,13 @@ def cmd_import(path: str):
 
     # Import knowledge records (v1.1+ exports)
     r_imported = 0
+    record_id_map: dict[str, str] = {}
     for rec in data.get("knowledge_records", []):
         if not rec.get("topic_id") or not rec.get("record_type"):
             continue
         topic_id = topic_id_map.get(str(rec["topic_id"]), rec["topic_id"])
         try:
-            insert_knowledge_records(
+            inserted_ids = insert_knowledge_records(
                 topic_id=topic_id,
                 records=[{
                     "record_type": rec["record_type"],
@@ -669,6 +670,9 @@ def cmd_import(path: str):
                 }],
                 source_episodes=parse_json_list(rec.get("source_episodes")),
             )
+            old_record_id = rec.get("id")
+            if old_record_id and inserted_ids:
+                record_id_map[str(old_record_id)] = inserted_ids[0]
             r_imported += 1
         except Exception as e:
             print(f"  Warning: Failed to import record {rec.get('id', '?')}: {e}")
@@ -683,6 +687,12 @@ def cmd_import(path: str):
         source_topic_id = remapped.get("source_topic_id")
         if source_topic_id is not None:
             remapped["source_topic_id"] = topic_id_map.get(str(source_topic_id), source_topic_id)
+        source_record_id = remapped.get("source_record_id")
+        if source_record_id is not None:
+            remapped["source_record_id"] = record_id_map.get(
+                str(source_record_id),
+                source_record_id,
+            )
         claim_sources.append(remapped)
 
     imported_claim_graph = import_claim_graph_snapshot(

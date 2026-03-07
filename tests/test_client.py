@@ -4,9 +4,11 @@ Run with: python -m pytest tests/test_client.py -v
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from tests.helpers import make_normalized_vec as _make_normalized_vec
+from tests.helpers import mock_encode as _mock_encode
 
 
 class TestClientLifecycle:
@@ -40,6 +42,229 @@ class TestClientLifecycle:
         c2.close()
 
 
+class TestClientScopeModel:
+    def test_resolve_scope_defaults_to_legacy_single_project(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch("consolidation_memory.config.get_active_project", return_value="legacy-project"):
+                resolved = client.resolve_scope()
+
+            assert resolved.namespace.slug == "default"
+            assert resolved.app_client.name == "legacy_client"
+            assert resolved.project.slug == "legacy-project"
+            assert resolved.project.display_name == "legacy-project"
+        finally:
+            client.close()
+
+    def test_resolve_scope_uses_explicit_canonical_values(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.types import (
+            AgentScope,
+            AppClientScope,
+            NamespaceScope,
+            ProjectRepoScope,
+            ScopeEnvelope,
+            SessionScope,
+        )
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            scope = ScopeEnvelope(
+                namespace=NamespaceScope(slug="shared", display_name="Shared Team", sharing_mode="team"),
+                app_client=AppClientScope(app_type="rest", name="gateway", provider="internal"),
+                agent=AgentScope(name="triage-agent", model_provider="openai", model_name="gpt-5"),
+                session=SessionScope(external_key="thread-42", session_kind="thread"),
+                project=ProjectRepoScope(slug="repo-a", repo_remote="https://example.com/repo-a.git"),
+            )
+
+            resolved = client.resolve_scope(scope)
+            assert resolved.namespace.slug == "shared"
+            assert resolved.namespace.display_name == "Shared Team"
+            assert resolved.app_client.app_type == "rest"
+            assert resolved.app_client.name == "gateway"
+            assert resolved.agent is not None
+            assert resolved.agent.name == "triage-agent"
+            assert resolved.session is not None
+            assert resolved.session.external_key == "thread-42"
+            assert resolved.project.slug == "repo-a"
+        finally:
+            client.close()
+
+    def test_store_with_scope_keeps_existing_store_behavior(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.types import StoreResult
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch.object(
+                client,
+                "_store_internal",
+                return_value=StoreResult(status="stored", id="scope-store-id"),
+            ) as mock_store:
+                result = client.store_with_scope(
+                    content="scope-aware write",
+                    content_type="fact",
+                    tags=["scope"],
+                    surprise=0.7,
+                    scope={"namespace": {"slug": "team-a"}, "project": {"slug": "repo-a"}},
+                )
+
+            assert result.status == "stored"
+            assert result.id == "scope-store-id"
+            assert mock_store.call_count == 1
+            kwargs = mock_store.call_args.kwargs
+            assert kwargs["content"] == "scope-aware write"
+            assert kwargs["content_type"] == "fact"
+            assert kwargs["tags"] == ["scope"]
+            assert kwargs["surprise"] == 0.7
+            assert kwargs["resolved_scope"].namespace.slug == "team-a"
+            assert kwargs["resolved_scope"].project.slug == "repo-a"
+        finally:
+            client.close()
+
+    def test_recall_with_scope_keeps_existing_recall_behavior(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.types import RecallResult
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch.object(
+                client,
+                "_recall_internal",
+                return_value=RecallResult(episodes=[], knowledge=[]),
+            ) as mock_recall:
+                result = client.recall_with_scope(
+                    query="scope read",
+                    n_results=3,
+                    include_knowledge=False,
+                    scope={"namespace": {"slug": "team-a"}, "session": {"external_key": "thread-1"}},
+                )
+
+            assert result.episodes == []
+            assert mock_recall.call_count == 1
+            kwargs = mock_recall.call_args.kwargs
+            assert kwargs["query"] == "scope read"
+            assert kwargs["n_results"] == 3
+            assert kwargs["include_knowledge"] is False
+            assert kwargs["resolved_scope"].namespace.slug == "team-a"
+            assert kwargs["resolved_scope"].session is not None
+            assert kwargs["resolved_scope"].session.external_key == "thread-1"
+        finally:
+            client.close()
+
+    @patch("consolidation_memory.backends.encode_query")
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_scope_isolation_and_explicit_shared_namespace(self, mock_embed_docs, mock_embed_query):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        mock_embed_docs.side_effect = _mock_encode
+        mock_embed_query.side_effect = lambda text: _mock_encode([text])
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            legacy = client.store("legacy-only memory")
+            scoped = client.store_with_scope(
+                content="team shared memory",
+                content_type="fact",
+                scope={
+                    "namespace": {"slug": "team-a", "sharing_mode": "shared"},
+                    "app_client": {"name": "app-a", "app_type": "rest"},
+                    "project": {"slug": "repo-a"},
+                },
+            )
+            assert legacy.status == "stored"
+            assert scoped.status == "stored"
+
+            legacy_recall = client.recall("memory", include_knowledge=False)
+            assert any(ep["content"] == "legacy-only memory" for ep in legacy_recall.episodes)
+            assert all(ep["content"] != "team shared memory" for ep in legacy_recall.episodes)
+
+            shared_recall = client.recall_with_scope(
+                query="memory",
+                include_knowledge=False,
+                scope={
+                    "namespace": {"slug": "team-a", "sharing_mode": "shared"},
+                    "app_client": {"name": "app-b", "app_type": "rest"},
+                    "project": {"slug": "repo-a"},
+                },
+            )
+            assert any(ep["content"] == "team shared memory" for ep in shared_recall.episodes)
+        finally:
+            client.close()
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_scope_aware_dedup_isolated_for_private_apps(self, mock_embed_docs):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        mock_embed_docs.side_effect = _mock_encode
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            first = client.store_with_scope(
+                content="same text",
+                scope={
+                    "namespace": {"slug": "team-b", "sharing_mode": "private"},
+                    "app_client": {"name": "app-a", "app_type": "rest"},
+                    "project": {"slug": "repo-b"},
+                },
+            )
+            second = client.store_with_scope(
+                content="same text",
+                scope={
+                    "namespace": {"slug": "team-b", "sharing_mode": "private"},
+                    "app_client": {"name": "app-b", "app_type": "rest"},
+                    "project": {"slug": "repo-b"},
+                },
+            )
+            assert first.status == "stored"
+            assert second.status == "stored"
+        finally:
+            client.close()
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_scope_aware_dedup_shared_namespace_cross_app(self, mock_embed_docs):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        mock_embed_docs.side_effect = _mock_encode
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            first = client.store_with_scope(
+                content="duplicate in shared namespace",
+                scope={
+                    "namespace": {"slug": "team-c", "sharing_mode": "shared"},
+                    "app_client": {"name": "app-a", "app_type": "rest"},
+                    "project": {"slug": "repo-c"},
+                },
+            )
+            second = client.store_with_scope(
+                content="duplicate in shared namespace",
+                scope={
+                    "namespace": {"slug": "team-c", "sharing_mode": "shared"},
+                    "app_client": {"name": "app-b", "app_type": "rest"},
+                    "project": {"slug": "repo-c"},
+                },
+            )
+            assert first.status == "stored"
+            assert second.status == "duplicate_detected"
+        finally:
+            client.close()
+
+
 class TestClientStore:
     @patch("consolidation_memory.backends.encode_documents")
     def test_basic_store(self, mock_embed):
@@ -59,6 +284,85 @@ class TestClientStore:
         assert result.tags == ["python"]
 
         client.close()
+
+
+class TestClientAutoConsolidation:
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_store_triggers_auto_consolidation_tick(self, mock_embed):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            vec = _make_normalized_vec(seed=42)
+            mock_embed.return_value = vec.reshape(1, -1)
+            with patch.object(client, "_maybe_auto_consolidate", return_value=False) as mock_tick:
+                result = client.store("auto consolidate trigger", content_type="fact")
+
+            assert result.status == "stored"
+            mock_tick.assert_called_once_with(trigger_source="store")
+        finally:
+            client.close()
+
+    def test_maybe_auto_consolidate_submits_when_due_and_lease_acquired(self):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            client._auto_consolidate_enabled = True
+            fake_future = MagicMock()
+            fake_pool = MagicMock()
+            fake_pool.submit.return_value = fake_future
+            client._consolidation_pool = fake_pool
+
+            past_due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+            utility_state = {
+                "score": 0.95,
+                "normalized_signals": {
+                    "unconsolidated_backlog": 0.0,
+                    "recall_miss_fallback": 0.0,
+                    "contradiction_spike": 0.0,
+                    "challenged_claim_backlog": 0.0,
+                },
+                "weighted_components": {
+                    "unconsolidated_backlog": 0.0,
+                    "recall_miss_fallback": 0.0,
+                    "contradiction_spike": 0.0,
+                    "challenged_claim_backlog": 0.0,
+                },
+                "raw_signals": {
+                    "unconsolidated_backlog": 0,
+                    "recall_miss_count": 0,
+                    "recall_fallback_count": 0,
+                    "contradiction_count": 0,
+                    "challenged_claim_backlog": 0,
+                    "lookback_seconds": 3600.0,
+                },
+            }
+
+            with (
+                patch.object(client, "_compute_consolidation_utility", return_value=utility_state),
+                patch(
+                    "consolidation_memory.database.get_consolidation_scheduler_state",
+                    return_value={"next_due_at": past_due},
+                ),
+                patch(
+                    "consolidation_memory.database.try_acquire_consolidation_lease",
+                    return_value=True,
+                ),
+                patch("consolidation_memory.database.mark_consolidation_scheduler_started") as mock_started,
+            ):
+                started = client._maybe_auto_consolidate(trigger_source="store")
+
+            assert started is True
+            assert fake_pool.submit.call_count == 1
+            assert fake_future.add_done_callback.call_count == 1
+            assert mock_started.call_count == 1
+        finally:
+            client.close()
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_surprise_clamping(self, mock_embed):

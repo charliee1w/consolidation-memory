@@ -47,24 +47,37 @@ def invalidate() -> None:
         _version += 1
 
 
-def _is_record_expired(record: dict) -> bool:
-    """Check if a record has a valid_until date in the past."""
-    valid_until = record.get("valid_until")
-    if not valid_until:
-        return False
-    if isinstance(valid_until, str):
+def _normalize_datetime(value: str | datetime | None) -> datetime | None:
+    """Parse a datetime-like value into UTC, returning None on invalid input."""
+    if not value:
+        return None
+    if isinstance(value, str):
         try:
-            valid_until = parse_datetime(valid_until)
+            value = parse_datetime(value)
         except (ValueError, TypeError):
-            return False
-    elif valid_until.tzinfo is None:
-        valid_until = valid_until.replace(tzinfo=timezone.utc)
-    return valid_until < datetime.now(timezone.utc)
+            return None
+    elif value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _is_record_current(record: dict, reference_time: datetime | None = None) -> bool:
+    """Check whether a record's validity window includes the reference time."""
+    now = reference_time or datetime.now(timezone.utc)
+    valid_from = _normalize_datetime(record.get("valid_from"))
+    if valid_from and valid_from > now:
+        return False
+
+    valid_until = _normalize_datetime(record.get("valid_until"))
+    if valid_until and valid_until <= now:
+        return False
+
+    return True
 
 
 def _filter_unexpired(records: list[dict], vecs: np.ndarray) -> tuple[list[dict], np.ndarray | None]:
-    """Filter expired records and their corresponding vectors."""
-    mask = [not _is_record_expired(r) for r in records]
+    """Filter records whose validity window does not include the current time."""
+    mask = [_is_record_current(r) for r in records]
     filtered_records = [r for r, keep in zip(records, mask) if keep]
     if not filtered_records:
         return [], None

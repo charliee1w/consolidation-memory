@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.13.2 - 2026-03-08
+
+Public-readiness stabilization release with a full-system snapshot for external users.
+
+### Highlights
+
+- Completed release-readiness validation on current tree:
+  - `pytest -q`: 679 passed
+  - `ruff check .`: passed
+  - `mypy src/consolidation_memory/`: passed (non-failing annotation notes only)
+  - `python scripts/smoke_builder_base.py`: passed
+  - `python scripts/verify_release_gates.py --novelty-result ... --scope-use-case "Drift-aware debugging memory"`: passed all gates
+- Fixed Windows CP1252 console compatibility in `consolidation-memory test` by falling back to ASCII status markers when Unicode symbols are not encodable.
+- Added regression coverage for CP1252 stdout behavior in CLI tests.
+- Resolved Windows typing friction in vector-store file locking by using typed `getattr` bindings for `msvcrt` lock members.
+- Eliminated local ACL warning noise in test/lint workflows by pinning pytest cache/temp paths to repo-local directories and ignoring locked novelty runtime folders.
+
+### Full System Snapshot (OG -> Current)
+
+- **Core memory lifecycle**
+  - Episode store/recall/forget with SQLite + FAISS and adaptive relevance scoring (semantic + recency + access/surprise signals).
+  - Store-time deduplication and durable export/import pipelines.
+  - Multi-project partitioning plus scoped shared-memory foundations (schema v13 scope columns and scope-aware operations).
+- **Trust and temporal reasoning**
+  - Structured knowledge records (fact/solution/preference/procedure) with markdown topic rendering.
+  - Temporal validity windows (`valid_from`/`valid_until`) and `as_of` recall for prior-belief reconstruction.
+  - Contradiction detection/audit, provenance links, claim graph, and drift-aware claim challenge flows.
+- **Retrieval quality and scale**
+  - Hybrid semantic + BM25 recall pipeline with tag co-occurrence boost and recall dedup controls.
+  - FAISS tombstones + compaction and auto-upgrade path to IVF for larger corpora.
+  - Canonical query service and shared query envelopes across transports.
+- **Interfaces and integration**
+  - Python client, MCP tools, REST API, CLI workflows, and OpenAI-function schemas with parity-focused validation.
+  - Optional dashboard and benchmark harnesses for operational visibility and comparative quality measurement.
+- **Release and operations maturity**
+  - Fail-closed release gates with novelty evidence checks, recency requirements, and scope-alignment enforcement.
+  - Nightly novelty workflows, builder smoke baseline, and expanded regression coverage across core, API, and trust surfaces.
+
 ## 0.13.1 - 2026-03-08
 
 Canonical first public release for external builders.

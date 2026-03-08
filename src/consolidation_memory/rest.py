@@ -45,7 +45,7 @@ _ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference"]
 # Maximum number of episodes in a single batch store request.
 _MAX_BATCH_SIZE = 100
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
+    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "180")
 )
 _REST_AUTH_TOKEN_ENV = "CONSOLIDATION_MEMORY_REST_AUTH_TOKEN"  # nosec B105
 _REST_ALLOW_PUBLIC_BIND_ENV = "CONSOLIDATION_MEMORY_REST_ALLOW_PUBLIC_BIND"
@@ -54,7 +54,7 @@ _AUTH_EXEMPT_PATHS = frozenset({"/health"})
 
 def _drift_timeout_seconds() -> float:
     configured = _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS
-    return configured if configured > 0 else 90.0
+    return configured if configured > 0 else 180.0
 
 
 def _truthy_env(name: str) -> bool:

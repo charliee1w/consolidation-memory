@@ -31,7 +31,7 @@ _client_lock = threading.Lock()
 
 _MAX_BATCH_SIZE = 100
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
+    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "180")
 )
 _MEMORY_RECALL_TIMEOUT_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS", "90")
@@ -48,7 +48,7 @@ _CLIENT_INIT_TIMEOUT_SECONDS = float(
 
 def _drift_timeout_seconds() -> float:
     configured = _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS
-    return configured if configured > 0 else 90.0
+    return configured if configured > 0 else 180.0
 
 
 def _recall_timeout_seconds() -> float:

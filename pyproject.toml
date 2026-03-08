@@ -82,7 +82,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests"]
+pythonpath = ["src", "tests"]
 addopts = ["--basetemp=.pytest_tmp"]
 cache_dir = ".pytest_cache_local"
 filterwarnings = [

@@ -116,19 +116,22 @@ class TestMCPServerLifecycle:
         finally:
             server._client = original_client
 
-    def test_get_client_with_timeout_raises_timeout_error(self):
+    def test_get_client_with_timeout_returns_client_even_if_slow(self):
         import consolidation_memory.server as server
+
+        slow_client = MagicMock()
 
         def _slow_get_client():
             time.sleep(0.05)
-            return MagicMock()
+            return slow_client
 
         with (
             patch("consolidation_memory.server._get_client", side_effect=_slow_get_client),
             patch("consolidation_memory.server._CLIENT_INIT_TIMEOUT_SECONDS", 0.01),
         ):
-            with pytest.raises(TimeoutError, match="MemoryClient initialization timed out"):
-                asyncio.run(server._get_client_with_timeout())
+            resolved = asyncio.run(server._get_client_with_timeout())
+
+        assert resolved is slow_client
 
 
 class TestMCPRecallTool:
@@ -163,22 +166,18 @@ class TestMCPRecallTool:
             scope={"project": {"slug": "repo-a"}},
         )
 
-    def test_memory_recall_returns_init_timeout_error_json(self):
+    def test_memory_recall_returns_client_init_error_json(self):
         from consolidation_memory.server import memory_recall
 
-        def _slow_get_client():
-            time.sleep(0.05)
-            return MagicMock()
-
-        with (
-            patch("consolidation_memory.server._get_client", side_effect=_slow_get_client),
-            patch("consolidation_memory.server._CLIENT_INIT_TIMEOUT_SECONDS", 0.01),
+        with patch(
+            "consolidation_memory.server._get_client",
+            side_effect=RuntimeError("client init failed"),
         ):
             output = asyncio.run(memory_recall(query="test"))
 
         data = json.loads(output)
         assert "error" in data
-        assert "MemoryClient initialization timed out" in data["error"]
+        assert "client init failed" in data["error"]
 
 
 class TestMCPClaimTools:

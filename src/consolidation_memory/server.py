@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
@@ -33,7 +34,9 @@ _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
 )
 _CLIENT_INIT_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "20")
+    # Cold-start imports (faiss/embedding deps) can exceed 20s on Windows;
+    # keep a conservative default to avoid first-call MCP timeouts.
+    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "60")
 )
 
 
@@ -44,7 +47,7 @@ def _drift_timeout_seconds() -> float:
 
 def _client_init_timeout_seconds() -> float:
     configured = _CLIENT_INIT_TIMEOUT_SECONDS
-    return configured if configured > 0 else 20.0
+    return configured if configured > 0 else 60.0
 
 
 def _get_client():
@@ -69,17 +72,17 @@ def _get_client():
 
 async def _get_client_with_timeout():
     timeout_seconds = _client_init_timeout_seconds()
-    try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(_get_client),
-            timeout=timeout_seconds,
+    started = time.monotonic()
+    client = await asyncio.to_thread(_get_client)
+    elapsed = time.monotonic() - started
+    if elapsed > timeout_seconds:
+        logger.warning(
+            "MemoryClient initialization exceeded timeout budget "
+            "(%.2fs > %.2fs) but completed successfully",
+            elapsed,
+            timeout_seconds,
         )
-    except asyncio.TimeoutError as exc:
-        raise TimeoutError(
-            f"MemoryClient initialization timed out after {timeout_seconds:g}s. "
-            "Retry in a few seconds or increase "
-            "CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS."
-        ) from exc
+    return client
 
 
 @asynccontextmanager

@@ -7,10 +7,7 @@
 
 Local-first persistent memory for coding agents.
 
-Project policies:
-- [Security](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
+
 
 `consolidation-memory` stores episodic events, consolidates them into structured knowledge, and exposes a trust-aware retrieval stack (temporal recall, contradiction tracking, claim provenance, and drift challenge workflows).
 
@@ -255,6 +252,9 @@ mypy src/consolidation_memory/
 - Issues: [GitHub Issues](https://github.com/charliee1w/consolidation-memory/issues)
 - Discussions: [GitHub Discussions](https://github.com/charliee1w/consolidation-memory/discussions)
 
-## License
-
+## License, Etc.
+Project policies:
+- [Security](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
 MIT

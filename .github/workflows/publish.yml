@@ -67,13 +67,77 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify tag version matches pyproject.toml
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          expected = tag.removeprefix("v")
+          pyproject_text = Path("pyproject.toml").read_text(encoding="utf-8")
+          match = re.search(r'^version\s*=\s*"(.+?)"', pyproject_text, re.MULTILINE)
+          if not match:
+              print("Could not find version in pyproject.toml")
+              sys.exit(1)
+          actual = match.group(1)
+          if actual != expected:
+              print(f"Tag/version mismatch: tag={expected}, pyproject={actual}")
+              sys.exit(1)
+          print(f"Verified version sync: {actual}")
+          PY
+
+      - name: Check if version exists on PyPI
+        id: check-version
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          package = "consolidation-memory"
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          output_path = os.environ["GITHUB_OUTPUT"]
+          url = f"https://pypi.org/pypi/{package}/json"
+          print(f"Checking if {package}=={version} exists on PyPI...")
+
+          exists = False
+          try:
+              with urllib.request.urlopen(url, timeout=15) as response:
+                  payload = json.load(response)
+              releases = payload.get("releases", {})
+              exists = version in releases
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  raise
+
+          with open(output_path, "a", encoding="utf-8") as output_file:
+              output_file.write(f"publish={'false' if exists else 'true'}\n")
+
+          if exists:
+              print(f"Version {version} already exists on PyPI; publish step will be skipped.")
+          else:
+              print(f"Version {version} does not exist on PyPI; publish will proceed.")
+          PY
+
       - name: Download build artifacts
+        if: steps.check-version.outputs.publish == 'true'
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
       - name: Publish to PyPI
+        if: steps.check-version.outputs.publish == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
 
   release:

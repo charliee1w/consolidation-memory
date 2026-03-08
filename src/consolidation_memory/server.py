@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
@@ -22,8 +23,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("consolidation_memory")
 
-# ── Global client initialized in lifespan ─────────────────────────────────
+# ── Global client initialized lazily on first tool call ───────────────────
 _client = None
+_client_lock = threading.Lock()
 
 
 _MAX_BATCH_SIZE = 100
@@ -38,30 +40,35 @@ def _drift_timeout_seconds() -> float:
 
 
 def _get_client():
-    """Return the global client or raise if not initialized."""
+    """Return the global client, creating it on first access."""
+    global _client
+
     client = _client
-    if client is None:
-        raise RuntimeError("Memory system not initialized")
+    if client is not None:
+        return client
+
+    with _client_lock:
+        client = _client
+        if client is None:
+            from consolidation_memory.client import MemoryClient
+
+            logger.info("Initializing MemoryClient...")
+            client = MemoryClient()
+            _client = client
+
     return client
 
 
 @asynccontextmanager
 async def lifespan(server: FastMCP):
-    """Initialize MemoryClient on startup, shut down on exit."""
+    """Log startup metadata and close any initialized client on shutdown."""
     global _client
 
     from consolidation_memory import __version__
-    from consolidation_memory.client import MemoryClient
 
     logger.info("Starting consolidation_memory MCP server v%s...", __version__)
     from consolidation_memory.config import get_active_project
     logger.info("Active project: %s", get_active_project())
-
-    try:
-        _client = MemoryClient()
-    except Exception:
-        logger.exception("Failed to initialize MemoryClient")
-        _client = None
 
     yield
 

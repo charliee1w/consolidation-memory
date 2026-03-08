@@ -82,6 +82,39 @@ class TestMCPDetectDriftTool:
         assert "timed out after" in data["error"]
 
 
+class TestMCPServerLifecycle:
+    def test_get_client_initializes_lazily(self):
+        import consolidation_memory.server as server
+
+        original_client = server._client
+        try:
+            server._client = None
+            mock_client = MagicMock()
+            with patch("consolidation_memory.client.MemoryClient", return_value=mock_client):
+                resolved = server._get_client()
+            assert resolved is mock_client
+            assert server._client is mock_client
+        finally:
+            server._client = original_client
+
+    def test_lifespan_does_not_eagerly_construct_client(self):
+        import consolidation_memory.server as server
+
+        original_client = server._client
+        try:
+            server._client = None
+
+            async def _enter_and_exit_lifespan():
+                async with server.lifespan(server.mcp):
+                    assert server._client is None
+
+            with patch("consolidation_memory.client.MemoryClient") as mock_ctor:
+                asyncio.run(_enter_and_exit_lifespan())
+                mock_ctor.assert_not_called()
+        finally:
+            server._client = original_client
+
+
 class TestMCPRecallTool:
     def test_memory_recall_calls_canonical_query_service(self):
         from consolidation_memory.server import memory_recall

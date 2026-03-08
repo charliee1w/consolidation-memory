@@ -9,7 +9,7 @@ Local-first persistent memory for coding agents.
 
 `consolidation-memory` stores episodic events, consolidates them into structured knowledge, and exposes a trust-aware retrieval stack (temporal recall, contradiction tracking, claim provenance, and drift challenge workflows).
 
-## What Ships Today
+## What It Is
 
 - Episode storage with semantic dedup and FAISS indexing.
 - Hybrid recall across episodes, knowledge topics, structured records, and claims.

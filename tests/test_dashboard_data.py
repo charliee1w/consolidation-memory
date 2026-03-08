@@ -6,6 +6,7 @@ import pytest
 
 from consolidation_memory.database import (
     ensure_schema,
+    get_connection,
     insert_episode,
     upsert_knowledge_topic,
     insert_knowledge_records,
@@ -35,6 +36,23 @@ class TestGetEpisodes:
         assert episodes[0]["id"] == id3
         assert episodes[1]["id"] == id2
         assert episodes[2]["id"] == id1
+
+    def test_created_at_ties_are_stable_by_insertion_order(self, data):
+        ensure_schema()
+        id1 = insert_episode("first episode", content_type="fact")
+        id2 = insert_episode("second episode", content_type="exchange")
+        id3 = insert_episode("third episode", content_type="solution")
+        tied_timestamp = "2026-03-08T00:00:00+00:00"
+
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE episodes SET created_at = ?, updated_at = ? WHERE id IN (?, ?, ?)",
+                (tied_timestamp, tied_timestamp, id1, id2, id3),
+            )
+
+        episodes = data.get_episodes()
+        assert len(episodes) == 3
+        assert [episodes[0]["id"], episodes[1]["id"], episodes[2]["id"]] == [id3, id2, id1]
 
     def test_returns_expected_fields(self, data):
         insert_episode(

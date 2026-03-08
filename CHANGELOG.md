@@ -16,6 +16,8 @@ Public-readiness stabilization release with a full-system snapshot for external 
 - Added regression coverage for CP1252 stdout behavior in CLI tests.
 - Resolved Windows typing friction in vector-store file locking by using typed `getattr` bindings for `msvcrt` lock members.
 - Eliminated local ACL warning noise in test/lint workflows by pinning pytest cache/temp paths to repo-local directories and ignoring locked novelty runtime folders.
+- Fixed dashboard episode ordering nondeterminism when `created_at` values tie by adding deterministic SQL tie-break ordering.
+- Added regression coverage for tied `created_at` ordering in `tests/test_dashboard_data.py`.
 
 ### Full System Snapshot (OG -> Current)
 

@@ -46,11 +46,17 @@ class DashboardData:
             params.append(content_type)
 
         where = " AND ".join(conditions)
+        # Use rowid as a deterministic tie-breaker for equal timestamps/scores.
+        if sort_by == "created_at":
+            order_by = f"{sort_by} {direction}, rowid {direction}"
+        else:
+            order_by = f"{sort_by} {direction}, created_at DESC, rowid DESC"
+
         sql = (
             f"SELECT id, content, content_type, tags, surprise_score, "
             f"created_at, consolidated "
             f"FROM episodes WHERE {where} "
-            f"ORDER BY {sort_by} {direction} LIMIT ?"
+            f"ORDER BY {order_by} LIMIT ?"
         )
         params.append(limit)
 

@@ -343,7 +343,7 @@ def close_thread_local_connection() -> None:
     if conn is not None:
         try:
             conn.close()
-        except Exception:
+        except Exception:  # nosec B110
             pass
         with _conn_list_lock:
             try:
@@ -361,7 +361,7 @@ def close_all_connections() -> None:
         for conn in _all_connections:
             try:
                 conn.close()
-            except Exception:
+            except Exception:  # nosec B110
                 pass
         _all_connections.clear()
     # Also clear this thread's cached reference
@@ -390,7 +390,7 @@ def get_connection():
         if depth == 0:
             try:
                 conn.rollback()
-            except Exception:
+            except Exception:  # nosec B110
                 pass
         raise
     finally:
@@ -611,7 +611,7 @@ def _apply_scope_migration(conn: sqlite3.Connection) -> None:
                             THEN ?
                             ELSE project_slug
                         END
-                    )""",
+                    )""",  # nosec B608
             (
                 _DEFAULT_NAMESPACE_SLUG,
                 _DEFAULT_NAMESPACE_SHARING_MODE,
@@ -709,7 +709,7 @@ def get_episodes_batch(episode_ids: list[str]) -> dict[str, dict[str, Any]]:
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in episode_ids)
         rows = conn.execute(
-            f"SELECT * FROM episodes WHERE id IN ({placeholders}) AND deleted = 0",
+            f"SELECT * FROM episodes WHERE id IN ({placeholders}) AND deleted = 0",  # nosec B608
             episode_ids,
         ).fetchall()
     return {row["id"]: dict(row) for row in rows}
@@ -731,9 +731,10 @@ def increment_access(episode_ids: list[str]) -> None:
         return
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in episode_ids)
+        query = f"""UPDATE episodes SET access_count = access_count + 1,
+            updated_at = ? WHERE id IN ({placeholders})"""  # nosec B608
         conn.execute(
-            f"""UPDATE episodes SET access_count = access_count + 1,
-                updated_at = ? WHERE id IN ({placeholders})""",
+            query,
             [_now()] + episode_ids,
         )
 
@@ -744,10 +745,11 @@ def mark_consolidated(episode_ids: list[str], topic_filename: str) -> None:
     now = _now()
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in episode_ids)
+        query = f"""UPDATE episodes SET consolidated = 1,
+            consolidated_at = ?, consolidated_to = ?, updated_at = ?
+            WHERE id IN ({placeholders})"""  # nosec B608
         conn.execute(
-            f"""UPDATE episodes SET consolidated = 1,
-                consolidated_at = ?, consolidated_to = ?, updated_at = ?
-                WHERE id IN ({placeholders})""",
+            query,
             [now, topic_filename, now] + episode_ids,
         )
 
@@ -758,9 +760,10 @@ def mark_pruned(episode_ids: list[str]) -> None:
     now = _now()
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in episode_ids)
+        query = f"""UPDATE episodes SET consolidated = 2, updated_at = ?
+            WHERE id IN ({placeholders}) AND consolidated = 1"""  # nosec B608
         conn.execute(
-            f"""UPDATE episodes SET consolidated = 2, updated_at = ?
-                WHERE id IN ({placeholders}) AND consolidated = 1""",
+            query,
             [now] + episode_ids,
         )
 
@@ -1086,7 +1089,7 @@ def get_all_knowledge_topics(
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT * FROM knowledge_topics {where} ORDER BY updated_at DESC",
+            f"SELECT * FROM knowledge_topics {where} ORDER BY updated_at DESC",  # nosec B608
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1097,9 +1100,10 @@ def increment_topic_access(filenames: list[str]) -> None:
         return
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in filenames)
+        query = f"""UPDATE knowledge_topics SET access_count = access_count + 1,
+            updated_at = ? WHERE filename IN ({placeholders})"""  # nosec B608
         conn.execute(
-            f"""UPDATE knowledge_topics SET access_count = access_count + 1,
-                updated_at = ? WHERE filename IN ({placeholders})""",
+            query,
             [_now()] + filenames,
         )
 
@@ -1306,16 +1310,17 @@ def get_cooccurring_tags(tags: list[str], min_count: int = 2) -> dict[str, int]:
     with get_connection() as conn:
         placeholders_a = ",".join("?" for _ in tags)
         placeholders_b = ",".join("?" for _ in tags)
+        query = f"""SELECT tag_b as tag, SUM(count) as total
+            FROM tag_cooccurrence
+            WHERE tag_a IN ({placeholders_a}) AND count >= ?
+            GROUP BY tag_b
+            UNION ALL
+            SELECT tag_a as tag, SUM(count) as total
+            FROM tag_cooccurrence
+            WHERE tag_b IN ({placeholders_b}) AND count >= ?
+            GROUP BY tag_a"""  # nosec B608
         rows = conn.execute(
-            f"""SELECT tag_b as tag, SUM(count) as total
-                FROM tag_cooccurrence
-                WHERE tag_a IN ({placeholders_a}) AND count >= ?
-                GROUP BY tag_b
-                UNION ALL
-                SELECT tag_a as tag, SUM(count) as total
-                FROM tag_cooccurrence
-                WHERE tag_b IN ({placeholders_b}) AND count >= ?
-                GROUP BY tag_a""",
+            query,
             [*tags, min_count, *tags, min_count],
         ).fetchall()
 
@@ -1342,11 +1347,12 @@ def get_tag_pairs_in_set(tags: list[str], min_count: int = 2) -> list[tuple[str,
     with get_connection() as conn:
         placeholders_a = ",".join("?" for _ in tags)
         placeholders_b = ",".join("?" for _ in tags)
+        query = f"""SELECT tag_a, tag_b, count FROM tag_cooccurrence
+            WHERE tag_a IN ({placeholders_a})
+              AND tag_b IN ({placeholders_b})
+              AND count >= ?"""  # nosec B608
         rows = conn.execute(
-            f"""SELECT tag_a, tag_b, count FROM tag_cooccurrence
-                WHERE tag_a IN ({placeholders_a})
-                  AND tag_b IN ({placeholders_b})
-                  AND count >= ?""",
+            query,
             [*tags, *tags, min_count],
         ).fetchall()
     return [(row["tag_a"], row["tag_b"], row["count"]) for row in rows]
@@ -1368,13 +1374,14 @@ def get_all_active_records(
     _apply_scope_filters(base_conditions, base_params, scope, table_alias="kr")
     with get_connection() as conn:
         if include_expired:
+            where_clause = " AND ".join(base_conditions)
+            query = f"""SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
+               FROM knowledge_records kr
+               JOIN knowledge_topics kt ON kr.topic_id = kt.id
+               WHERE {where_clause}
+               ORDER BY kr.updated_at DESC"""  # nosec B608
             rows = conn.execute(
-                """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
-                   FROM knowledge_records kr
-                   JOIN knowledge_topics kt ON kr.topic_id = kt.id
-                   WHERE {where_clause}
-                   ORDER BY kr.updated_at DESC"""
-                .format(where_clause=" AND ".join(base_conditions)),
+                query,
                 base_params,
             ).fetchall()
         else:
@@ -1384,13 +1391,14 @@ def get_all_active_records(
                 "(kr.valid_until IS NULL OR julianday(kr.valid_until) > julianday(?))",
             ]
             timed_params = [*base_params, now, now]
+            where_clause = " AND ".join(timed_conditions)
+            query = f"""SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
+               FROM knowledge_records kr
+               JOIN knowledge_topics kt ON kr.topic_id = kt.id
+               WHERE {where_clause}
+               ORDER BY kr.updated_at DESC"""  # nosec B608
             rows = conn.execute(
-                """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
-                   FROM knowledge_records kr
-                   JOIN knowledge_topics kt ON kr.topic_id = kt.id
-                   WHERE {where_clause}
-                   ORDER BY kr.updated_at DESC"""
-                .format(where_clause=" AND ".join(timed_conditions)),
+                query,
                 timed_params,
             ).fetchall()
     return [dict(r) for r in rows]
@@ -1423,14 +1431,15 @@ def get_records_as_of(
     ]
     params: list[Any] = [as_of_utc, as_of_utc, as_of_utc]
     _apply_scope_filters(conditions, params, scope, table_alias="kr")
+    where_clause = " AND ".join(conditions)
+    query = f"""SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
+       FROM knowledge_records kr
+       JOIN knowledge_topics kt ON kr.topic_id = kt.id
+       WHERE {where_clause}
+       ORDER BY kr.updated_at DESC"""  # nosec B608
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
-               FROM knowledge_records kr
-               JOIN knowledge_topics kt ON kr.topic_id = kt.id
-               WHERE {where_clause}
-               ORDER BY kr.updated_at DESC"""
-            .format(where_clause=" AND ".join(conditions)),
+            query,
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1478,7 +1487,7 @@ def soft_delete_records_by_ids(record_ids: list[str]) -> int:
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in record_ids)
         cursor = conn.execute(
-            f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",
+            f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",  # nosec B608
             [now] + record_ids,
         )
     return int(cursor.rowcount)
@@ -1490,9 +1499,10 @@ def increment_record_access(record_ids: list[str]) -> None:
         return
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in record_ids)
+        query = f"""UPDATE knowledge_records SET access_count = access_count + 1,
+            updated_at = ? WHERE id IN ({placeholders})"""  # nosec B608
         conn.execute(
-            f"""UPDATE knowledge_records SET access_count = access_count + 1,
-                updated_at = ? WHERE id IN ({placeholders})""",
+            query,
             [_now()] + record_ids,
         )
 
@@ -1583,13 +1593,14 @@ def get_active_claims(
 
     where = " AND ".join(conditions)
     params.append(limit)
+    query = f"""SELECT * FROM claims
+        WHERE {where}
+        ORDER BY updated_at DESC, id ASC
+        LIMIT ?"""  # nosec B608
 
     with get_connection() as conn:
         rows = conn.execute(
-            f"""SELECT * FROM claims
-                WHERE {where}
-                ORDER BY updated_at DESC, id ASC
-                LIMIT ?""",
+            query,
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1614,28 +1625,29 @@ def get_claims_as_of(
 
     where = " AND ".join(conditions)
     params.append(limit)
+    query = f"""SELECT c.*,
+                   CASE
+                       WHEN c.status = 'expired' THEN 'active'
+                       WHEN c.status = 'challenged'
+                            AND COALESCE(
+                                (
+                                    SELECT MIN(julianday(ce.created_at))
+                                    FROM claim_events ce
+                                    WHERE ce.claim_id = c.id
+                                      AND ce.event_type = 'challenged'
+                                ),
+                                julianday(c.updated_at)
+                            ) > julianday(?) THEN 'active'
+                       ELSE c.status
+                   END AS snapshot_status
+            FROM claims c
+            WHERE {where}
+            ORDER BY c.updated_at DESC, c.id ASC
+            LIMIT ?"""  # nosec B608
 
     with get_connection() as conn:
         rows = conn.execute(
-            f"""SELECT c.*,
-                       CASE
-                           WHEN c.status = 'expired' THEN 'active'
-                           WHEN c.status = 'challenged'
-                                AND COALESCE(
-                                    (
-                                        SELECT MIN(julianday(ce.created_at))
-                                        FROM claim_events ce
-                                        WHERE ce.claim_id = c.id
-                                          AND ce.event_type = 'challenged'
-                                    ),
-                                    julianday(c.updated_at)
-                                ) > julianday(?) THEN 'active'
-                           ELSE c.status
-                       END AS snapshot_status
-                FROM claims c
-                WHERE {where}
-                ORDER BY c.updated_at DESC, c.id ASC
-                LIMIT ?""",
+            query,
             [as_of_utc, *params],
         ).fetchall()
     claims = [dict(r) for r in rows]
@@ -1651,24 +1663,25 @@ def get_claim_source_scope_rows(
     if not claim_ids:
         return {}
     placeholders = ",".join("?" for _ in claim_ids)
+    query = f"""SELECT
+                cs.claim_id,
+                COALESCE(e.namespace_slug, kr.namespace_slug) AS namespace_slug,
+                COALESCE(e.project_slug, kr.project_slug) AS project_slug,
+                COALESCE(e.app_client_name, kr.app_client_name) AS app_client_name,
+                COALESCE(e.app_client_type, kr.app_client_type) AS app_client_type,
+                COALESCE(e.app_client_provider, kr.app_client_provider) AS app_client_provider,
+                COALESCE(e.app_client_external_key, kr.app_client_external_key) AS app_client_external_key,
+                COALESCE(e.agent_name, kr.agent_name) AS agent_name,
+                COALESCE(e.agent_external_key, kr.agent_external_key) AS agent_external_key,
+                COALESCE(e.session_external_key, kr.session_external_key) AS session_external_key,
+                COALESCE(e.session_kind, kr.session_kind) AS session_kind
+            FROM claim_sources cs
+            LEFT JOIN episodes e ON cs.source_episode_id = e.id
+            LEFT JOIN knowledge_records kr ON cs.source_record_id = kr.id
+            WHERE cs.claim_id IN ({placeholders})"""  # nosec B608
     with get_connection() as conn:
         rows = conn.execute(
-            f"""SELECT
-                    cs.claim_id,
-                    COALESCE(e.namespace_slug, kr.namespace_slug) AS namespace_slug,
-                    COALESCE(e.project_slug, kr.project_slug) AS project_slug,
-                    COALESCE(e.app_client_name, kr.app_client_name) AS app_client_name,
-                    COALESCE(e.app_client_type, kr.app_client_type) AS app_client_type,
-                    COALESCE(e.app_client_provider, kr.app_client_provider) AS app_client_provider,
-                    COALESCE(e.app_client_external_key, kr.app_client_external_key) AS app_client_external_key,
-                    COALESCE(e.agent_name, kr.agent_name) AS agent_name,
-                    COALESCE(e.agent_external_key, kr.agent_external_key) AS agent_external_key,
-                    COALESCE(e.session_external_key, kr.session_external_key) AS session_external_key,
-                    COALESCE(e.session_kind, kr.session_kind) AS session_kind
-                FROM claim_sources cs
-                LEFT JOIN episodes e ON cs.source_episode_id = e.id
-                LEFT JOIN knowledge_records kr ON cs.source_record_id = kr.id
-                WHERE cs.claim_id IN ({placeholders})""",
+            query,
             list(claim_ids),
         ).fetchall()
 
@@ -1856,18 +1869,19 @@ def get_claims_by_anchor(
 
     where = " AND ".join(conditions)
     params.append(limit)
+    query = f"""SELECT DISTINCT
+                c.id, c.claim_type, c.canonical_text, c.payload, c.status,
+                c.confidence, c.valid_from, c.valid_until, c.created_at, c.updated_at
+            FROM claims c
+            JOIN claim_sources cs ON cs.claim_id = c.id
+            JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
+            WHERE {where}
+            ORDER BY c.updated_at DESC, c.id ASC
+            LIMIT ?"""  # nosec B608
 
     with get_connection() as conn:
         rows = conn.execute(
-            f"""SELECT DISTINCT
-                    c.id, c.claim_type, c.canonical_text, c.payload, c.status,
-                    c.confidence, c.valid_from, c.valid_until, c.created_at, c.updated_at
-                FROM claims c
-                JOIN claim_sources cs ON cs.claim_id = c.id
-                JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
-                WHERE {where}
-                ORDER BY c.updated_at DESC, c.id ASC
-                LIMIT ?""",
+            query,
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1927,7 +1941,7 @@ def get_claims_by_anchor_values(
                 JOIN claim_sources cs ON cs.claim_id = c.id
                 JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
                 WHERE {where}
-                ORDER BY c.updated_at DESC, c.id ASC"""
+                ORDER BY c.updated_at DESC, c.id ASC"""  # nosec B608
         if remaining is not None:
             sql += " LIMIT ?"
             query_params.append(remaining)
@@ -1973,18 +1987,19 @@ def mark_claims_challenged_by_anchors(
     for anchor_type, anchor_value in anchor_pairs:
         anchor_clauses.append("(ea.anchor_type = ? AND ea.anchor_value = ?)")
         anchor_params.extend([anchor_type, anchor_value])
+    select_query = f"""SELECT DISTINCT c.id
+            FROM claims c
+            JOIN claim_sources cs ON cs.claim_id = c.id
+            JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
+            WHERE c.status = 'active'
+              AND julianday(c.valid_from) <= julianday(?)
+              AND (c.valid_until IS NULL OR julianday(c.valid_until) > julianday(?))
+              AND ({' OR '.join(anchor_clauses)})
+            ORDER BY c.id ASC"""  # nosec B608
 
     with get_connection() as conn:
         rows = conn.execute(
-            f"""SELECT DISTINCT c.id
-                FROM claims c
-                JOIN claim_sources cs ON cs.claim_id = c.id
-                JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
-                WHERE c.status = 'active'
-                  AND julianday(c.valid_from) <= julianday(?)
-                  AND (c.valid_until IS NULL OR julianday(c.valid_until) > julianday(?))
-                  AND ({' OR '.join(anchor_clauses)})
-                ORDER BY c.id ASC""",
+            select_query,
             [challenged_ts, challenged_ts, *anchor_params],
         ).fetchall()
 
@@ -1993,11 +2008,12 @@ def mark_claims_challenged_by_anchors(
             return []
 
         placeholders = ",".join("?" for _ in claim_ids)
+        update_query = f"""UPDATE claims
+            SET status = 'challenged', updated_at = ?
+            WHERE id IN ({placeholders})
+              AND status = 'active'"""  # nosec B608
         conn.execute(
-            f"""UPDATE claims
-                SET status = 'challenged', updated_at = ?
-                WHERE id IN ({placeholders})
-                  AND status = 'active'""",
+            update_query,
             [challenged_ts, *claim_ids],
         )
         # Record the transition so temporal as_of queries can reconstruct the prior active state.
@@ -2577,7 +2593,7 @@ def increment_consolidation_attempts(episode_ids: list[str]) -> None:
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in episode_ids)
         conn.execute(
-            f"UPDATE episodes SET consolidation_attempts = consolidation_attempts + 1, "
+            f"UPDATE episodes SET consolidation_attempts = consolidation_attempts + 1, "  # nosec B608
             f"last_consolidation_attempt = ? WHERE id IN ({placeholders})",
             [now] + episode_ids,
         )
@@ -2707,7 +2723,7 @@ def search_episodes(
     # Over-fetch when tag filtering is needed, since tags are stored as JSON
     # and filtered in Python after the SQL query.
     fetch_limit = limit * 5 if tags else limit
-    sql = f"SELECT * FROM episodes WHERE {where} ORDER BY created_at DESC LIMIT ?"
+    sql = f"SELECT * FROM episodes WHERE {where} ORDER BY created_at DESC LIMIT ?"  # nosec B608
     params.append(fetch_limit)
 
     with get_connection() as conn:

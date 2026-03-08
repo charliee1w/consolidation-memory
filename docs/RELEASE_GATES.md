@@ -47,7 +47,9 @@ python scripts/verify_release_gates.py \
 ## CI Enforcement
 
 - PR CI (`test.yml`) runs quick novelty checks.
-- Tag publish (`publish.yml`) runs full novelty evaluation + gate enforcement before build/publish.
+- Tag publish (`publish.yml`) requires the tagged commit to be on `origin/main`,
+  runs release quality gates (tests/lint/mypy/smoke), then runs full novelty
+  evaluation + gate enforcement before build/publish.
 - Nightly (`novelty-full-nightly.yml`) refreshes full novelty + gate artifacts.
 
 ## Policy Notes

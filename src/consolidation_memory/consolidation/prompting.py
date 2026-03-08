@@ -167,7 +167,8 @@ def _slugify(text: str) -> str:
     slug = text[:60]
     if not slug:
         import hashlib
-        slug = "topic_" + hashlib.md5(original.encode()).hexdigest()[:8]
+        digest = hashlib.blake2b(original.encode("utf-8"), digest_size=8).hexdigest()
+        slug = "topic_" + digest
     return slug
 
 

@@ -646,7 +646,7 @@ def set_active_project(name: str | None = None) -> str:
     try:
         from consolidation_memory.database import close_thread_local_connection
         close_thread_local_connection()
-    except Exception:
+    except Exception:  # nosec B110
         # Keep project switching resilient even if DB module isn't initialized.
         pass
     return cfg.active_project

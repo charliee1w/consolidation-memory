@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
+import subprocess  # nosec B404
 import sys
 from datetime import date
 from pathlib import Path
@@ -31,7 +31,13 @@ SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 def run(cmd: list[str], *, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
     print(f"  $ {' '.join(cmd)}")
-    return subprocess.run(cmd, cwd=str(ROOT), check=check, capture_output=capture, text=True)
+    return subprocess.run(  # nosec B603
+        cmd,
+        cwd=str(ROOT),
+        check=check,
+        capture_output=capture,
+        text=True,
+    )
 
 
 def parse_semver(version: str) -> tuple[int, int, int]:
@@ -143,7 +149,7 @@ def tag_exists(tag_name: str) -> bool:
 def version_exists_on_pypi(version: str) -> bool:
     url = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
     try:
-        with request.urlopen(url, timeout=15) as response:
+        with request.urlopen(url, timeout=15) as response:  # nosec B310
             payload = json.load(response)
     except error.HTTPError as exc:
         if exc.code == 404:

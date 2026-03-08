@@ -916,7 +916,7 @@ def _merge_into_existing(
         if non_contradicted_ids:
             placeholders = ",".join("?" for _ in non_contradicted_ids)
             conn.execute(
-                f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",
+                f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",  # nosec B608
                 [now_ts, *non_contradicted_ids],
             )
         inserted_record_ids = insert_knowledge_records(

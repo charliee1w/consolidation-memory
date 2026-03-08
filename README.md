@@ -7,6 +7,11 @@
 
 Local-first persistent memory for coding agents.
 
+Project policies:
+- [Security](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+
 `consolidation-memory` stores episodic events, consolidates them into structured knowledge, and exposes a trust-aware retrieval stack (temporal recall, contradiction tracking, claim provenance, and drift challenge workflows).
 
 ## What It Is
@@ -128,6 +133,15 @@ Run:
 pip install consolidation-memory[rest]
 consolidation-memory serve --rest --host 127.0.0.1 --port 8080
 ```
+
+For non-loopback binds (for example `--host 0.0.0.0`), set auth first:
+
+```bash
+export CONSOLIDATION_MEMORY_REST_AUTH_TOKEN="change-me"
+consolidation-memory serve --rest --host 0.0.0.0 --port 8080
+```
+
+When auth is enabled, send `Authorization: Bearer <token>` on all endpoints except `/health`.
 
 Endpoints:
 

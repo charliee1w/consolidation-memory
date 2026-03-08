@@ -53,7 +53,7 @@ class DashboardData:
             order_by = f"{sort_by} {direction}, created_at DESC, rowid DESC"
 
         sql = (
-            f"SELECT id, content, content_type, tags, surprise_score, "
+            f"SELECT id, content, content_type, tags, surprise_score, "  # nosec B608
             f"created_at, consolidated "
             f"FROM episodes WHERE {where} "
             f"ORDER BY {order_by} LIMIT ?"

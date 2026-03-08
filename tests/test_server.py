@@ -8,6 +8,8 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestMCPDetectDriftTool:
     def test_memory_detect_drift_signature(self):
@@ -114,6 +116,20 @@ class TestMCPServerLifecycle:
         finally:
             server._client = original_client
 
+    def test_get_client_with_timeout_raises_timeout_error(self):
+        import consolidation_memory.server as server
+
+        def _slow_get_client():
+            time.sleep(0.05)
+            return MagicMock()
+
+        with (
+            patch("consolidation_memory.server._get_client", side_effect=_slow_get_client),
+            patch("consolidation_memory.server._CLIENT_INIT_TIMEOUT_SECONDS", 0.01),
+        ):
+            with pytest.raises(TimeoutError, match="MemoryClient initialization timed out"):
+                asyncio.run(server._get_client_with_timeout())
+
 
 class TestMCPRecallTool:
     def test_memory_recall_calls_canonical_query_service(self):
@@ -146,6 +162,23 @@ class TestMCPRecallTool:
             as_of="2025-06-01T00:00:00+00:00",
             scope={"project": {"slug": "repo-a"}},
         )
+
+    def test_memory_recall_returns_init_timeout_error_json(self):
+        from consolidation_memory.server import memory_recall
+
+        def _slow_get_client():
+            time.sleep(0.05)
+            return MagicMock()
+
+        with (
+            patch("consolidation_memory.server._get_client", side_effect=_slow_get_client),
+            patch("consolidation_memory.server._CLIENT_INIT_TIMEOUT_SECONDS", 0.01),
+        ):
+            output = asyncio.run(memory_recall(query="test"))
+
+        data = json.loads(output)
+        assert "error" in data
+        assert "MemoryClient initialization timed out" in data["error"]
 
 
 class TestMCPClaimTools:

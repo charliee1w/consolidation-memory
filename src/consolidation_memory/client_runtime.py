@@ -160,7 +160,7 @@ def probe_backend(client: RuntimeClient) -> bool:
             f"{cfg.EMBEDDING_API_BASE}/models",
             headers={"Content-Type": "application/json"},
         )
-        with urlopen(req, timeout=3) as resp:
+        with urlopen(req, timeout=3) as resp:  # nosec B310
             resp.read()
         client._probe_cache = (True, time.monotonic())
         return True
@@ -185,7 +185,7 @@ def check_embedding_backend(client: RuntimeClient) -> None:
             f"{cfg.EMBEDDING_API_BASE}/models",
             headers={"Content-Type": "application/json"},
         )
-        with urlopen(req, timeout=5) as resp:
+        with urlopen(req, timeout=5) as resp:  # nosec B310
             body = json.loads(resp.read())
         model_ids = [m.get("id", "") for m in body.get("data", [])]
         if cfg.EMBEDDING_MODEL_NAME not in model_ids:

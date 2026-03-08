@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import posixpath
-import subprocess
+import subprocess  # nosec B404
 from os import PathLike
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -44,7 +44,7 @@ def _resolve_repo_dir(repo_path: str | PathLike[str] | None) -> Path:
 def _run_git_lines(repo_dir: Path, git_args: Sequence[str]) -> list[str]:
     cmd = ["git", "-c", f"safe.directory={repo_dir.as_posix()}", *git_args]
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # nosec B603
             cmd,
             cwd=str(repo_dir),
             capture_output=True,

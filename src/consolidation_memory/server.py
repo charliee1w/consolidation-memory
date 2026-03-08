@@ -32,11 +32,19 @@ _MAX_BATCH_SIZE = 100
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
 )
+_CLIENT_INIT_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "20")
+)
 
 
 def _drift_timeout_seconds() -> float:
     configured = _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS
     return configured if configured > 0 else 90.0
+
+
+def _client_init_timeout_seconds() -> float:
+    configured = _CLIENT_INIT_TIMEOUT_SECONDS
+    return configured if configured > 0 else 20.0
 
 
 def _get_client():
@@ -57,6 +65,21 @@ def _get_client():
             _client = client
 
     return client
+
+
+async def _get_client_with_timeout():
+    timeout_seconds = _client_init_timeout_seconds()
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_get_client),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            f"MemoryClient initialization timed out after {timeout_seconds:g}s. "
+            "Retry in a few seconds or increase "
+            "CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS."
+        ) from exc
 
 
 @asynccontextmanager
@@ -109,7 +132,7 @@ async def memory_store(
         surprise: How novel this is, 0.0 (routine) to 1.0 (very surprising).
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         if len(content) > 50_000:
             return json.dumps({"error": "Content exceeds maximum length of 50KB"})
         result = await asyncio.to_thread(client.store, content, content_type, tags, surprise)
@@ -153,7 +176,7 @@ async def memory_recall(
         scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         n_results = max(1, min(n_results, 50))
         result = await asyncio.to_thread(
             lambda: client.query_recall(
@@ -186,7 +209,7 @@ async def memory_store_batch(
             - surprise (float): Novelty score 0.0-1.0.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         if len(episodes) > _MAX_BATCH_SIZE:
             return json.dumps({"error": f"Batch size {len(episodes)} exceeds maximum of {_MAX_BATCH_SIZE}"})
         result = await asyncio.to_thread(client.store_batch, episodes)
@@ -222,7 +245,7 @@ async def memory_search(
         scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(
             lambda: client.query_search(
                 query=query,
@@ -256,7 +279,7 @@ async def memory_claim_browse(
         scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(
             client.query_browse_claims,
             claim_type=claim_type,
@@ -288,7 +311,7 @@ async def memory_claim_search(
         scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(
             client.query_search_claims,
             query=query,
@@ -315,7 +338,7 @@ async def memory_detect_drift(
         repo_path: Optional repository path (defaults to current working directory).
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         timeout_seconds = _drift_timeout_seconds()
         result = await asyncio.wait_for(
             asyncio.to_thread(
@@ -346,7 +369,7 @@ async def memory_status() -> str:
     Call this to check the health and state of the memory system.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.status)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -365,7 +388,7 @@ async def memory_forget(episode_id: str) -> str:
         episode_id: The UUID of the episode to forget.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.forget, episode_id)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -382,7 +405,7 @@ async def memory_export() -> str:
     Returns the file path.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.export)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -402,7 +425,7 @@ async def memory_correct(topic_filename: str, correction: str) -> str:
         correction: Description of what needs to be corrected and the correct information.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.correct, topic_filename, correction)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -419,7 +442,7 @@ async def memory_compact() -> str:
     Compaction rebuilds the index without dead vectors.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.compact)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -438,7 +461,7 @@ async def memory_consolidate() -> str:
     NOTE: This can take several minutes depending on episode count and LLM speed.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.consolidate)
         if isinstance(result, dict) and result.get("status") == "already_running":
             payload = dict(result)
@@ -462,7 +485,7 @@ async def memory_consolidation_log(last_n: int = 5) -> str:
         last_n: Number of recent runs to show (1-20, default 5).
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         last_n = max(1, min(last_n, 20))
         result = await asyncio.to_thread(client.consolidation_log, last_n)
         return json.dumps(dataclasses.asdict(result), default=str)
@@ -480,7 +503,7 @@ async def memory_decay_report() -> str:
     Does NOT actually delete anything — just reports.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.decay_report)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -504,7 +527,7 @@ async def memory_protect(
         tag: Protect all episodes with this tag.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.protect, episode_id, tag)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -525,7 +548,7 @@ async def memory_timeline(topic: str) -> str:
         topic: Natural language topic to query (e.g., 'frontend framework preference').
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.timeline, topic)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -545,7 +568,7 @@ async def memory_contradictions(topic: str | None = None) -> str:
         topic: Optional topic filename or title to filter results.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.contradictions, topic)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -562,7 +585,7 @@ async def memory_browse() -> str:
     to see what the memory system has learned and consolidated.
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         result = await asyncio.to_thread(client.browse)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -582,7 +605,7 @@ async def memory_read_topic(filename: str) -> str:
         filename: The filename of the knowledge topic (e.g., 'python_setup.md').
     """
     try:
-        client = _get_client()
+        client = await _get_client_with_timeout()
         import re as _re
         if _re.search(r"[/\\]|\.\.", filename):
             return json.dumps({"error": "Invalid filename: must not contain '/', '\\', or '..'."})
@@ -602,3 +625,4 @@ def run_server():
 
 if __name__ == "__main__":
     run_server()
+

@@ -29,13 +29,18 @@ def cmd_serve(args):
     if getattr(args, "rest", False):
         try:
             import uvicorn
-            from consolidation_memory.rest import create_app
+            from consolidation_memory.rest import create_app, validate_rest_bind
         except ImportError:
             print("REST API requires: pip install consolidation-memory[rest]")
             sys.exit(1)
-        app = create_app()
         host = getattr(args, "host", "127.0.0.1")
         port = getattr(args, "port", 8080)
+        try:
+            validate_rest_bind(host)
+        except RuntimeError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+        app = create_app()
         print(f"Starting REST API on {host}:{port}")
         uvicorn.run(app, host=host, port=port)
     else:
@@ -306,12 +311,12 @@ def cmd_test():
         if test_episode_id and not forgotten:
             try:
                 soft_delete_episode(test_episode_id)
-            except Exception:
+            except Exception:  # nosec B110
                 pass
             if vs:
                 try:
                     vs.remove(test_episode_id)
-                except Exception:
+                except Exception:  # nosec B110
                     pass
 
     # 7. Summary
@@ -627,7 +632,7 @@ def cmd_import(path: str):
             for episode_id in inserted_ids:
                 try:
                     hard_delete_episode(episode_id)
-                except Exception:
+                except Exception:  # nosec B110
                     pass
 
     print(f"\nEpisodes: {imported} imported, {skipped} skipped (already exist), {failed} failed")
@@ -965,7 +970,14 @@ def main():
 
     p_serve = sub.add_parser("serve", help="Start server (MCP default, --rest for HTTP)")
     p_serve.add_argument("--rest", action="store_true", help="Start REST API instead of MCP")
-    p_serve.add_argument("--host", default="127.0.0.1", help="REST host (default: 127.0.0.1)")
+    p_serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "REST host (default: 127.0.0.1). Non-loopback hosts require "
+            "CONSOLIDATION_MEMORY_REST_AUTH_TOKEN."
+        ),
+    )
     p_serve.add_argument("--port", type=int, default=8080, help="REST port (default: 8080)")
     sub.add_parser("init", help="Interactive first-run setup")
     sub.add_parser("test", help="Verify installation works end-to-end")

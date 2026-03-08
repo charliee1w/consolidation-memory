@@ -5,7 +5,7 @@ Requires: ``pip install consolidation-memory[rest]``
 Launch via CLI::
 
     consolidation-memory serve --rest
-    consolidation-memory serve --rest --port 9000 --host 0.0.0.0
+    CONSOLIDATION_MEMORY_REST_AUTH_TOKEN=changeme consolidation-memory serve --rest --port 9000 --host 0.0.0.0
 
 Or programmatically::
 
@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import ipaddress
 import os
 import re
+import secrets
 from typing import Literal, cast
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.responses import JSONResponse
     from pydantic import BaseModel, Field
 except ImportError:
     raise ImportError(
@@ -44,11 +47,49 @@ _MAX_BATCH_SIZE = 100
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
 )
+_REST_AUTH_TOKEN_ENV = "CONSOLIDATION_MEMORY_REST_AUTH_TOKEN"  # nosec B105
+_REST_ALLOW_PUBLIC_BIND_ENV = "CONSOLIDATION_MEMORY_REST_ALLOW_PUBLIC_BIND"
+_AUTH_EXEMPT_PATHS = frozenset({"/health"})
 
 
 def _drift_timeout_seconds() -> float:
     configured = _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS
     return configured if configured > 0 else 90.0
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_rest_auth_token() -> str | None:
+    """Return configured REST bearer token, if any."""
+    token = os.environ.get(_REST_AUTH_TOKEN_ENV, "").strip()
+    return token or None
+
+
+def _is_loopback_host(host: str) -> bool:
+    token = host.strip().strip("[]")
+    if token.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(token).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_rest_bind(host: str) -> None:
+    """Fail closed for non-loopback binds without explicit auth/override."""
+    if _is_loopback_host(host):
+        return
+    if get_rest_auth_token():
+        return
+    if _truthy_env(_REST_ALLOW_PUBLIC_BIND_ENV):
+        return
+    raise RuntimeError(
+        "Refusing to bind REST API to non-loopback host without auth. "
+        f"Set {_REST_AUTH_TOKEN_ENV} to require Bearer auth, or set "
+        f"{_REST_ALLOW_PUBLIC_BIND_ENV}=true to override (not recommended)."
+    )
 
 # Reject filenames that attempt path traversal or contain path separators.
 _UNSAFE_FILENAME_RE = re.compile(r"[/\\]|\.\.")
@@ -170,6 +211,28 @@ def create_app() -> FastAPI:
         version=__version__,
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def _rest_auth_middleware(request: Request, call_next):
+        token = get_rest_auth_token()
+        if token is None or request.method == "OPTIONS" or request.url.path in _AUTH_EXEMPT_PATHS:
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing or invalid Authorization header"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        provided = auth_header[len("Bearer ") :].strip()
+        if not provided or not secrets.compare_digest(provided, token):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid bearer token"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return await call_next(request)
 
     # ── Endpoints ────────────────────────────────────────────────────────
 

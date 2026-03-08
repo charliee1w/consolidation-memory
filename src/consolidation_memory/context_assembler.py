@@ -355,7 +355,7 @@ def _recently_contradicted_claim_ids(
                 WHERE event_type = 'contradiction'
                   AND created_at >= ?
                   AND created_at <= ?
-                  AND claim_id IN ({placeholders})""",
+                  AND claim_id IN ({placeholders})""",  # nosec B608
             params,
         ).fetchall()
     return {row["claim_id"] for row in rows}

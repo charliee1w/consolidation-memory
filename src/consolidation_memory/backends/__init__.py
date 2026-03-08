@@ -194,7 +194,7 @@ def reset_backends() -> None:
             if backend is not None and hasattr(backend, "close"):
                 try:
                     backend.close()
-                except Exception:
+                except Exception:  # nosec B110
                     pass
         _embedding_backend = None
         _llm_backend = None

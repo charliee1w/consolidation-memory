@@ -7,7 +7,7 @@ Public-readiness stabilization release with a full-system snapshot for external 
 ### Highlights
 
 - Completed release-readiness validation on current tree:
-  - `pytest -q`: 679 passed
+  - `pytest -q`: 681 passed
   - `ruff check .`: passed
   - `mypy src/consolidation_memory/`: passed (non-failing annotation notes only)
   - `python scripts/smoke_builder_base.py`: passed
@@ -18,6 +18,8 @@ Public-readiness stabilization release with a full-system snapshot for external 
 - Eliminated local ACL warning noise in test/lint workflows by pinning pytest cache/temp paths to repo-local directories and ignoring locked novelty runtime folders.
 - Fixed dashboard episode ordering nondeterminism when `created_at` values tie by adding deterministic SQL tie-break ordering.
 - Added regression coverage for tied `created_at` ordering in `tests/test_dashboard_data.py`.
+- Fixed dashboard consolidation-run ordering nondeterminism when `started_at` values tie by adding deterministic SQL tie-break ordering.
+- Added regression coverage for tied `started_at` ordering in `tests/test_dashboard_data.py`.
 
 ### Full System Snapshot (OG -> Current)
 

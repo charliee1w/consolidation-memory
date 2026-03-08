@@ -211,6 +211,23 @@ class TestGetConsolidationRuns:
         assert "started_at" in r
         assert "completed_at" in r
 
+    def test_started_at_ties_are_stable_by_insertion_order(self, data):
+        run1 = start_consolidation_run()
+        complete_consolidation_run(run1)
+        run2 = start_consolidation_run()
+        complete_consolidation_run(run2)
+        tied_timestamp = "2026-03-08T00:00:00+00:00"
+
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE consolidation_runs SET started_at = ? WHERE id IN (?, ?)",
+                (tied_timestamp, run1, run2),
+            )
+
+        runs = data.get_consolidation_runs()
+        assert len(runs) == 2
+        assert [runs[0]["id"], runs[1]["id"]] == [run2, run1]
+
     def test_limit(self, data):
         for _ in range(5):
             rid = start_consolidation_run()

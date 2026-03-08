@@ -102,7 +102,8 @@ class DashboardData:
         """Fetch consolidation run history, newest first."""
         with get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM consolidation_runs ORDER BY started_at DESC LIMIT ?",
+                "SELECT * FROM consolidation_runs "
+                "ORDER BY started_at DESC, rowid DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -135,7 +136,7 @@ class DashboardData:
             # Last consolidation
             last_run = conn.execute(
                 "SELECT * FROM consolidation_runs "
-                "ORDER BY started_at DESC LIMIT 1"
+                "ORDER BY started_at DESC, rowid DESC LIMIT 1"
             ).fetchone()
 
         # DB size

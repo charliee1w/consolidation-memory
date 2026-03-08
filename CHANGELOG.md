@@ -20,6 +20,8 @@ Public-readiness stabilization release with a full-system snapshot for external 
 - Added regression coverage for tied `created_at` ordering in `tests/test_dashboard_data.py`.
 - Fixed dashboard consolidation-run ordering nondeterminism when `started_at` values tie by adding deterministic SQL tie-break ordering.
 - Added regression coverage for tied `started_at` ordering in `tests/test_dashboard_data.py`.
+- Expanded CI test matrix to include Python 3.11 so advertised classifier support is exercised.
+- Added REST dependency installation on the Ubuntu Python 3.13 CI lane so FastAPI REST tests run in CI rather than being skipped everywhere.
 
 ### Full System Snapshot (OG -> Current)
 

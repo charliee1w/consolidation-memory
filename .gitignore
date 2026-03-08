@@ -15,6 +15,8 @@ env/
 
 # Testing
 .pytest_cache/
+.pytest_cache_local/
+.pytest_tmp/
 .coverage
 htmlcov/
 .tox/
@@ -53,6 +55,7 @@ docs/plans/
 # Temporary output files
 ruff_output.txt
 test_output.txt
+.tmp_novelty_eval_runtime/
 
 # Benchmark data and results (user-provided)
 benchmarks/data/*.json

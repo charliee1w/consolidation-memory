@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
 import time
 import uuid
@@ -27,6 +26,22 @@ from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as Futur
 from datetime import datetime, timezone
 
 from consolidation_memory import __version__
+from consolidation_memory.client_runtime import (
+    check_embedding_backend as _check_embedding_backend_runtime,
+    compute_consolidation_utility as _compute_consolidation_utility_runtime,
+    compute_health as _compute_health_runtime,
+    consolidation_loop as _consolidation_loop_runtime,
+    finalize_auto_consolidation as _finalize_auto_consolidation_runtime,
+    maybe_auto_consolidate as _maybe_auto_consolidate_runtime,
+    probe_backend as _probe_backend_runtime,
+    record_recall_signal as _record_recall_signal_runtime,
+    recent_recall_signal_counts as _recent_recall_signal_counts_runtime,
+    should_trigger_consolidation as _should_trigger_consolidation_runtime,
+    should_trigger_scheduler_run as _should_trigger_scheduler_run_runtime,
+    start_consolidation_thread as _start_consolidation_thread_runtime,
+    submit_auto_consolidation as _submit_auto_consolidation_runtime,
+)
+from consolidation_memory.markdown_records import parse_markdown_records
 from consolidation_memory.query_service import (
     CanonicalQueryService,
     ClaimBrowseQuery,
@@ -35,9 +50,8 @@ from consolidation_memory.query_service import (
     EpisodeSearchQuery,
     RecallQuery,
 )
-from consolidation_memory.utils import parse_datetime, parse_json_list
+from consolidation_memory.utils import parse_json_list
 from consolidation_memory.types import (
-    RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_RUNNING,
     AppClientScope,
@@ -165,99 +179,6 @@ def _row_matches_scope_filter(
         if str(actual) != expected:
             return False
     return True
-
-
-_MD_KV_BULLET_RE = re.compile(r"^[-*]\s+(?:\*\*(.+?)\*\*|([^:]+)):\s*(.+)$")
-_MD_CONTEXT_RE = re.compile(r"^\*Context:\s*(.+?)\*\s*$")
-_MD_VALUE_CONTEXT_RE = re.compile(r"^(.*?)\s+\(([^()]+)\)\s*$")
-
-
-def _parse_markdown_kv_bullet(line: str) -> tuple[str, str] | None:
-    """Parse markdown bullet lines like '- **Key**: Value'."""
-    match = _MD_KV_BULLET_RE.match(line)
-    if not match:
-        return None
-    key = (match.group(1) or match.group(2) or "").strip()
-    value = match.group(3).strip()
-    if not key or not value:
-        return None
-    return key, value
-
-
-def _extract_records_from_markdown(body: str) -> list[dict[str, str]]:
-    """Extract structured records from rendered markdown sections."""
-    records: list[dict[str, str]] = []
-    lines = body.splitlines()
-    section: str | None = None
-    i = 0
-
-    while i < len(lines):
-        stripped = lines[i].strip()
-        lowered = stripped.lower()
-
-        if lowered == "## facts":
-            section = "facts"
-            i += 1
-            continue
-        if lowered == "## solutions":
-            section = "solutions"
-            i += 1
-            continue
-        if lowered == "## preferences":
-            section = "preferences"
-            i += 1
-            continue
-        if lowered == "## procedures":
-            section = "procedures"
-            i += 1
-            continue
-
-        if section == "facts":
-            parsed = _parse_markdown_kv_bullet(stripped)
-            if parsed:
-                subject, info = parsed
-                records.append({"type": "fact", "subject": subject, "info": info})
-        elif section == "preferences":
-            parsed = _parse_markdown_kv_bullet(stripped)
-            if parsed:
-                key, value_text = parsed
-                rec: dict[str, str] = {"type": "preference", "key": key, "value": value_text}
-                ctx_match = _MD_VALUE_CONTEXT_RE.match(value_text)
-                if ctx_match:
-                    rec["value"] = ctx_match.group(1).strip()
-                    rec["context"] = ctx_match.group(2).strip()
-                records.append(rec)
-        elif section in {"solutions", "procedures"} and stripped.startswith("### "):
-            header = stripped[4:].strip()
-            j = i + 1
-            body_lines: list[str] = []
-            context = ""
-            while j < len(lines):
-                nxt = lines[j].strip()
-                if nxt.startswith("## ") or nxt.startswith("### "):
-                    break
-                context_match = _MD_CONTEXT_RE.match(nxt)
-                if context_match:
-                    context = context_match.group(1).strip()
-                elif nxt:
-                    body_lines.append(nxt)
-                j += 1
-
-            text_body = "\n".join(body_lines).strip()
-            if header and text_body:
-                if section == "solutions":
-                    rec = {"type": "solution", "problem": header, "fix": text_body}
-                else:
-                    rec = {"type": "procedure", "trigger": header, "steps": text_body}
-                if context:
-                    rec["context"] = context
-                records.append(rec)
-            i = j
-            continue
-
-        i += 1
-
-    return records
 
 
 class MemoryClient:
@@ -1182,6 +1103,7 @@ class MemoryClient:
             get_recent_consolidation_runs,
         )
         from consolidation_memory.config import get_config
+        from consolidation_memory.knowledge_consistency import build_knowledge_consistency_report
 
         cfg = get_config()
         stats = get_stats()
@@ -1191,7 +1113,13 @@ class MemoryClient:
         if cfg.DB_PATH.exists():
             db_size_mb = round(cfg.DB_PATH.stat().st_size / (1024 * 1024), 2)
 
-        health = self._compute_health(last_run, cfg.CONSOLIDATION_INTERVAL_HOURS, cfg.FAISS_COMPACTION_THRESHOLD)
+        knowledge_consistency = build_knowledge_consistency_report()
+        health = self._compute_health(
+            last_run,
+            cfg.CONSOLIDATION_INTERVAL_HOURS,
+            cfg.FAISS_COMPACTION_THRESHOLD,
+            knowledge_consistency,
+        )
 
         from consolidation_memory.database import get_consolidation_metrics
         metrics = get_consolidation_metrics(limit=10)
@@ -1242,6 +1170,15 @@ class MemoryClient:
             "lease_owner": scheduler_state.get("lease_owner"),
             "lease_expires_at": scheduler_state.get("lease_expires_at"),
         }
+        scaling = {
+            "index_type": self._vector_store.index_type,
+            "vector_count": self._vector_store.size,
+            "ivf_upgrade_threshold": cfg.FAISS_IVF_UPGRADE_THRESHOLD,
+            "platform_review_threshold": cfg.FAISS_PLATFORM_REVIEW_THRESHOLD,
+            "needs_platform_scaling_pass": (
+                self._vector_store.size >= cfg.FAISS_PLATFORM_REVIEW_THRESHOLD
+            ),
+        }
 
         return StatusResult(
             episodic_buffer=stats["episodic_buffer"],
@@ -1258,6 +1195,8 @@ class MemoryClient:
             consolidation_quality=quality_summary,
             recent_activity=recent_activity,
             utility_scheduler=utility_scheduler,
+            knowledge_consistency=knowledge_consistency,
+            scaling=scaling,
         )
 
     def forget(self, episode_id: str) -> ForgetResult:
@@ -1505,7 +1444,7 @@ class MemoryClient:
             confidence = existing_confidence
         confidence = max(0.0, min(1.0, confidence))
 
-        parsed_records = _extract_records_from_markdown(body)
+        parsed_records = parse_markdown_records(body)
         if not parsed_records:
             fallback_info = (
                 str(meta.get("summary", "")).strip()
@@ -2049,115 +1988,21 @@ class MemoryClient:
         last_run: dict[str, object] | None,
         interval_hours: float,
         compaction_threshold: float,
+        knowledge_consistency: dict[str, object] | None = None,
     ) -> HealthStatus:
-        """Build health assessment dict."""
-        issues: list[str] = []
-
-        backend_reachable = self._probe_backend()
-        if not backend_reachable:
-            issues.append("Embedding backend unreachable")
-
-        tombstone_ratio = self._vector_store.tombstone_ratio
-        if tombstone_ratio > compaction_threshold * 0.75:  # warn at 75% of threshold
-            issues.append(
-                f"FAISS tombstone ratio {tombstone_ratio:.1%} approaching "
-                f"compaction threshold {compaction_threshold:.0%}"
-            )
-
-        if last_run:
-            if last_run.get("status") == RUN_STATUS_FAILED:
-                issues.append(
-                    f"Last consolidation failed: {last_run.get('error_message', 'unknown')}"
-                )
-            completed_at = last_run.get("completed_at") or last_run.get("started_at")
-            if completed_at and isinstance(completed_at, str):
-                from datetime import datetime, timezone
-                try:
-                    last_time = parse_datetime(completed_at)
-                    age_hours = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
-                    if age_hours > interval_hours * 2:
-                        issues.append(
-                            f"Last consolidation was {age_hours:.0f}h ago "
-                            f"(expected every {interval_hours:.0f}h)"
-                        )
-                except (ValueError, TypeError):
-                    pass
-
-        if issues:
-            has_critical = not backend_reachable
-            status = "error" if has_critical else "degraded"
-        else:
-            status = "healthy"
-
-        return {
-            "status": status,
-            "issues": issues,
-            "backend_reachable": backend_reachable,
-        }
+        return _compute_health_runtime(
+            self,
+            last_run,
+            interval_hours,
+            compaction_threshold,
+            knowledge_consistency,
+        )
 
     def _probe_backend(self) -> bool:
-        """Quick check if embedding backend is reachable. Cached for 30s."""
-        import time
-        from consolidation_memory.config import get_config
-
-        cfg = get_config()
-        if cfg.EMBEDDING_BACKEND == "fastembed":
-            return True
-
-        # Return cached result if fresh
-        if self._probe_cache is not None:
-            cached_result, cached_at = self._probe_cache
-            if time.monotonic() - cached_at < self._probe_cache_ttl:
-                return cached_result
-
-        from urllib.request import urlopen, Request
-        from urllib.error import URLError
-
-        try:
-            req = Request(
-                f"{cfg.EMBEDDING_API_BASE}/models",
-                headers={"Content-Type": "application/json"},
-            )
-            with urlopen(req, timeout=3) as resp:
-                resp.read()
-            self._probe_cache = (True, time.monotonic())
-            return True
-        except (URLError, ConnectionError, TimeoutError, OSError):
-            self._probe_cache = (False, time.monotonic())
-            return False
+        return _probe_backend_runtime(self)
 
     def _check_embedding_backend(self) -> None:
-        """Verify the embedding backend is reachable."""
-        from consolidation_memory.config import get_config
-
-        cfg = get_config()
-        if cfg.EMBEDDING_BACKEND == "fastembed":
-            logger.info("Embedding backend: fastembed (local, no server check needed)")
-            return
-
-        from urllib.request import urlopen, Request
-        from urllib.error import URLError
-
-        try:
-            req = Request(
-                f"{cfg.EMBEDDING_API_BASE}/models",
-                headers={"Content-Type": "application/json"},
-            )
-            with urlopen(req, timeout=5) as resp:
-                body = json.loads(resp.read())
-            model_ids = [m.get("id", "") for m in body.get("data", [])]
-            if cfg.EMBEDDING_MODEL_NAME not in model_ids:
-                logger.warning(
-                    "Embedding model '%s' not found. Loaded: %s",
-                    cfg.EMBEDDING_MODEL_NAME, model_ids,
-                )
-            else:
-                logger.info("Embedding backend health check passed (%s).", cfg.EMBEDDING_BACKEND)
-        except (URLError, ConnectionError, TimeoutError) as e:
-            logger.warning(
-                "%s not reachable at %s: %s. Store/recall will fail until available.",
-                cfg.EMBEDDING_BACKEND, cfg.EMBEDDING_API_BASE, e,
-            )
+        _check_embedding_backend_runtime(self)
 
     def _record_recall_signal(
         self,
@@ -2166,86 +2011,30 @@ class MemoryClient:
         fallback: bool = False,
         timestamp_monotonic: float | None = None,
     ) -> None:
-        """Record recall miss/fallback events for utility scheduling."""
-        if not miss and not fallback:
-            return
-        ts = timestamp_monotonic if timestamp_monotonic is not None else time.monotonic()
-        with self._scheduler_signal_lock:
-            if miss:
-                self._recall_miss_events.append(ts)
-            if fallback:
-                self._recall_fallback_events.append(ts)
+        _record_recall_signal_runtime(
+            self,
+            miss=miss,
+            fallback=fallback,
+            timestamp_monotonic=timestamp_monotonic,
+        )
 
     def _recent_recall_signal_counts(
         self,
         lookback_seconds: float,
         now_monotonic: float | None = None,
     ) -> tuple[int, int]:
-        """Return miss/fallback counts within lookback window."""
-        now = now_monotonic if now_monotonic is not None else time.monotonic()
-        cutoff = now - max(1.0, lookback_seconds)
-        with self._scheduler_signal_lock:
-            while self._recall_miss_events and self._recall_miss_events[0] < cutoff:
-                self._recall_miss_events.popleft()
-            while self._recall_fallback_events and self._recall_fallback_events[0] < cutoff:
-                self._recall_fallback_events.popleft()
-            return len(self._recall_miss_events), len(self._recall_fallback_events)
+        return _recent_recall_signal_counts_runtime(
+            self,
+            lookback_seconds,
+            now_monotonic,
+        )
 
     def _compute_consolidation_utility(
         self,
         *,
         now_monotonic: float | None = None,
     ) -> dict[str, object]:
-        """Compute current utility score and signal breakdown."""
-        from datetime import timedelta
-        from consolidation_memory.config import get_config
-        from consolidation_memory.consolidation.utility_scheduler import compute_utility_score
-        from consolidation_memory.database import (
-            count_active_challenged_claims,
-            count_contradictions_since,
-            get_stats,
-        )
-
-        cfg = get_config()
-        lookback_seconds = max(300.0, cfg.CONSOLIDATION_INTERVAL_HOURS * 3600.0)
-        miss_count, fallback_count = self._recent_recall_signal_counts(
-            lookback_seconds=lookback_seconds,
-            now_monotonic=now_monotonic,
-        )
-        now_wallclock = datetime.now(timezone.utc)
-        contradictions_since = (now_wallclock - timedelta(seconds=lookback_seconds)).isoformat()
-
-        stats = get_stats()
-        pending_backlog = int(stats["episodic_buffer"]["pending_consolidation"])
-        contradiction_count = count_contradictions_since(contradictions_since)
-        challenged_backlog = count_active_challenged_claims(as_of=now_wallclock.isoformat())
-
-        score_breakdown = compute_utility_score(
-            unconsolidated_backlog=pending_backlog,
-            recall_miss_count=miss_count,
-            recall_fallback_count=fallback_count,
-            contradiction_count=contradiction_count,
-            challenged_claim_backlog=challenged_backlog,
-            weights=cfg.CONSOLIDATION_UTILITY_WEIGHTS,
-            backlog_target=max(1, cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN),
-            recall_signal_target=3,
-            contradiction_target=3,
-            challenged_claim_target=max(1, cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN // 4),
-        )
-
-        return {
-            "score": score_breakdown["score"],
-            "normalized_signals": score_breakdown["normalized_signals"],
-            "weighted_components": score_breakdown["weighted_components"],
-            "raw_signals": {
-                "unconsolidated_backlog": pending_backlog,
-                "recall_miss_count": miss_count,
-                "recall_fallback_count": fallback_count,
-                "contradiction_count": contradiction_count,
-                "challenged_claim_backlog": challenged_backlog,
-                "lookback_seconds": lookback_seconds,
-            },
-        }
+        return _compute_consolidation_utility_runtime(self, now_monotonic=now_monotonic)
 
     def _should_trigger_consolidation(
         self,
@@ -2255,15 +2044,12 @@ class MemoryClient:
         interval_seconds: float,
         utility_score: float,
     ) -> tuple[bool, str]:
-        """Decide whether to trigger consolidation this cycle."""
-        if now_monotonic - last_run_monotonic >= interval_seconds:
-            return True, "interval"
-        from consolidation_memory.config import get_config
-
-        cfg = get_config()
-        if utility_score >= cfg.CONSOLIDATION_UTILITY_THRESHOLD:
-            return True, "utility"
-        return False, "none"
+        return _should_trigger_consolidation_runtime(
+            now_monotonic=now_monotonic,
+            last_run_monotonic=last_run_monotonic,
+            interval_seconds=interval_seconds,
+            utility_score=utility_score,
+        )
 
     def _should_trigger_scheduler_run(
         self,
@@ -2272,62 +2058,14 @@ class MemoryClient:
         utility_score: float,
         now_utc: datetime | None = None,
     ) -> tuple[bool, str]:
-        """Decide if scheduler state warrants launching a run."""
-        from consolidation_memory.config import get_config
-
-        cfg = get_config()
-        now = now_utc or datetime.now(timezone.utc)
-        next_due_raw = scheduler_state.get("next_due_at")
-        interval_due = True
-        if isinstance(next_due_raw, str) and next_due_raw.strip():
-            try:
-                interval_due = now >= parse_datetime(next_due_raw)
-            except (ValueError, TypeError):
-                interval_due = True
-        if interval_due:
-            return True, "interval"
-        if utility_score >= cfg.CONSOLIDATION_UTILITY_THRESHOLD:
-            return True, "utility"
-        return False, "none"
+        return _should_trigger_scheduler_run_runtime(
+            scheduler_state=scheduler_state,
+            utility_score=utility_score,
+            now_utc=now_utc,
+        )
 
     def _maybe_auto_consolidate(self, *, trigger_source: str) -> bool:
-        """Best-effort non-blocking auto-consolidation trigger for API operations."""
-        from consolidation_memory.config import get_config
-        from consolidation_memory.database import get_consolidation_scheduler_state
-
-        cfg = get_config()
-        if (
-            not self._auto_consolidate_enabled
-            or not cfg.CONSOLIDATION_AUTO_RUN
-            or self._consolidation_stop.is_set()
-        ):
-            return False
-        if self._consolidation_future is not None and not self._consolidation_future.done():
-            return False
-
-        try:
-            utility_state = self._compute_consolidation_utility()
-            score_value = utility_state.get("score")
-            utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
-            scheduler_state = get_consolidation_scheduler_state()
-            should_run, trigger_reason = self._should_trigger_scheduler_run(
-                scheduler_state=scheduler_state,
-                utility_score=utility_score,
-            )
-            if not should_run:
-                return False
-            return self._submit_auto_consolidation(
-                trigger_source=trigger_source,
-                trigger_reason=trigger_reason,
-                utility_state=utility_state,
-                utility_score=utility_score,
-            )
-        except Exception:
-            logger.exception(
-                "Automatic consolidation tick failed (source=%s)",
-                trigger_source,
-            )
-            return False
+        return _maybe_auto_consolidate_runtime(self, trigger_source=trigger_source)
 
     def _submit_auto_consolidation(
         self,
@@ -2337,279 +2075,19 @@ class MemoryClient:
         utility_state: dict[str, object],
         utility_score: float,
     ) -> bool:
-        """Submit one non-blocking consolidation run guarded by DB lease + process lock."""
-        from consolidation_memory.config import get_config
-        from consolidation_memory.consolidation import run_consolidation
-        from consolidation_memory.database import (
-            mark_consolidation_scheduler_started,
-            release_consolidation_lease,
-            try_acquire_consolidation_lease,
+        return _submit_auto_consolidation_runtime(
+            self,
+            trigger_source=trigger_source,
+            trigger_reason=trigger_reason,
+            utility_state=utility_state,
+            utility_score=utility_score,
         )
-
-        cfg = get_config()
-        lease_seconds = cfg.CONSOLIDATION_MAX_DURATION + 60
-        if not self._consolidation_lock.acquire(blocking=False):
-            return False
-
-        lease_acquired = False
-        scheduled = False
-        try:
-            lease_acquired = try_acquire_consolidation_lease(
-                owner=self._scheduler_owner,
-                lease_seconds=lease_seconds,
-            )
-            if not lease_acquired:
-                return False
-
-            mark_consolidation_scheduler_started(
-                owner=self._scheduler_owner,
-                trigger_reason=trigger_reason,
-                utility_score=utility_score,
-            )
-            if self._consolidation_pool is None:
-                self._consolidation_pool = ThreadPoolExecutor(
-                    max_workers=1,
-                    thread_name_prefix="consolidation",
-                )
-            future = self._consolidation_pool.submit(
-                run_consolidation,
-                vector_store=self._vector_store,
-            )
-            self._consolidation_future = future
-            logger.info(
-                "Auto consolidation submitted source=%s trigger=%s score=%.3f components=%s raw=%s",
-                trigger_source,
-                trigger_reason,
-                utility_score,
-                utility_state["weighted_components"],
-                utility_state["raw_signals"],
-            )
-            if hasattr(future, "add_done_callback"):
-                future.add_done_callback(  # type: ignore[union-attr]
-                    lambda done: self._finalize_auto_consolidation(done)
-                )
-            else:
-                self._finalize_auto_consolidation(future)
-            scheduled = True
-            return True
-        except Exception:
-            logger.exception("Failed to submit automatic consolidation run")
-            return False
-        finally:
-            if not scheduled:
-                if lease_acquired:
-                    try:
-                        release_consolidation_lease(self._scheduler_owner)
-                    except Exception:
-                        logger.exception("Failed to release scheduler lease after submit failure")
-                if self._consolidation_lock.locked():
-                    try:
-                        self._consolidation_lock.release()
-                    except RuntimeError:
-                        pass
 
     def _finalize_auto_consolidation(self, future: Future[ConsolidationReport]) -> None:
-        """Handle completion bookkeeping for async auto-consolidation runs."""
-        from consolidation_memory.config import get_config
-        from consolidation_memory.database import (
-            mark_consolidation_scheduler_finished,
-            release_consolidation_lease,
-        )
-
-        cfg = get_config()
-        max_duration = cfg.CONSOLIDATION_MAX_DURATION + 60
-        status = RUN_STATUS_COMPLETED
-        error_message: str | None = None
-
-        try:
-            result = future.result(timeout=max_duration)
-            run_status = result.get("status") if isinstance(result, dict) else None
-            if run_status == RUN_STATUS_FAILED:
-                status = RUN_STATUS_FAILED
-                error_message = str(
-                    result.get("error_message")  # type: ignore[union-attr]
-                    or result.get("message")  # type: ignore[union-attr]
-                    or "consolidation failed"
-                )
-            logger.info("Automatic consolidation completed with status=%s", run_status or status)
-        except FuturesTimeoutError:
-            future.cancel()
-            status = RUN_STATUS_FAILED
-            error_message = f"Timed out after {max_duration}s"
-            logger.error("Automatic consolidation timed out after %ds", max_duration)
-        except Exception as exc:
-            status = RUN_STATUS_FAILED
-            error_message = str(exc)
-            logger.exception("Automatic consolidation failed")
-        finally:
-            try:
-                mark_consolidation_scheduler_finished(
-                    owner=self._scheduler_owner,
-                    status=status,
-                    interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
-                    error_message=error_message,
-                )
-            except Exception:
-                logger.exception("Failed to persist scheduler completion state")
-                try:
-                    release_consolidation_lease(self._scheduler_owner)
-                except Exception:
-                    logger.exception("Failed to release scheduler lease after completion failure")
-            self._consolidation_future = None
-            if self._consolidation_lock.locked():
-                try:
-                    self._consolidation_lock.release()
-                except RuntimeError:
-                    pass
+        _finalize_auto_consolidation_runtime(self, future)
 
     def _start_consolidation_thread(self) -> None:
-        """Start the background consolidation daemon thread."""
-        self._consolidation_stop.clear()
-        self._consolidation_thread = threading.Thread(
-            target=self._consolidation_loop,
-            daemon=True,
-            name="consolidation-bg",
-        )
-        self._consolidation_thread.start()
+        _start_consolidation_thread_runtime(self)
 
     def _consolidation_loop(self) -> None:
-        """Background consolidation thread target."""
-        from consolidation_memory.config import get_config
-
-        cfg = get_config()
-        interval = cfg.CONSOLIDATION_INTERVAL_HOURS * 3600
-        poll_interval = min(interval, 60.0)
-        # Allow internal timeout + 60s buffer before we forcibly give up
-        max_duration = cfg.CONSOLIDATION_MAX_DURATION + 60
-        logger.info(
-            "Background consolidation thread started "
-            "(interval: %.1fh, poll: %.0fs, utility_threshold: %.2f, timeout: %ds)",
-            cfg.CONSOLIDATION_INTERVAL_HOURS,
-            poll_interval,
-            cfg.CONSOLIDATION_UTILITY_THRESHOLD,
-            max_duration,
-        )
-
-        # Use a single shared pool for consolidation runs instead of creating
-        # a new ThreadPoolExecutor on every cycle (prevents zombie threads on timeout).
-        if self._consolidation_pool is None:
-            self._consolidation_pool = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="consolidation"
-            )
-
-        last_run_monotonic = time.monotonic()
-
-        while not self._consolidation_stop.wait(timeout=poll_interval):
-            if self._consolidation_stop.is_set():
-                break
-            if self._consolidation_pool is None:
-                break
-            now_monotonic = time.monotonic()
-            utility_state = self._compute_consolidation_utility(now_monotonic=now_monotonic)
-            score_value = utility_state.get("score")
-            utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
-            should_run, trigger_reason = self._should_trigger_consolidation(
-                now_monotonic=now_monotonic,
-                last_run_monotonic=last_run_monotonic,
-                interval_seconds=interval,
-                utility_score=utility_score,
-            )
-            if not should_run:
-                continue
-            if not self._consolidation_lock.acquire(blocking=False):
-                logger.info("Consolidation already running, skipping")
-                continue
-            lease_acquired = False
-            try:
-                from consolidation_memory.database import (
-                    mark_consolidation_scheduler_finished,
-                    mark_consolidation_scheduler_started,
-                    release_consolidation_lease,
-                    try_acquire_consolidation_lease,
-                )
-                from consolidation_memory.consolidation import run_consolidation
-
-                lease_acquired = try_acquire_consolidation_lease(
-                    owner=self._scheduler_owner,
-                    lease_seconds=max_duration,
-                )
-                if not lease_acquired:
-                    logger.info("Consolidation lease held by another process; skipping")
-                    continue
-
-                mark_consolidation_scheduler_started(
-                    owner=self._scheduler_owner,
-                    trigger_reason=trigger_reason,
-                    utility_score=utility_score,
-                )
-
-                logger.info(
-                    "Consolidation trigger=%s utility_score=%.3f components=%s raw=%s",
-                    trigger_reason,
-                    utility_score,
-                    utility_state["weighted_components"],
-                    utility_state["raw_signals"],
-                )
-                future = self._consolidation_pool.submit(
-                    run_consolidation, vector_store=self._vector_store
-                )
-                try:
-                    result = future.result(timeout=max_duration)
-                    last_run_monotonic = time.monotonic()
-                    run_status = result.get("status") if isinstance(result, dict) else RUN_STATUS_COMPLETED
-                    scheduler_status = (
-                        RUN_STATUS_FAILED if run_status == RUN_STATUS_FAILED else RUN_STATUS_COMPLETED
-                    )
-                    error_message = None
-                    if scheduler_status == RUN_STATUS_FAILED and isinstance(result, dict):
-                        error_message = str(
-                            result.get("error_message")
-                            or result.get("message")
-                            or "consolidation failed"
-                        )
-                    mark_consolidation_scheduler_finished(
-                        owner=self._scheduler_owner,
-                        status=scheduler_status,
-                        interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
-                        error_message=error_message,
-                    )
-                    logger.info(
-                        "Background consolidation completed: %s",
-                        result.get("status", result),
-                    )
-                except FuturesTimeoutError:
-                    future.cancel()
-                    mark_consolidation_scheduler_finished(
-                        owner=self._scheduler_owner,
-                        status=RUN_STATUS_FAILED,
-                        interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
-                        error_message=f"Timed out after {max_duration}s",
-                    )
-                    logger.error(
-                        "Background consolidation timed out after %ds; "
-                        "releasing lock. The worker thread will be abandoned.",
-                        max_duration,
-                    )
-            except Exception:
-                if lease_acquired:
-                    try:
-                        from consolidation_memory.database import mark_consolidation_scheduler_finished
-                        mark_consolidation_scheduler_finished(
-                            owner=self._scheduler_owner,
-                            status=RUN_STATUS_FAILED,
-                            interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
-                            error_message="Background consolidation failed",
-                        )
-                    except Exception:
-                        logger.exception("Failed to persist scheduler failure state")
-                logger.exception("Background consolidation failed")
-            finally:
-                if lease_acquired:
-                    try:
-                        from consolidation_memory.database import release_consolidation_lease
-                        release_consolidation_lease(self._scheduler_owner)
-                    except Exception:
-                        logger.exception("Failed to release scheduler lease")
-                self._consolidation_lock.release()
-
-        logger.info("Background consolidation thread stopped.")
+        _consolidation_loop_runtime(self, monotonic_fn=time.monotonic)

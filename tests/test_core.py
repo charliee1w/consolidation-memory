@@ -1214,6 +1214,14 @@ class TestConfigDefaults:
         assert cfg.KNOWLEDGE_KEYWORD_WEIGHT == 0.2
         assert cfg.KNOWLEDGE_RELEVANCE_THRESHOLD == 0.25
         assert cfg.KNOWLEDGE_MAX_RESULTS == 5
+        assert cfg.KNOWLEDGE_CONSISTENCY_THRESHOLD == 0.995
+
+    def test_faiss_locking_defaults(self):
+        from consolidation_memory.config import get_config
+
+        cfg = get_config()
+        assert cfg.FAISS_WRITE_LOCK_TIMEOUT_SECONDS == 30.0
+        assert cfg.FAISS_PLATFORM_REVIEW_THRESHOLD == 100_000
 
     def test_consolidation_tuning_defaults(self):
         from consolidation_memory.config import get_config

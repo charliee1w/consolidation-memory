@@ -1,6 +1,8 @@
 """FAISS vector index wrapper with UUID mapping.
 
 Thread-safe via threading.Lock (MCP server is async but FAISS is not thread-safe).
+Cross-process FAISS mutations are guarded by a file lease to ensure a single
+writer across MCP clients sharing the same storage.
 Uses IndexFlatIP (inner product on L2-normalized vectors = cosine similarity).
 
 Persistence uses atomic write-then-rename: FAISS binary and JSON id map are
@@ -18,6 +20,8 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 import faiss
@@ -28,9 +32,87 @@ from consolidation_memory.config import get_config
 logger = logging.getLogger(__name__)
 
 
+if os.name == "nt":
+    import msvcrt
+else:  # pragma: no cover - exercised on non-Windows CI
+    import fcntl
+
+
+def _try_lock_file(handle: Any) -> None:
+    """Attempt non-blocking exclusive lock of a lockfile handle."""
+    handle.seek(0)
+    if os.name == "nt":
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:  # pragma: no cover - exercised on non-Windows CI
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+
+
+def _unlock_file(handle: Any) -> None:
+    """Release exclusive lock for a lockfile handle."""
+    handle.seek(0)
+    if os.name == "nt":
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:  # pragma: no cover - exercised on non-Windows CI
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+
+
+class _ProcessWriteLease:
+    """Cross-process lock guarding FAISS mutation paths."""
+
+    def __init__(self, lock_path: Path, timeout_seconds: float) -> None:
+        self._lock_path = lock_path
+        self._timeout_seconds = max(0.1, float(timeout_seconds))
+
+    @contextmanager
+    def acquire(self) -> Any:
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        started = time.monotonic()
+        with open(self._lock_path, "a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+
+            deadline = started + self._timeout_seconds
+            while True:
+                try:
+                    _try_lock_file(handle)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "Timed out waiting for FAISS write lease at "
+                            f"{self._lock_path} after {self._timeout_seconds:.1f}s"
+                        )
+                    time.sleep(0.05)
+
+            waited = time.monotonic() - started
+            if waited > 0.25:
+                logger.info("Waited %.3fs for FAISS write lease", waited)
+            try:
+                handle.seek(0)
+                payload = f"pid={os.getpid()} acquired_at={time.time():.6f}"
+                handle.truncate()
+                handle.write(payload.encode("utf-8"))
+                handle.flush()
+                try:
+                    os.fsync(handle.fileno())
+                except OSError:
+                    pass
+                yield
+            finally:
+                _unlock_file(handle)
+
+
 class VectorStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        cfg = get_config()
+        self._write_lease = _ProcessWriteLease(
+            cfg.FAISS_WRITE_LOCK_PATH,
+            cfg.FAISS_WRITE_LOCK_TIMEOUT_SECONDS,
+        )
+        self._write_lease_depth = 0
         self._index: Any = None  # faiss.Index, initialized in _load_or_create
         self._id_map: list[str] = []
         self._uuid_to_pos: dict[str, int] = {}
@@ -129,6 +211,24 @@ class VectorStore:
         logger.warning("Reloading persisted FAISS state after failed mutation")
         self._load_or_create()
 
+    @contextmanager
+    def _mutation_lease(self) -> Any:
+        """Acquire a process-wide write lease (re-entrant within this instance)."""
+        if self._write_lease_depth > 0:
+            self._write_lease_depth += 1
+            try:
+                yield
+            finally:
+                self._write_lease_depth -= 1
+            return
+
+        with self._write_lease.acquire():
+            self._write_lease_depth = 1
+            try:
+                yield
+            finally:
+                self._write_lease_depth = 0
+
     def _save(self) -> None:
         """Atomic save: write to temp files, then rename over originals.
 
@@ -139,47 +239,49 @@ class VectorStore:
         they map to positions that don't exist and are skipped). The reverse
         (fewer IDs than vectors) would silently lose mappings.
         """
-        cfg = get_config()
-        parent = cfg.FAISS_INDEX_PATH.parent
-        parent.mkdir(parents=True, exist_ok=True)
+        with self._mutation_lease():
+            cfg = get_config()
+            parent = cfg.FAISS_INDEX_PATH.parent
+            parent.mkdir(parents=True, exist_ok=True)
 
-        # Write both files to temp paths first, then rename in safe order.
-        idx_fd, idx_tmp = tempfile.mkstemp(dir=str(parent), suffix=".faiss.tmp")
-        os.close(idx_fd)
-        try:
-            faiss.write_index(self._index, idx_tmp)
-        except Exception:
-            os.unlink(idx_tmp)
-            raise
+            # Write both files to temp paths first, then rename in safe order.
+            idx_fd, idx_tmp = tempfile.mkstemp(dir=str(parent), suffix=".faiss.tmp")
+            os.close(idx_fd)
+            try:
+                faiss.write_index(self._index, idx_tmp)
+            except Exception:
+                os.unlink(idx_tmp)
+                raise
 
-        map_fd, map_tmp = tempfile.mkstemp(dir=str(parent), suffix=".json.tmp")
-        try:
-            with os.fdopen(map_fd, "w") as f:
-                json.dump(self._id_map, f)
-        except Exception:
-            os.unlink(idx_tmp)
-            os.unlink(map_tmp)
-            raise
+            map_fd, map_tmp = tempfile.mkstemp(dir=str(parent), suffix=".json.tmp")
+            try:
+                with os.fdopen(map_fd, "w") as f:
+                    json.dump(self._id_map, f)
+            except Exception:
+                os.unlink(idx_tmp)
+                os.unlink(map_tmp)
+                raise
 
-        # Rename id-map first (source of truth), then index.
-        os.replace(map_tmp, str(cfg.FAISS_ID_MAP_PATH))
-        os.replace(idx_tmp, str(cfg.FAISS_INDEX_PATH))
-        self.signal_reload()
+            # Rename id-map first (source of truth), then index.
+            os.replace(map_tmp, str(cfg.FAISS_ID_MAP_PATH))
+            os.replace(idx_tmp, str(cfg.FAISS_INDEX_PATH))
+            self.signal_reload()
 
     def _save_tombstones(self) -> None:
         """Atomic save of tombstone set."""
-        cfg = get_config()
-        parent = cfg.FAISS_TOMBSTONE_PATH.parent
-        parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(parent), suffix=".json.tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(list(self._tombstones), f)
-        except Exception:
-            os.unlink(tmp)
-            raise
-        os.replace(tmp, str(cfg.FAISS_TOMBSTONE_PATH))
-        self.signal_reload()
+        with self._mutation_lease():
+            cfg = get_config()
+            parent = cfg.FAISS_TOMBSTONE_PATH.parent
+            parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=str(parent), suffix=".json.tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(list(self._tombstones), f)
+            except Exception:
+                os.unlink(tmp)
+                raise
+            os.replace(tmp, str(cfg.FAISS_TOMBSTONE_PATH))
+            self.signal_reload()
 
     # ── Index upgrade ────────────────────────────────────────────────────────
 
@@ -289,38 +391,40 @@ class VectorStore:
     def add(self, episode_id: str, embedding: np.ndarray) -> None:
         """Add a single vector with its episode UUID. Persists to disk immediately."""
         with self._lock:
-            was_empty = self._index.ntotal == 0
-            vec = embedding.reshape(1, -1).astype(np.float32)
-            try:
-                self._index.add(vec)
-                self._id_map.append(episode_id)
-                self._uuid_to_pos[episode_id] = len(self._id_map) - 1
-                self._save()
-            except Exception:
-                self._reload_persisted_state()
-                raise
-            if was_empty:
-                self._save_embedding_metadata()
-            self._maybe_upgrade_index()
+            with self._mutation_lease():
+                was_empty = self._index.ntotal == 0
+                vec = embedding.reshape(1, -1).astype(np.float32)
+                try:
+                    self._index.add(vec)
+                    self._id_map.append(episode_id)
+                    self._uuid_to_pos[episode_id] = len(self._id_map) - 1
+                    self._save()
+                except Exception:
+                    self._reload_persisted_state()
+                    raise
+                if was_empty:
+                    self._save_embedding_metadata()
+                self._maybe_upgrade_index()
 
     def add_batch(self, episode_ids: list[str], embeddings: np.ndarray) -> None:
         """Add multiple vectors with UUIDs. More efficient than repeated add() calls."""
         with self._lock:
-            was_empty = self._index.ntotal == 0
-            vecs = embeddings.astype(np.float32)
-            try:
-                self._index.add(vecs)
-                start = len(self._id_map)
-                self._id_map.extend(episode_ids)
-                for i, uid in enumerate(episode_ids):
-                    self._uuid_to_pos[uid] = start + i
-                self._save()
-            except Exception:
-                self._reload_persisted_state()
-                raise
-            if was_empty:
-                self._save_embedding_metadata()
-            self._maybe_upgrade_index()
+            with self._mutation_lease():
+                was_empty = self._index.ntotal == 0
+                vecs = embeddings.astype(np.float32)
+                try:
+                    self._index.add(vecs)
+                    start = len(self._id_map)
+                    self._id_map.extend(episode_ids)
+                    for i, uid in enumerate(episode_ids):
+                        self._uuid_to_pos[uid] = start + i
+                    self._save()
+                except Exception:
+                    self._reload_persisted_state()
+                    raise
+                if was_empty:
+                    self._save_embedding_metadata()
+                self._maybe_upgrade_index()
 
     # ── Search ───────────────────────────────────────────────────────────────
 
@@ -379,90 +483,93 @@ class VectorStore:
     def remove(self, episode_id: str) -> bool:
         """Tombstone a vector by UUID. O(1), does not rebuild index."""
         with self._lock:
-            if episode_id not in self._uuid_to_pos:
-                return False
-            try:
-                self._tombstones.add(episode_id)
-                self._save_tombstones()
-            except Exception:
-                self._reload_persisted_state()
-                raise
-            return True
+            with self._mutation_lease():
+                if episode_id not in self._uuid_to_pos:
+                    return False
+                try:
+                    self._tombstones.add(episode_id)
+                    self._save_tombstones()
+                except Exception:
+                    self._reload_persisted_state()
+                    raise
+                return True
 
     def remove_batch(self, episode_ids: list[str]) -> int:
         """Tombstone multiple vectors by UUID. Returns count actually tombstoned."""
         with self._lock:
-            count = 0
-            try:
-                for uid in episode_ids:
-                    if uid in self._uuid_to_pos and uid not in self._tombstones:
-                        self._tombstones.add(uid)
-                        count += 1
-                if count > 0:
-                    self._save_tombstones()
-            except Exception:
-                self._reload_persisted_state()
-                raise
-            return count
+            with self._mutation_lease():
+                count = 0
+                try:
+                    for uid in episode_ids:
+                        if uid in self._uuid_to_pos and uid not in self._tombstones:
+                            self._tombstones.add(uid)
+                            count += 1
+                    if count > 0:
+                        self._save_tombstones()
+                except Exception:
+                    self._reload_persisted_state()
+                    raise
+                return count
 
     # ── Compaction ───────────────────────────────────────────────────────────
 
     def compact(self) -> int:
         """Rebuild FAISS index without tombstoned vectors. Returns count of tombstones removed."""
         with self._lock:
-            if not self._tombstones:
-                return 0
-            removed = len(self._tombstones)
-            cfg = get_config()
-            # Remember if the index was IVF before compaction so we can restore it
-            was_ivf = not isinstance(self._index, faiss.IndexFlatIP)
-            try:
-                keep_positions = [
-                    i for i, uid in enumerate(self._id_map)
-                    if uid not in self._tombstones
-                ]
+            with self._mutation_lease():
+                if not self._tombstones:
+                    return 0
+                removed = len(self._tombstones)
+                cfg = get_config()
+                # Remember if the index was IVF before compaction so we can restore it
+                was_ivf = not isinstance(self._index, faiss.IndexFlatIP)
+                try:
+                    keep_positions = [
+                        i for i, uid in enumerate(self._id_map)
+                        if uid not in self._tombstones
+                    ]
 
-                if not keep_positions:
+                    if not keep_positions:
+                        self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
+                        self._id_map = []
+                        self._uuid_to_pos = {}
+                        self._tombstones = set()
+                        self._save()
+                        self._save_tombstones()
+                        return removed
+
+                    if isinstance(self._index, faiss.IndexFlatIP):
+                        # Bulk extract from flat index, then select kept positions
+                        n = self._index.ntotal
+                        dim = self._index.d
+                        all_vectors = faiss.rev_swig_ptr(self._index.get_xb(), n * dim).reshape(n, dim)
+                        kept_vectors = all_vectors[keep_positions].copy()
+                    else:
+                        # IVF index: reconstruct individually (no get_xb)
+                        kept_vectors = np.zeros(
+                            (len(keep_positions), cfg.EMBEDDING_DIMENSION), dtype=np.float32
+                        )
+                        for new_i, old_i in enumerate(keep_positions):
+                            kept_vectors[new_i] = self._index.reconstruct(old_i)
+
+                    new_id_map = [self._id_map[i] for i in keep_positions]
                     self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
-                    self._id_map = []
-                    self._uuid_to_pos = {}
+                    self._index.add(kept_vectors)
+                    self._id_map = new_id_map
+                    self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
                     self._tombstones = set()
                     self._save()
                     self._save_tombstones()
-                    return removed
-
-                if isinstance(self._index, faiss.IndexFlatIP):
-                    # Bulk extract from flat index, then select kept positions
-                    n = self._index.ntotal
-                    dim = self._index.d
-                    all_vectors = faiss.rev_swig_ptr(self._index.get_xb(), n * dim).reshape(n, dim)
-                    kept_vectors = all_vectors[keep_positions].copy()
+                except Exception:
+                    self._reload_persisted_state()
+                    raise
+                logger.info("Compacted FAISS index: removed %d tombstoned vectors", removed)
+                # If the index was IVF before, force upgrade regardless of threshold
+                if was_ivf and len(keep_positions) >= 100:
+                    self._maybe_upgrade_index(force=True)
                 else:
-                    # IVF index: reconstruct individually (no get_xb)
-                    kept_vectors = np.zeros(
-                        (len(keep_positions), cfg.EMBEDDING_DIMENSION), dtype=np.float32
-                    )
-                    for new_i, old_i in enumerate(keep_positions):
-                        kept_vectors[new_i] = self._index.reconstruct(old_i)
-
-                new_id_map = [self._id_map[i] for i in keep_positions]
-                self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
-                self._index.add(kept_vectors)
-                self._id_map = new_id_map
-                self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
-                self._tombstones = set()
-                self._save()
-                self._save_tombstones()
-            except Exception:
-                self._reload_persisted_state()
-                raise
-            logger.info("Compacted FAISS index: removed %d tombstoned vectors", removed)
-            # If the index was IVF before, force upgrade regardless of threshold
-            if was_ivf and len(keep_positions) >= 100:
-                self._maybe_upgrade_index(force=True)
-            else:
-                self._maybe_upgrade_index()
-            return removed
+                    self._maybe_upgrade_index()
+                return removed
 
     @property
     def tombstone_ratio(self) -> float:
@@ -570,3 +677,8 @@ class VectorStore:
         with self._lock:
             total = self._index.ntotal if self._index else 0
             return total - len(self._tombstones)
+
+    @property
+    def index_type(self) -> str:
+        with self._lock:
+            return type(self._index).__name__ if self._index is not None else "None"

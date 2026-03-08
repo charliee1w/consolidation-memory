@@ -471,6 +471,8 @@ class StatusResult:
     consolidation_quality: ConsolidationQuality | dict[str, Any] | None = None
     recent_activity: list[dict[str, Any]] = field(default_factory=list)
     utility_scheduler: dict[str, Any] | None = None
+    knowledge_consistency: dict[str, Any] | None = None
+    scaling: dict[str, Any] | None = None
 
 
 @dataclass

@@ -147,6 +147,7 @@ class Config:
     FAISS_ID_MAP_PATH: Path = field(default_factory=lambda: Path("."))
     FAISS_TOMBSTONE_PATH: Path = field(default_factory=lambda: Path("."))
     FAISS_RELOAD_SIGNAL: Path = field(default_factory=lambda: Path("."))
+    FAISS_WRITE_LOCK_PATH: Path = field(default_factory=lambda: Path("."))
     KNOWLEDGE_DIR: Path = field(default_factory=lambda: Path("."))
     CONSOLIDATION_LOG_DIR: Path = field(default_factory=lambda: Path("."))
     LOG_DIR: Path = field(default_factory=lambda: Path("."))
@@ -165,6 +166,8 @@ class Config:
     FAISS_COMPACTION_THRESHOLD: float = 0.2
     FAISS_SEARCH_FETCH_K_PADDING: int = 0
     FAISS_IVF_UPGRADE_THRESHOLD: int = 10_000
+    FAISS_WRITE_LOCK_TIMEOUT_SECONDS: float = 30.0
+    FAISS_PLATFORM_REVIEW_THRESHOLD: int = 100_000
 
     # ── LLM API ──────────────────────────────────────────────────────────
     LLM_BACKEND: str = "lmstudio"
@@ -254,6 +257,7 @@ class Config:
 
     # ── Uncertainty signaling ────────────────────────────────────────────
     EVOLVING_TOPIC_LOOKBACK_DAYS: int = 30
+    KNOWLEDGE_CONSISTENCY_THRESHOLD: float = 0.995
 
     # ── Recall deduplication ──────────────────────────────────────────────
     RECALL_DEDUP_ENABLED: bool = True
@@ -289,6 +293,7 @@ class Config:
         self.FAISS_ID_MAP_PATH = self.DATA_DIR / "faiss_id_map.json"
         self.FAISS_TOMBSTONE_PATH = self.DATA_DIR / "faiss_tombstones.json"
         self.FAISS_RELOAD_SIGNAL = self.DATA_DIR / ".faiss_reload"
+        self.FAISS_WRITE_LOCK_PATH = self.DATA_DIR / ".faiss_write.lock"
         self.KNOWLEDGE_DIR = self.DATA_DIR / "knowledge"
         self.KNOWLEDGE_VERSIONS_DIR = self.KNOWLEDGE_DIR / "versions"
         self.CONSOLIDATION_LOG_DIR = self.DATA_DIR / "consolidation_logs"
@@ -415,6 +420,8 @@ def _build_config(
         FAISS_COMPACTION_THRESHOLD=float(_faiss.get("compaction_threshold", 0.2)),
         FAISS_SEARCH_FETCH_K_PADDING=int(_faiss.get("search_fetch_k_padding", 0)),
         FAISS_IVF_UPGRADE_THRESHOLD=int(_faiss.get("ivf_upgrade_threshold", 10_000)),
+        FAISS_WRITE_LOCK_TIMEOUT_SECONDS=float(_faiss.get("write_lock_timeout_seconds", 30.0)),
+        FAISS_PLATFORM_REVIEW_THRESHOLD=int(_faiss.get("platform_review_threshold", 100_000)),
         # LLM
         LLM_BACKEND=_llm.get("backend", "lmstudio"),
         LLM_API_BASE=_llm.get("api_base", "http://localhost:1234/v1"),
@@ -492,6 +499,9 @@ def _build_config(
         RECORDS_RELEVANCE_THRESHOLD=float(_retrieval.get("records_relevance_threshold", 0.3)),
         RECORDS_MAX_RESULTS=int(_retrieval.get("records_max_results", 15)),
         EVOLVING_TOPIC_LOOKBACK_DAYS=int(_retrieval.get("evolving_topic_lookback_days", 30)),
+        KNOWLEDGE_CONSISTENCY_THRESHOLD=float(
+            _retrieval.get("knowledge_consistency_threshold", 0.995)
+        ),
         RECALL_DEDUP_ENABLED=_coerce_bool(_retrieval.get("recall_dedup_enabled", True)),
         # Plugins
         PLUGINS_ENABLED=list(_plugins.get("enabled", [])),
@@ -666,7 +676,7 @@ def maybe_migrate_to_projects(base_dir: Path) -> bool:
 
     _FILES_TO_MOVE = [
         "memory.db", "faiss_index.bin", "faiss_id_map.json",
-        "faiss_tombstones.json", ".faiss_reload",
+        "faiss_tombstones.json", ".faiss_reload", ".faiss_write.lock",
     ]
     _DIRS_TO_MOVE = ["knowledge", "backups", "consolidation_logs"]
 
@@ -729,6 +739,16 @@ def _validate_config(c: Config) -> None:
             f"dedup.similarity_threshold = {c.DEDUP_SIMILARITY_THRESHOLD}, "
             f"must be in (0, 1]"
         )
+    if c.FAISS_WRITE_LOCK_TIMEOUT_SECONDS <= 0:
+        errors.append(
+            "faiss.write_lock_timeout_seconds = "
+            f"{c.FAISS_WRITE_LOCK_TIMEOUT_SECONDS}, must be > 0"
+        )
+    if c.FAISS_PLATFORM_REVIEW_THRESHOLD <= 0:
+        errors.append(
+            "faiss.platform_review_threshold = "
+            f"{c.FAISS_PLATFORM_REVIEW_THRESHOLD}, must be > 0"
+        )
 
     if c.CONSOLIDATION_INTERVAL_HOURS <= 0:
         errors.append(f"consolidation.interval_hours = {c.CONSOLIDATION_INTERVAL_HOURS}, must be > 0")
@@ -757,6 +777,11 @@ def _validate_config(c: Config) -> None:
     if c.RECENCY_HALF_LIFE_DAYS <= 0:
         errors.append(
             f"retrieval.recency_half_life_days = {c.RECENCY_HALF_LIFE_DAYS}, must be > 0"
+        )
+    if not (0.0 < c.KNOWLEDGE_CONSISTENCY_THRESHOLD <= 1.0):
+        errors.append(
+            "retrieval.knowledge_consistency_threshold = "
+            f"{c.KNOWLEDGE_CONSISTENCY_THRESHOLD}, must be in (0, 1]"
         )
 
     # Weight sum validations

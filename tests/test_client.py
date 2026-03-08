@@ -617,6 +617,10 @@ class TestClientStatus:
         from consolidation_memory import __version__
         assert status.version == __version__
         assert status.embedding_backend != ""
+        assert status.knowledge_consistency is not None
+        assert "consistency_ratio" in status.knowledge_consistency
+        assert status.scaling is not None
+        assert "index_type" in status.scaling
 
         client.close()
 

@@ -22,8 +22,11 @@ All surfaces route to `MemoryClient` and canonical query semantics in `query_ser
 ## Core Module Map
 
 - `client.py`: orchestration, lifecycle, tool-facing operations, scope resolution.
+- `client_runtime.py`: consolidation scheduler and backend health runtime helpers.
 - `database.py`: SQLite schema/migrations and persistence operations.
 - `vector_store.py`: FAISS wrapper, tombstones, compaction, reload signaling.
+- `knowledge_consistency.py`: markdown/DB drift auditing for topic consistency.
+- `markdown_records.py`: markdown-to-record parser used by correction/audits.
 - `context_assembler.py`: hybrid recall across episodes/topics/records/claims.
 - `query_service.py`: canonical query envelopes and service layer.
 - `query_semantics.py`: shared trust filters (payload parse + scope filtering).
@@ -108,10 +111,31 @@ Key points:
 `vector_store.py` guarantees:
 
 - Thread-safe operations via a lock.
+- Cross-process single-writer FAISS mutations via `.faiss_write.lock` lease.
 - Atomic persistence (`os.replace`) for index/id-map/tombstones.
 - Tombstone-based deletions + compaction rebuild.
 - Reload signaling (`.faiss_reload`) for multi-process consistency.
 - Optional flat-to-IVF upgrade when index size crosses configured threshold.
+
+## Consistency Guardrails
+
+Knowledge data has dual persistence surfaces (markdown files + structured DB rows).
+To keep them in sync:
+
+- `knowledge_consistency.py` computes markdown/record consistency ratio.
+- `MemoryClient.status()` returns `knowledge_consistency` details.
+- Health degrades when consistency drops below `KNOWLEDGE_CONSISTENCY_THRESHOLD` (default `0.995`).
+
+## Scaling Envelope
+
+Current FAISS behavior is tuned for local-first deployment:
+
+- Default IVF upgrade threshold: `FAISS_IVF_UPGRADE_THRESHOLD = 10_000`.
+- Platform review threshold: `FAISS_PLATFORM_REVIEW_THRESHOLD = 100_000`.
+- `MemoryClient.status()` returns `scaling` advisories and index type.
+
+When vector count crosses the platform review threshold, status/health report that a
+larger-scale concurrency/indexing pass is due.
 
 ## Consolidation and Scheduler
 

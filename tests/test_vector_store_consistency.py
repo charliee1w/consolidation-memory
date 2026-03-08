@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -84,3 +86,39 @@ class TestVectorStoreReloadSignals:
         assert vs2.size == 2
         assert vs2.tombstone_count == 0
         assert set(vs2._id_map) == {"ep-a", "ep-c"}
+
+
+class TestVectorStoreWriteLease:
+    def test_add_uses_process_write_lease(self):
+        from consolidation_memory.vector_store import VectorStore
+
+        vs = VectorStore()
+        vec = _make_normalized_vec(seed=19)
+        calls = {"count": 0}
+
+        @contextmanager
+        def counted_acquire():
+            calls["count"] += 1
+            yield
+
+        vs._write_lease = SimpleNamespace(acquire=counted_acquire)
+        vs.add("ep-lease-1", vec)
+        assert calls["count"] == 1
+
+    def test_mutation_lease_is_reentrant_for_nested_saves(self):
+        from consolidation_memory.vector_store import VectorStore
+
+        vs = VectorStore()
+        calls = {"count": 0}
+
+        @contextmanager
+        def counted_acquire():
+            calls["count"] += 1
+            yield
+
+        vs._write_lease = SimpleNamespace(acquire=counted_acquire)
+        with vs._mutation_lease():
+            vs._save()
+            vs._save_tombstones()
+
+        assert calls["count"] == 1

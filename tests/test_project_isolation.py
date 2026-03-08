@@ -110,6 +110,7 @@ class TestSetActiveProject:
         assert cfg.FAISS_ID_MAP_PATH == expected_data / "faiss_id_map.json"
         assert cfg.FAISS_TOMBSTONE_PATH == expected_data / "faiss_tombstones.json"
         assert cfg.FAISS_RELOAD_SIGNAL == expected_data / ".faiss_reload"
+        assert cfg.FAISS_WRITE_LOCK_PATH == expected_data / ".faiss_write.lock"
         assert cfg.KNOWLEDGE_DIR == expected_data / "knowledge"
         assert cfg.KNOWLEDGE_VERSIONS_DIR == expected_data / "knowledge" / "versions"
         assert cfg.CONSOLIDATION_LOG_DIR == expected_data / "consolidation_logs"

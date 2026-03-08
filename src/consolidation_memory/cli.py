@@ -195,11 +195,20 @@ def cmd_test():
     else:
         GREEN = RED = YELLOW = DIM = RESET = ""
 
-    PASS = f"{GREEN}\u2713{RESET}"
-    FAIL = f"{RED}\u2717{RESET}"
+    # Windows default code pages (e.g. cp1252) cannot encode check/cross symbols.
+    # Fall back to ASCII so `consolidation-memory test` works in default consoles.
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        "\u2713\u2717\u2014".encode(encoding)
+        pass_symbol, fail_symbol, dash_symbol = "\u2713", "\u2717", "\u2014"
+    except (UnicodeEncodeError, LookupError):
+        pass_symbol, fail_symbol, dash_symbol = "ok", "x", "-"
+
+    PASS = f"{GREEN}{pass_symbol}{RESET}"
+    FAIL = f"{RED}{fail_symbol}{RESET}"
     SKIP = f"{YELLOW}-{RESET}"
 
-    print(f"consolidation-memory v{__version__} \u2014 verifying installation\n")
+    print(f"consolidation-memory v{__version__} {dash_symbol} verifying installation\n")
 
     checks: list[bool] = []
     test_episode_id: str | None = None

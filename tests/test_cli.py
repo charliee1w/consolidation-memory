@@ -1,5 +1,6 @@
 """Tests for CLI commands, particularly `consolidation-memory test`."""
 
+import io
 import json
 
 import pytest
@@ -136,6 +137,38 @@ class TestCmdTest:
         captured = capsys.readouterr()
         # No ANSI escape sequences
         assert "\033[" not in captured.out
+
+    def test_cmd_test_uses_ascii_symbols_on_cp1252_stdout(self):
+        """Default Windows code pages should not crash on checkmark glyphs."""
+        ensure_schema()
+        vec = _make_normalized_vec()
+
+        mock_backend = MagicMock()
+        mock_backend.encode_documents.return_value = vec.reshape(1, -1)
+        mock_backend.encode_query.return_value = vec.reshape(1, -1)
+        mock_backend.dimension = 384
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = "OK"
+
+        stdout_bytes = io.BytesIO()
+        cp1252_stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252", errors="strict")
+        try:
+            with (
+                patch("sys.stdout", cp1252_stdout),
+                patch("consolidation_memory.backends.get_embedding_backend", return_value=mock_backend),
+                patch("consolidation_memory.backends.get_llm_backend", return_value=mock_llm),
+            ):
+                from consolidation_memory.cli import cmd_test
+                cmd_test()
+        finally:
+            cp1252_stdout.flush()
+
+        output = stdout_bytes.getvalue().decode("cp1252")
+        assert "checks passed" in output
+        assert "\u2713" not in output
+        assert "\u2717" not in output
+        assert "ok" in output
 
 
 class TestMainDispatch:

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.5 - 2026-03-08
+
+### Highlights
+
+- Fix MCP startup reliability with lazy MemoryClient init
+- Redo documentation for longevity
+- Update section title from 'What Ships Today' to 'What It Is'
+- Address MemoryClient risks
+- Review MemoryClient docs
+- Update memory architecture docs
+- Fix CP1252 unicode output
+- Fix CP1252 Unicode output crash
+- Fix mypy errors in vector_store
+- Summarize recent test output
+- Handle consolidation timeout
+- Adjust MemoryClient init timeout
+
+
 ## 0.13.2 - 2026-03-08
 
 Public-readiness stabilization release with a full-system snapshot for external users.

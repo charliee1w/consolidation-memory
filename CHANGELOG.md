@@ -1,8 +1,22 @@
 # Changelog
 
+## 0.13.1 - 2026-03-08
+
+Canonical first public release for external builders.
+
+### Highlights
+
+- Finalized and published the first public baseline for `0.13.x`.
+- Added robust release automation with automatic semver bump options (`--bump patch|minor|major`), changelog scaffolding, and rollback safety.
+- Added release preflight checks for existing tag collisions and existing PyPI versions.
+- Hardened publish workflow validation by enforcing tag/version parity against `pyproject.toml`.
+- Added a structured PyPI release existence check in CI to skip duplicate publish attempts safely.
+- Added tests for release automation helpers (`tests/test_release_script.py`).
+- Included structured GitHub discussion category templates and README community links for external contributor onboarding.
+
 ## 0.13.0 - 2026-03-07
 
-First public pre-1.0 release focused on trust-preserving queries, scoped shared-memory foundations, and fail-closed release readiness for external builders.
+Pre-1.0 foundation release focused on trust-preserving queries, scoped shared-memory foundations, and fail-closed release readiness for external builders.
 
 ### Highlights
 

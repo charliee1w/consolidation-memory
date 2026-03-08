@@ -1,90 +1,61 @@
 # Shared Memory Scopes
 
-Date: 2026-03-07  
-Status: Implemented (A6 baseline)
-
 ## Purpose
 
-Define the first production-usable shared-memory scoping model for multiple clients/apps while preserving safe defaults and legacy behavior.
+Document the implemented scope model and its compatibility behavior.
 
-## Canonical Scope Concepts
+## Scope Envelope
 
-- `namespace`: top-level sharing boundary.
-- `app/client`: calling surface identity (`name`, `type`, optional provider/external key).
-- `agent`: logical agent identity (optional).
-- `session`: short-lived interaction identity (optional).
-- `project/repo`: project boundary (`project_slug`, optional repo metadata).
+The canonical scope envelope includes:
 
-## Persistence Shape (Schema v13)
+- `namespace`
+- `project`
+- `app_client`
+- `agent`
+- `session`
 
-Scope columns are now persisted on:
+`MemoryClient.resolve_scope()` fills defaults when fields are omitted.
+
+## Persisted Shape (Schema v13)
+
+Scope columns are persisted on:
 
 - `episodes`
-- `knowledge_records`
 - `knowledge_topics`
+- `knowledge_records`
 
-Key columns:
+Column groups:
 
-- `namespace_slug`, `namespace_sharing_mode`
-- `app_client_name`, `app_client_type`, `app_client_provider`, `app_client_external_key`
-- `agent_name`, `agent_external_key`
-- `session_external_key`, `session_kind`
-- `project_slug`, `project_display_name`, `project_root_uri`, `project_repo_remote`, `project_default_branch`
+- namespace: `namespace_slug`, `namespace_sharing_mode`
+- app client: `app_client_name`, `app_client_type`, `app_client_provider`, `app_client_external_key`
+- agent/session: `agent_name`, `agent_external_key`, `session_external_key`, `session_kind`
+- project metadata: `project_slug`, `project_display_name`, `project_root_uri`, `project_repo_remote`, `project_default_branch`
 
-Migration behavior:
+## Default Compatibility Behavior
 
-- additive, rollback-safe migration (`schema_version` 13)
-- existing rows backfilled to safe defaults
-- `project_slug` backfilled from active project for legacy installs
+If scope is omitted:
 
-## Defaults
+- namespace defaults to `default`
+- app client defaults to `legacy_client`
+- project defaults to active project
 
-When scope is omitted:
-
-- `namespace_slug = "default"`
-- `namespace_sharing_mode = "private"`
-- `app_client_name = "legacy_client"`
-- `app_client_type = "python_sdk"`
-- `project_slug = active_project` (or `default`)
-
-This preserves current single-project behavior.
+This keeps legacy single-project usage working.
 
 ## Read/Write Semantics
 
-Writes:
+- Writes persist resolved scope columns.
+- Reads apply scope filters built from resolved scope.
+- Namespace sharing modes `shared`, `team`, and `managed` intentionally broaden app-client isolation behavior.
 
-- all `store`/`store_batch` paths now persist resolved scope metadata.
-- dedup is scope-aware.
+## Privacy Boundary Today
 
-Reads:
+Current privacy boundary is enforced by scope-filter semantics in service/client logic.
 
-- namespace + project boundaries are always enforced.
-- `private` namespace mode also enforces app/client isolation.
-- `shared`/`team`/`managed` modes intentionally allow cross-app reads inside the same namespace+project.
-- agent/session fields are optional narrowing filters when provided.
+Future work should introduce explicit policy/ACL semantics for stronger governance.
 
-## Conflict Behavior
+## Verification
 
-- write conflicts do not overwrite: episodes remain append-only UUID rows.
-- near-duplicate writes are deduplicated only within the effective read scope.
-- consolidation now prevents cross-scope clustering by forcing cross-scope distances apart.
-- topic creation/updates persist scope and use scope-prefixed filenames to avoid silent cross-scope topic collisions.
+Inspect:
 
-## Privacy Boundaries
-
-- no implicit cross-namespace reads.
-- no implicit cross-project reads.
-- `private` mode prevents accidental cross-app memory sharing.
-- sharing across clients/apps is explicit (`namespace_sharing_mode` set to non-private and same namespace/project selected).
-- agent/session metadata is persisted as queryable scope metadata; it is not exposed as prompt/model-state sharing.
-
-## Backward Compatibility
-
-- legacy APIs remain valid (`store`, `recall`, `search`, REST endpoints).
-- scope-aware wrappers are additive (`*_with_scope`) and schema-level scope arguments remain optional.
-- old data remains readable through default-scope backfill.
-
-## Follow-Up Hardening
-
-- extend scope-aware filtering to broader trust/audit surfaces as needed (policy/ACL phase).
-- formalize namespace/app identity tables if/when lifecycle management requirements exceed column-based persistence.
+- `src/consolidation_memory/client.py` (`resolve_scope`, `_resolved_scope_to_db_row`, `_resolved_scope_to_query_filter`)
+- `src/consolidation_memory/database.py` (scope columns + indexes)

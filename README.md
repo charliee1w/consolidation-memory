@@ -7,61 +7,80 @@
 
 Local-first persistent memory for coding agents.
 
-`consolidation-memory` stores raw episodes, consolidates them into structured knowledge, and now tracks claim-level provenance and contradiction history. It runs on SQLite + FAISS and can be used through MCP, Python, REST, or OpenAI-style function calling.
+`consolidation-memory` stores episodic events, consolidates them into structured knowledge, and exposes a trust-aware retrieval stack (temporal recall, contradiction tracking, claim provenance, and drift challenge workflows).
 
-## What It Does
+## What Ships Today
 
-- Stores episodes (`exchange`, `fact`, `solution`, `preference`) with vector embeddings.
-- Recalls by semantic + keyword ranking with metadata boosts.
-- Consolidates episodes into knowledge topics and structured records:
-  - `fact`, `solution`, `preference`, `procedure`
-- Tracks temporal validity (`valid_from`, `valid_until`) and supports `as_of` recall queries.
-- Logs contradictions and supports contradiction-aware merge behavior.
-- Maintains a claim graph:
-  - claims
-  - claim edges (for example, `contradicts`)
-  - claim sources
-  - claim events
-- Extracts and persists episode anchors (paths, commits, tool references).
-- Detects code drift from git changes and challenges impacted claims with audit events.
-- Uses an adaptive consolidation scheduler (utility score + interval fallback).
-- Returns claim results in `recall()` alongside episodes, topics, and records.
+- Episode storage with semantic dedup and FAISS indexing.
+- Hybrid recall across episodes, knowledge topics, structured records, and claims.
+- Claim graph with provenance (`claim_sources`) and lifecycle events (`claim_events`).
+- Temporal queries (`as_of`) for both knowledge and claims.
+- Drift detection that maps changed files to anchored claims and marks impacted claims challenged.
+- Multi-scope persistence (namespace/project/app/agent/session columns) with compatibility defaults.
+- Four access surfaces:
+  - MCP server (`consolidation-memory serve`)
+  - Python API (`MemoryClient`)
+  - REST API (`consolidation-memory serve --rest`)
+  - OpenAI-style tool schemas (`consolidation_memory.schemas.openai_tools`)
+
+## Install
+
+```bash
+pip install consolidation-memory[fastembed]
+```
+
+Common extras:
+
+- `consolidation-memory[rest]` for FastAPI endpoints
+- `consolidation-memory[dashboard]` for the Textual dashboard
+- `consolidation-memory[all,dev]` for full local development
 
 ## Quick Start
 
 ```bash
-pip install consolidation-memory[fastembed]
 consolidation-memory init
 consolidation-memory test
 consolidation-memory serve
 ```
 
-Notes:
-- `fastembed` is local and does not require API keys.
-- Consolidation requires an LLM backend (`lmstudio`, `ollama`, `openai`) unless explicitly disabled.
+`consolidation-memory` with no subcommand defaults to `serve`.
 
-## MCP Server
+## CLI Commands
 
-Add to your MCP client config:
+```text
+serve            Start MCP server (default command)
+serve --rest     Start REST API
+init             Interactive setup
+test             End-to-end health check
+status           Runtime/system stats
+consolidate      Trigger consolidation run
+detect-drift     Challenge claims impacted by changed files
+export           Export full snapshot JSON
+import PATH      Import snapshot JSON
+reindex          Rebuild vectors with current embedding backend
+browse           Browse knowledge topics
+setup-memory     Add reusable memory instructions to an agent file
+dashboard        Launch Textual dashboard
+```
+
+## MCP Setup
 
 ```json
 {
   "mcpServers": {
     "consolidation_memory": {
       "command": "consolidation-memory",
-      "args": ["--project", "universal", "serve"]
+      "args": ["--project", "default", "serve"]
     }
   }
 }
 ```
 
-Use one shared project name (for example, `universal`) across all clients
-to keep a single knowledge set.
+MCP tools exposed by `server.py`:
 
-Available tools:
 - `memory_store`
-- `memory_store_batch`
 - `memory_recall`
+- `memory_store_batch`
 - `memory_search`
 - `memory_claim_browse`
 - `memory_claim_search`
@@ -72,96 +91,38 @@ Available tools:
 - `memory_correct`
 - `memory_compact`
 - `memory_consolidate`
+- `memory_consolidation_log`
+- `memory_decay_report`
 - `memory_protect`
 - `memory_timeline`
 - `memory_contradictions`
 - `memory_browse`
 - `memory_read_topic`
-- `memory_decay_report`
-- `memory_consolidation_log`
 
-## Python API
+## Python Example
 
 ```python
 from consolidation_memory import MemoryClient
 
 with MemoryClient(auto_consolidate=False) as mem:
     mem.store(
-        "User prefers dark mode in terminal tools.",
+        "User prefers short PR summaries with concrete file paths.",
         content_type="preference",
-        tags=["ui", "terminal"],
+        tags=["workflow", "reviews"],
     )
 
     result = mem.recall(
-        "terminal preferences",
+        "how should I format PR summaries?",
         n_results=5,
         include_knowledge=True,
-        as_of="2026-03-01T00:00:00+00:00",
     )
 
-    print("episodes:", len(result.episodes))
-    print("knowledge topics:", len(result.knowledge))
-    print("records:", len(result.records))
-    print("claims:", len(result.claims))
-    print("warnings:", result.warnings)
+    print(len(result.episodes), len(result.knowledge), len(result.records), len(result.claims))
 ```
-
-`RecallResult` is backward compatible and includes:
-- `episodes`
-- `knowledge`
-- `records`
-- `claims`
-- `warnings`
-
-## Consolidation Model
-
-```text
-episodes -> SQLite + FAISS
-           -> recall (semantic + keyword)
-
-background consolidation:
-episodes -> cluster -> extract/merge records -> knowledge topics
-         -> contradiction detection -> temporal expiration + audit log
-         -> claim emission (claims/sources/events/edges)
-```
-
-## Claims And Anchors
-
-### Claim graph
-
-Consolidation emits deterministic claims for merged records and writes:
-- `claims`: normalized claim payload and lifecycle state
-- `claim_sources`: links to episodes/topics/records
-- `claim_events`: `create`, `update`, `expire`, `contradiction`, etc.
-- `claim_edges`: relationship graph (for example, `contradicts`)
-
-Claim retrieval is exposed through:
-- Python: `MemoryClient.browse_claims(...)` and `MemoryClient.search_claims(...)`
-- MCP/OpenAI tools: `memory_claim_browse` and `memory_claim_search`
-- REST: `POST /memory/claims/browse` and `POST /memory/claims/search`
-- Temporal claim-state queries: pass `as_of` to claim browse/search interfaces
-
-### Anchor persistence
-
-Stored episode content is parsed for anchors and written to `episode_anchors`:
-- file paths (POSIX + Windows)
-- commit hashes
-- tool references (`pytest`, `uvicorn`, `docker`, `git`, etc.)
-
-Anchors are used for drift workflows and claim challenge operations.
-
-### Drift detection interfaces
-
-- CLI: `consolidation-memory detect-drift [--base-ref origin/main] [--repo-path <path>]`
-- Python: `MemoryClient.detect_drift(base_ref=..., repo_path=...)`
-- REST: `POST /memory/detect-drift`
-
-Drift detection maps changed files to anchored claims, challenges impacted active
-claims, and records `claim_events` with event type `code_drift_detected`.
 
 ## REST API
 
-Install extras and run:
+Run:
 
 ```bash
 pip install consolidation-memory[rest]
@@ -169,6 +130,7 @@ consolidation-memory serve --rest --host 127.0.0.1 --port 8080
 ```
 
 Endpoints:
+
 - `GET /health`
 - `POST /memory/store`
 - `POST /memory/store/batch`
@@ -191,143 +153,75 @@ Endpoints:
 - `POST /memory/consolidation-log`
 - `GET /memory/decay-report`
 
-## OpenAI Function Calling
+## OpenAI-Compatible Tools
 
-Use the provided tool schemas and dispatch helper:
+Use:
 
-```python
-from consolidation_memory import MemoryClient
-from consolidation_memory.schemas import openai_tools, dispatch_tool_call
+- `consolidation_memory.schemas.openai_tools`
+- `consolidation_memory.schemas.dispatch_tool_call`
 
-client = MemoryClient(auto_consolidate=False)
+This keeps tool definitions and dispatch behavior aligned with the same semantics used by MCP and REST.
 
-# Pass openai_tools to your model
-# Then route tool calls through dispatch_tool_call(client, name, arguments)
+## Scope Model (Compatibility + Shared Use)
+
+By default, existing single-project usage still works.
+
+When a scope envelope is provided, records are persisted with explicit scope dimensions:
+
+- `namespace_*`
+- `project_*`
+- `app_client_*`
+- `agent_*`
+- `session_*`
+
+This allows selective sharing without mixing unrelated contexts.
+
+## Storage Layout
+
+Data is under `platformdirs.user_data_dir("consolidation_memory")/projects/<project>/`.
+
+```text
+memory.db
+faiss_index.bin
+faiss_id_map.json
+faiss_tombstones.json
+.faiss_reload
+knowledge/
+knowledge/versions/
+consolidation_logs/
+backups/
 ```
-
-## Backends
-
-### Embedding
-
-| Backend | Local | Default model | Typical dimension |
-| --- | --- | --- | --- |
-| `fastembed` (default) | yes | `BAAI/bge-small-en-v1.5` | 384 |
-| `lmstudio` | yes | `text-embedding-nomic-embed-text-v1.5` | 768 |
-| `ollama` | yes | `nomic-embed-text` | 768 |
-| `openai` | no | `text-embedding-3-small` | 1536 |
-
-### LLM (for consolidation/extraction)
-
-| Backend | Notes |
-| --- | --- |
-| `lmstudio` (default) | local chat model |
-| `ollama` | local chat model |
-| `openai` | API-backed |
-| `disabled` | store/recall only, no LLM consolidation |
 
 ## Configuration
 
-Generate config interactively:
+Config file discovery:
 
-```bash
-consolidation-memory init
-```
+1. `CONSOLIDATION_MEMORY_CONFIG`
+2. Platform default config path
+3. Built-in defaults
 
-Default config file locations:
-- Linux: `~/.config/consolidation_memory/config.toml`
-- macOS: `~/Library/Application Support/consolidation_memory/config.toml`
-- Windows: `%APPDATA%\\consolidation_memory\\config.toml`
-- Override path: `CONSOLIDATION_MEMORY_CONFIG`
-
-Every scalar config field can be overridden with:
-- `CONSOLIDATION_MEMORY_<FIELD_NAME>`
+Every scalar field can be overridden with `CONSOLIDATION_MEMORY_<FIELD_NAME>`.
 
 Examples:
 
 ```bash
-CONSOLIDATION_MEMORY_EMBEDDING_BACKEND=fastembed
-CONSOLIDATION_MEMORY_LLM_BACKEND=lmstudio
-CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=6
 CONSOLIDATION_MEMORY_PROJECT=work
+CONSOLIDATION_MEMORY_EMBEDDING_BACKEND=fastembed
+CONSOLIDATION_MEMORY_LLM_BACKEND=ollama
+CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=6
 ```
 
-## CLI Commands
+## Documentation Map
 
-| Command | Purpose |
-| --- | --- |
-| `consolidation-memory serve` | start MCP server |
-| `consolidation-memory serve --rest` | start REST server |
-| `consolidation-memory init` | interactive setup |
-| `consolidation-memory test` | installation/self-check |
-| `consolidation-memory status` | show memory stats |
-| `consolidation-memory consolidate` | run consolidation now |
-| `consolidation-memory detect-drift` | challenge claims impacted by changed files |
-| `consolidation-memory export` | export JSON snapshot |
-| `consolidation-memory import PATH` | import JSON snapshot |
-| `consolidation-memory reindex` | rebuild embeddings/index |
-| `consolidation-memory browse` | inspect knowledge topics |
-| `consolidation-memory setup-memory --path AGENTS.md` | write memory integration block to any instruction file |
-| `consolidation-memory dashboard` | launch Textual dashboard |
-
-## Agent Instruction Setup
-
-Use the vendor-neutral setup helper to add proactive recall/store guidance to your agent instructions:
-
-```bash
-consolidation-memory setup-memory --path AGENTS.md
-```
-
-Example targets:
-
-```bash
-consolidation-memory setup-memory --path AGENTS.md
-consolidation-memory setup-memory --path .github/copilot-instructions.md
-consolidation-memory setup-memory --path .cursor/rules/memory.md
-```
-
-Template instructions are available in
-[`docs/recommended-agent-instructions.md`](docs/recommended-agent-instructions.md).
-
-## Multi-project Isolation
-
-Each project has isolated storage:
-
-```bash
-consolidation-memory --project work status
-CONSOLIDATION_MEMORY_PROJECT=work consolidation-memory serve
-```
-
-This keeps separate:
-- SQLite DB
-- FAISS index
-- knowledge topics
-- consolidation logs
-
-## Data Layout
-
-Base directory is `platformdirs.user_data_dir("consolidation_memory")`.
-
-Per project:
-
-```text
-projects/<project>/
-  memory.db
-  faiss_index.bin
-  faiss_id_map.json
-  faiss_tombstones.json
-  knowledge/
-  consolidation_logs/
-  backups/
-```
-
-Export/import snapshots include:
-
-- episodes + knowledge topics/records
-- claims
-- claim edges
-- claim sources
-- claim events
-- episode anchors
+- [Architecture](docs/ARCHITECTURE.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Release Gates](docs/RELEASE_GATES.md)
+- [Novelty Metrics](docs/NOVELTY_METRICS.md)
+- [Novelty Eval Guide](docs/NOVELTY_EVAL_GUIDE.md)
+- [Builder Baseline](docs/BUILDER_BASELINE.md)
+- [External Review Playbook](docs/EXTERNAL_REVIEW_PLAYBOOK.md)
+- [Recommended Agent Instructions](docs/recommended-agent-instructions.md)
+- [Universal-memory strategy docs](docs/strategy/)
 
 ## Development
 
@@ -337,26 +231,15 @@ cd consolidation-memory
 pip install -e ".[all,dev]"
 python scripts/smoke_builder_base.py
 pytest tests/ -q
-pytest tests/ -q -W error::ResourceWarning
 ruff check src/ tests/
+mypy src/consolidation_memory/
 ```
-
-Builder-focused docs:
-- [Builder Baseline](docs/BUILDER_BASELINE.md)
-- [External Review Playbook](docs/EXTERNAL_REVIEW_PLAYBOOK.md)
-- [Minimal Plugin Example](docs/examples/minimal_plugin.py)
 
 ## Community
 
 - Contributors: [CONTRIBUTORS.md](CONTRIBUTORS.md)
-- Discussion thread: [Community Feedback and Contribution Thread (v0.13.x)](https://github.com/charliee1w/consolidation-memory/discussions/2)
-- Discussion categories:
-  - [Announcements](https://github.com/charliee1w/consolidation-memory/discussions/categories/announcements): release notes, breaking changes, maintainer updates
-  - [Ideas](https://github.com/charliee1w/consolidation-memory/discussions/categories/ideas): proposals, roadmap suggestions, RFC-style feedback
-  - [Q&A](https://github.com/charliee1w/consolidation-memory/discussions/categories/q-a): setup help, usage questions, troubleshooting
-  - [Show and tell](https://github.com/charliee1w/consolidation-memory/discussions/categories/show-and-tell): integrations, demos, success stories
-  - [General](https://github.com/charliee1w/consolidation-memory/discussions/categories/general): broad project discussion and community coordination
-  - [Polls](https://github.com/charliee1w/consolidation-memory/discussions/categories/polls): community votes and preference checks
+- Issues: [GitHub Issues](https://github.com/charliee1w/consolidation-memory/issues)
+- Discussions: [GitHub Discussions](https://github.com/charliee1w/consolidation-memory/discussions)
 
 ## License
 

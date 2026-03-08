@@ -1,45 +1,35 @@
 # Novelty Wedge
 
-## Positioning
-**Temporal, auditable, code-state-aware memory for coding agents.**
+## Product Wedge
 
-This wedge is not "better retrieval" in general. It is about making agent memory dependable when codebases and beliefs change over time.
+`consolidation-memory` is focused on **Drift-aware debugging memory** for coding agents.
 
-## Primary User Profile
-Primary user: a senior IC or tech lead who uses coding agents daily on a real repository (not toy prompts), across many short sessions.
+The system should retain high-value debugging knowledge, detect when code changes invalidate prior memory, and expose the trust trail needed to safely reuse past solutions.
 
-What this user needs:
-- Memory that survives chat resets and tool/client switching.
-- Recall that can answer "what was true then vs now?" with timestamps.
-- Auditability: every recalled claim must point to source episodes/records.
-- Protection against stale guidance after file or commit-level code drift.
+## Primary User
 
-## Top 3 Concrete Use Cases
-1. **Drift-aware debugging memory**
-   An agent recalls a prior fix tied to `src/api/auth.py`. After refactors touch that file, the old claim is marked challenged, and recall surfaces uncertainty instead of confidently repeating stale instructions.
+A developer or coding assistant that iterates on codebases over time and needs memory that is:
 
-2. **Contradiction-aware operational runbooks**
-   Two valid fixes exist across time for the same failure mode (before and after a dependency upgrade). The system keeps both with temporal validity and contradiction events, so `as_of` queries return the correct one for a target date.
+- Local-first and inspectable.
+- Temporal (able to reconstruct prior belief states).
+- Provenance-aware (can show where a belief came from).
+- Drift-aware (can challenge stale claims when files change).
 
-3. **Auditable handoff across sessions/agents**
-   A second agent (or same agent in a fresh chat) asks why a config decision was made. Recall returns the claim plus provenance (episode IDs, timestamps, related topic/record links) so the user can verify and correct quickly.
+## In-Scope Use Cases
 
-## Top 3 Non-Goals
-1. **Not a generic personal knowledge app**
-   This wedge is for coding workflows and repository-grounded memory, not life logging or broad note-taking.
+1. Preserve debugging outcomes as durable solution records.
+2. Recall prior fixes with confidence and source traceability.
+3. Challenge affected claims when repository files change.
+4. Query what was believed at a prior time (`as_of`).
 
-2. **Not full autonomous code understanding**
-   It does not attempt full-repo semantic reasoning or static analysis replacement; it tracks anchored claims and their validity.
+## Out Of Scope
 
-3. **Not cloud-first team synchronization**
-   Multi-tenant sync, permissions, and hosted collaboration are out of scope for this wedge.
+1. Generic consumer long-term memory assistants.
+2. Opaque “black box” memory behavior without auditable sources.
+3. Multi-tenant cloud control plane claims not yet implemented.
 
-## Why Now
-Coding-agent usage has shifted from isolated prompts to ongoing repository work, where stale memory causes real regressions. Existing vector-memory patterns are weak on temporal validity and provenance, which blocks trust in production workflows. consolidation-memory already has local-first storage, consolidation, temporal records, and contradiction tracking; adding claim-level audit trails plus code-state drift handling is a focused, high-leverage extension rather than a platform rewrite.
+## Why This Wedge
 
-## Implementation Direction Implied by This Wedge
-- Model memory as **claims with lifecycle state** (active/challenged/expired), not just untyped snippets.
-- Store **explicit provenance links** from claims to episodes/topics/records.
-- Support **time-scoped retrieval** (`as_of`) as a first-class query path.
-- Add **code anchors** (file paths, commits, tools) at ingestion for drift mapping.
-- Treat drift and contradictions as **events** written to durable audit history.
+- It maps directly to implemented trust semantics (claims, provenance, contradictions, drift).
+- It is measurable by the current novelty harness.
+- It avoids overpromising beyond shipped behavior.

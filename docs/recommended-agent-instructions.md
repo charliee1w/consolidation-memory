@@ -1,41 +1,29 @@
 # Recommended Agent Instructions
 
-Add this to your agent instruction file (for example `AGENTS.md`) so the
-agent proactively uses memory tools.
+Use this block in agent instruction files (for example `AGENTS.md`, `.github/copilot-instructions.md`, or `.cursor/rules/*.md`).
 
-You can add this automatically with:
+## Memory Workflow
 
-```bash
-consolidation-memory setup-memory --path AGENTS.md
+- At the start of each new task, call `memory_recall` using the user goal.
+- After meaningful progress, call `memory_store` with concise, self-contained notes.
+- Store both problem and fix for solution memories.
+- Tag memories with useful scope (feature, file path, issue id) when available.
+- After substantial file edits, call `memory_detect_drift`.
+- Before final response, call `memory_recall` again to verify current claim state.
+
+## Storage Guidance
+
+- Do store durable facts, solutions, and preferences.
+- Do not store trivial chatter.
+- Prefer precise and auditable wording over broad summaries.
+
+## Optional Session Reminder
+
+```text
+Startup checklist:
+1) memory_recall
+2) implement with scope-aware trust semantics
+3) memory_store milestones
+4) memory_detect_drift after major edits
+5) memory_recall before final response
 ```
-
-Or copy the snippet below manually:
-
----
-
-```markdown
-## Memory
-
-**Recall**: At the start of every new conversation, call `memory_recall`
-with a query matching the user's opening message topic. This is your
-persistent memory - always check it before responding.
-
-**Store**: Proactively call `memory_store` whenever you:
-- Learn something new about the user's setup, environment, or projects
-- Solve a non-trivial problem (store both the problem AND the solution)
-- Discover a user preference or workflow pattern
-- Complete a significant task (summarize what was done and where)
-- Encounter something surprising or noteworthy
-
-Write each memory as a self-contained note that future-you can understand
-without context. Use appropriate `content_type` (fact, solution, preference,
-exchange) and add `tags` for organization. Do NOT store trivial exchanges
-like greetings or simple Q&A.
-```
-
----
-
-## Optional Session-Start Reminder
-
-If your agent platform supports startup hooks, add a lightweight reminder hook
-that confirms memory tooling is active for the session.

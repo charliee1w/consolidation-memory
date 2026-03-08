@@ -1,547 +1,164 @@
 # Architecture
 
-> A contributor-oriented overview of consolidation-memory internals.
-> Read time: ~15 minutes.
+This document describes the current architecture of `consolidation-memory` as implemented in `src/consolidation_memory/`.
 
-## Table of Contents
+## Design Goals
 
-- [High-Level Data Flow](#high-level-data-flow)
-- [Threading Model](#threading-model)
-- [Storage Layout](#storage-layout)
-- [Consolidation Engine](#consolidation-engine)
-- [Retrieval Pipeline](#retrieval-pipeline)
-- [Claim Graph, Drift, And Adaptive Scheduler](#claim-graph-drift-and-adaptive-scheduler)
-- [Security Considerations](#security-considerations)
+- Local-first persistence with inspectable on-disk artifacts.
+- Trust-preserving retrieval (temporal validity, provenance, contradiction visibility, drift challenge events).
+- Single semantic contract across MCP, REST, Python, and OpenAI-compatible tools.
+- Backward compatibility for single-project usage while supporting explicit shared scopes.
 
----
+## Runtime Surfaces
 
-## High-Level Data Flow
+- CLI entrypoint: `cli.py`
+- MCP server: `server.py`
+- REST API: `rest.py`
+- Python API: `client.py`
+- OpenAI tool schemas/dispatch: `schemas.py`
 
-```mermaid
-flowchart TD
-    subgraph Ingestion
-        A[MCP / REST request] --> B[MemoryClient.store]
-        B --> C[Embed content via backend]
-        C --> D[Dedup check<br/>top-3 search, threshold 0.95]
-        D -->|unique| E[Insert episode into SQLite]
-        D -->|duplicate| Z[Reject silently]
-        E --> F[Add vector to FAISS index]
-    end
+All surfaces route to `MemoryClient` and canonical query semantics in `query_service.py`.
 
-    subgraph Consolidation["Background Consolidation (every 6h)"]
-        G[Fetch unconsolidated episodes] --> H[Compute embeddings pairwise similarity]
-        H --> I[Hierarchical clustering<br/>scipy linkage, threshold 0.78]
-        I --> J{Match existing topic?}
-        J -->|yes| K[Merge into topic<br/>contradiction detection]
-        J -->|no| L[Create new topic]
-        K --> M[LLM extracts typed records]
-        L --> M
-        M --> N[Write knowledge markdown]
-        N --> O[Insert records into SQLite]
-        O --> P[Mark episodes consolidated]
-        P --> Q[Prune old episodes<br/>after 30 days]
-    end
+## Core Module Map
 
-    subgraph Retrieval
-        R[recall query] --> S[Embed query]
-        S --> T[FAISS ANN search]
-        T --> U[Batch-fetch episodes from SQLite]
-        U --> V[Apply filters + priority scoring]
-        V --> W[Search knowledge topics<br/>cached embeddings]
-        V --> X[Search knowledge records<br/>cached embeddings]
-        W --> Y[Return ranked results]
-        X --> Y
-    end
+- `client.py`: orchestration, lifecycle, tool-facing operations, scope resolution.
+- `database.py`: SQLite schema/migrations and persistence operations.
+- `vector_store.py`: FAISS wrapper, tombstones, compaction, reload signaling.
+- `context_assembler.py`: hybrid recall across episodes/topics/records/claims.
+- `query_service.py`: canonical query envelopes and service layer.
+- `query_semantics.py`: shared trust filters (payload parse + scope filtering).
+- `claim_graph.py`: deterministic claim canonicalization.
+- `anchors.py`: anchor extraction from episode content.
+- `drift.py`: git-based drift detection and claim challenge flow.
+- `release_gates.py`: release gate evaluation logic.
+- `plugins.py`: hook-based extension points.
 
-    F -.->|vector index| T
-    E -.->|rows| G
-    O -.->|records| X
-    N -.->|markdown files| W
-```
-
-**Key principle:** Episodes are the raw material. Consolidation distills them into
-structured knowledge (topics + typed records). Recall searches both layers and
-blends results with priority scoring.
-
----
-
-## Threading Model
-
-```mermaid
-flowchart LR
-    subgraph Main["Main Thread (MCP/REST)"]
-        store[store]
-        recall_fn[recall]
-        compact[compact]
-    end
-
-    subgraph BG["Background Thread (daemon)"]
-        loop["_consolidation_loop<br/>sleeps on Event.wait(interval)"]
-        loop --> pool["ThreadPoolExecutor<br/>max_workers=1"]
-        pool --> run["run_consolidation()"]
-    end
-
-    faiss[(FAISS Index)]
-    sqlite[(SQLite WAL)]
-
-    store -->|Lock| faiss
-    recall_fn -->|Lock| faiss
-    compact -->|Lock| faiss
-    run -->|Lock| faiss
-
-    store --> sqlite
-    recall_fn --> sqlite
-    run --> sqlite
-```
-
-### Synchronization Primitives
-
-| Primitive | Location | Protects |
-|-----------|----------|----------|
-| `threading.Lock` | `VectorStore._lock` | All FAISS index reads/writes |
-| `threading.Lock` | `MemoryClient._consolidation_lock` | Prevents concurrent consolidation runs |
-| `threading.Event` | `MemoryClient._consolidation_stop` | Clean shutdown signal for background thread |
-| `threading.local` | `database._local` | Thread-local SQLite connection cache |
-| `threading.Lock` | `database._conn_list_lock` | Global connection list for shutdown cleanup |
-
-### SQLite Concurrency
-
-- **WAL mode** (`PRAGMA journal_mode=WAL`) enables readers to proceed without
-  blocking writers and vice versa.
-- Each thread gets its own `sqlite3.Connection` via `threading.local`, created
-  on first access with a 10-second busy timeout.
-- `get_connection()` is a context manager that commits on clean exit and rolls
-  back on exception.
-
-### FAISS Locking Strategy
-
-Every public method on `VectorStore` (`add`, `search`, `remove`, `compact`,
-`reconstruct_batch`) acquires `_lock` for the duration of the operation.
-Cross-process coordination uses a signal file (`.faiss_reload`): after a write,
-the writer calls `signal_reload()` which touches the file; readers check the
-file's mtime and reload the index if it's newer than their load timestamp.
-
-### Background Consolidation Lifecycle
-
-1. Started as a daemon thread in `MemoryClient.__init__` if `CONSOLIDATION_AUTO_RUN=True`.
-2. Sleeps via `Event.wait(timeout=interval_seconds)` — wakes on timeout or stop signal.
-3. Acquires `_consolidation_lock` (non-blocking) — skips the run if already in progress.
-4. Submits `run_consolidation()` to a single-worker `ThreadPoolExecutor` with a
-   `CONSOLIDATION_MAX_DURATION + 60s` timeout.
-5. On `MemoryClient.close()`, the stop event is set and the thread is joined with
-   a 30-second timeout.
-
----
-
-## Storage Layout
-
-```
-<DATA_DIR>/projects/<PROJECT_NAME>/
-├── memory.db                    # SQLite database
-├── faiss_index.bin              # FAISS binary index
-├── faiss_id_map.json            # UUID ↔ FAISS position mapping
-├── faiss_tombstones.json        # Soft-deleted episode UUIDs
-├── .faiss_reload                # Signal file for cross-process reload
-├── knowledge/                   # Markdown knowledge documents
-│   ├── <topic_slug>.md
-│   └── versions/                # Up to 5 historical versions per topic
-│       └── <slug>.<ISO-timestamp>.md
-├── backups/                     # JSON export snapshots
-├── consolidation_logs/          # Per-run consolidation reports
-└── logs/                        # Application logs
-```
-
-Config file: `~/.config/consolidation_memory/config.toml` (XDG), or
-`%APPDATA%/consolidation_memory/config.toml` (Windows).
-
-### SQLite Schema (v10)
-
-```mermaid
-erDiagram
-    episodes {
-        TEXT id PK
-        TEXT created_at
-        TEXT updated_at
-        TEXT content
-        TEXT content_type
-        TEXT tags "JSON array"
-        REAL surprise_score
-        INTEGER access_count
-        TEXT source_session
-        INTEGER consolidated "0=no, 1=yes, 2=pruned"
-        TEXT consolidated_at
-        TEXT consolidated_to
-        INTEGER deleted
-        INTEGER consolidation_attempts
-        TEXT last_consolidation_attempt
-        INTEGER protected "0=no, 1=immune to pruning"
-    }
-
-    knowledge_topics {
-        TEXT id PK
-        TEXT filename "UNIQUE"
-        TEXT title
-        TEXT summary
-        TEXT created_at
-        TEXT updated_at
-        TEXT source_episodes "JSON array"
-        INTEGER fact_count
-        INTEGER access_count
-        REAL confidence
-    }
-
-    knowledge_records {
-        TEXT id PK
-        TEXT topic_id FK
-        TEXT record_type "fact|solution|preference|procedure"
-        TEXT content "JSON object"
-        TEXT embedding_text
-        TEXT source_episodes "JSON array"
-        REAL confidence
-        TEXT created_at
-        TEXT updated_at
-        INTEGER access_count
-        INTEGER deleted
-        TEXT valid_from
-        TEXT valid_until
-    }
-
-    consolidation_runs {
-        TEXT id PK
-        TEXT started_at
-        TEXT completed_at
-        INTEGER episodes_processed
-        INTEGER clusters_formed
-        INTEGER topics_created
-        INTEGER topics_updated
-        INTEGER episodes_pruned
-        TEXT status
-        TEXT error_message
-    }
-
-    consolidation_metrics {
-        TEXT id PK
-        TEXT run_id
-        TEXT timestamp
-        INTEGER clusters_succeeded
-        INTEGER clusters_failed
-        REAL avg_confidence
-        INTEGER episodes_processed
-        REAL duration_seconds
-        INTEGER api_calls
-        INTEGER topics_created
-        INTEGER topics_updated
-        INTEGER episodes_pruned
-    }
-
-    contradiction_log {
-        TEXT id PK
-        TEXT topic_id FK
-        TEXT old_record_id
-        TEXT new_record_id
-        TEXT old_content
-        TEXT new_content
-        TEXT resolution "expired_old"
-        TEXT reason
-        TEXT detected_at
-    }
-
-    tag_cooccurrence {
-        TEXT tag_a
-        TEXT tag_b
-        INTEGER count
-        TEXT last_seen
-    }
-
-    episodes_fts {
-        TEXT content "FTS5 virtual table mirroring episode content for BM25 keyword search"
-    }
-
-    schema_version {
-        INTEGER version
-        TEXT applied_at
-    }
-
-    knowledge_topics ||--o{ knowledge_records : "topic_id"
-    knowledge_topics ||--o{ contradiction_log : "topic_id"
-    consolidation_runs ||--o{ consolidation_metrics : "run_id"
-```
-
-Notable indexes: `idx_episodes_consolidated`, `idx_episodes_created`,
-`idx_episodes_type`, `idx_episodes_deleted`, `idx_episodes_consolidation_attempts`,
-`idx_records_topic`, `idx_records_type`, `idx_records_deleted`,
-`idx_records_valid_until`, `idx_contradiction_topic`, `idx_contradiction_detected`,
-`idx_cooccurrence_tag_a`, `idx_cooccurrence_tag_b`.
-
-### FAISS Index
-
-- **Initial type:** `IndexFlatIP(dim)` — brute-force inner product on L2-normalized
-  vectors (equivalent to cosine similarity).
-- **Auto-upgrade:** When `ntotal >= FAISS_IVF_UPGRADE_THRESHOLD` (default 10,000),
-  the index is rebuilt as `IndexIVFFlat` with `nlist = min(sqrt(n), 4096)` and
-  `nprobe = min(nlist/4, 64)`.
-- **Persistence:** Atomic writes via temp file + `os.replace()`.
-- **Deletions:** Tombstone set in `faiss_tombstones.json`; vectors aren't removed
-  from the index until `compact()` rebuilds it.
-- **Consistency check:** On load, validates `ntotal == len(id_map)` and
-  `index.d == EMBEDDING_DIMENSION`.
-
----
-
-## Consolidation Engine
-
-Located in `src/consolidation_memory/consolidation/` (a package split into
-`clustering.py`, `prompting.py`, `scoring.py`, `engine.py`).
-
-### Pipeline Overview
+## Data Flow
 
 ```mermaid
 flowchart TD
-    A[Fetch unconsolidated episodes<br/>limit=200, max_attempts=5] --> B[Encode all episode embeddings]
-    B --> C[Build cosine similarity matrix]
-    C --> D["Hierarchical clustering<br/>scipy linkage(method='average')<br/>fcluster(threshold=0.78)"]
-    D --> E[Filter clusters by size<br/>min=2, max=20]
-    E --> F{For each cluster}
+    A[Store request] --> B[MemoryClient.store*]
+    B --> C[Embed content]
+    C --> D[Scope-aware dedup check]
+    D --> E[Insert episode in SQLite]
+    E --> F[Add vector in FAISS]
+    E --> G[Extract and persist anchors]
 
-    F --> G[Compute cluster confidence<br/>coherence×0.6 + surprise×0.4]
-    G --> H["Find matching topic<br/>semantic ≥ 0.75 or word overlap > 50%"]
-    H -->|match| I[Merge: detect contradictions<br/>expire stale records]
-    H -->|no match| J[Create new topic]
-    I --> K[LLM extraction prompt]
-    J --> K
-    K --> L[Parse + validate JSON output]
-    L -->|invalid| M[Retry with validation feedback<br/>circuit breaker: 3 failures → open]
-    L -->|valid| N[Render markdown, write file<br/>version old file, max 5 versions]
-    N --> O[Insert records into SQLite]
-    O --> P[Mark episodes consolidated=1]
-    P --> Q["Prune: consolidated>30 days ago<br/>set consolidated=2, tombstone FAISS"]
-    Q --> R[Adjust surprise scores<br/>boost high-access, decay inactive]
+    H[Recall/search request] --> I[CanonicalQueryService]
+    I --> J[context_assembler recall]
+    J --> K[FAISS candidate search]
+    J --> L[FTS keyword candidates]
+    J --> M[Knowledge + records + claims ranking]
+    M --> N[Uncertainty and scope filtering]
+
+    O[Consolidation run] --> P[Cluster/merge episodes]
+    P --> Q[Update topics + records]
+    Q --> R[Emit/update claim graph]
+    R --> S[Write contradiction and lifecycle events]
+
+    T[Drift detection] --> U[git changed files]
+    U --> V[Anchor-to-claim mapping]
+    V --> W[Challenge impacted claims]
+    W --> X[claim_events code_drift_detected]
 ```
 
-### Clustering Details
+## Persistence Model
 
-Uses `scipy.cluster.hierarchy.linkage` with `method='average'` (UPGMA) on a
-cosine distance matrix (`1 - dot(a, b)` on normalized vectors). The dendrogram
-is cut with `fcluster(Z, t=0.78, criterion='distance')`. Clusters smaller than
-`MIN_CLUSTER_SIZE` (2) or larger than `MAX_CLUSTER_SIZE` (20) are skipped.
+`database.py` uses `CURRENT_SCHEMA_VERSION = 13`.
 
-**Cluster confidence** is computed as:
+Primary tables:
 
-```
-confidence = clamp(coherence × 0.6 + source_quality × 0.4, 0.5, 0.95)
-```
+- `episodes`
+- `knowledge_topics`
+- `knowledge_records`
+- `claims`
+- `claim_sources`
+- `claim_edges`
+- `claim_events`
+- `episode_anchors`
+- `contradiction_log`
+- `consolidation_runs`
+- `consolidation_metrics`
+- `consolidation_scheduler`
+- `tag_cooccurrence`
+- `episodes_fts` (FTS5 virtual table)
+- `schema_version`
 
-Where `coherence` is the mean intra-cluster pairwise similarity and
-`source_quality` is the mean surprise score of cluster episodes.
+Key points:
 
-### LLM Prompt Strategy
+- Records and topics support temporal fields (`valid_from`, `valid_until` on records; event timeline for claims).
+- Scope columns are persisted on episodes/topics/records for namespace/project/app/agent/session partitioning.
+- FTS tables support keyword recall fallback and hybrid scoring.
 
-The system prompt establishes the LLM as a "precise knowledge extractor" and
-explicitly instructs it to treat `<episode>` tag contents as raw data, never as
-instructions. Each episode is wrapped as:
+## Retrieval Semantics
 
-```
-<episode>
-[2025-02-28T12:00:00Z] [fact] {sanitized content}
-</episode>
-```
+`context_assembler.recall()` combines:
 
-The extraction prompt requests JSON output with four record types:
+- Semantic candidates from FAISS.
+- Keyword candidates from FTS5 when enabled.
+- Priority scoring using similarity + metadata signals.
+- Knowledge topic search and typed record search.
+- Claim search with temporal and scope filtering.
+- Optional uncertainty signals (low confidence, recently contradicted).
 
-| Type | Required Fields |
-|------|-----------------|
-| `fact` | `subject`, `info` |
-| `solution` | `problem`, `fix`, `context` |
-| `preference` | `key`, `value`, `context` |
-| `procedure` | `trigger`, `steps`, `context` |
+`query_service.py` wraps this behavior into canonical envelopes (`RecallQuery`, `EpisodeSearchQuery`, `ClaimBrowseQuery`, `ClaimSearchQuery`, `DriftQuery`) so all external adapters use the same semantics.
 
-Validation checks all required fields. On failure, a retry prompt includes the
-validation error. The circuit breaker opens after 3 consecutive LLM failures
-with a 60-second cooldown.
+## Vector Store Behavior
 
-### Contradiction Detection
+`vector_store.py` guarantees:
 
-1. Embed new and existing records.
-2. Find candidate pairs with similarity >= 0.7.
-3. If `CONTRADICTION_LLM_ENABLED`: send pairs to LLM for verdict
-   (`CONTRADICTS` / `COMPATIBLE`).
-4. Contradicting existing records are expired (`valid_until` set to now);
-   new records replace them.
+- Thread-safe operations via a lock.
+- Atomic persistence (`os.replace`) for index/id-map/tombstones.
+- Tombstone-based deletions + compaction rebuild.
+- Reload signaling (`.faiss_reload`) for multi-process consistency.
+- Optional flat-to-IVF upgrade when index size crosses configured threshold.
 
-### Pruning
+## Consolidation and Scheduler
 
-Episodes with `consolidated=1` older than `CONSOLIDATION_PRUNE_AFTER_DAYS`
-(default 30) are marked `consolidated=2` and their FAISS vectors are
-tombstoned. The SQLite rows remain for audit but are excluded from search.
+`MemoryClient` runs consolidation manually or via background scheduling.
 
----
+Important controls (from `config.py`):
 
-## Retrieval Pipeline
+- `CONSOLIDATION_AUTO_RUN`
+- `CONSOLIDATION_INTERVAL_HOURS`
+- `CONSOLIDATION_MAX_DURATION`
+- `CONSOLIDATION_UTILITY_THRESHOLD`
+- `CONSOLIDATION_UTILITY_WEIGHTS`
 
-Implemented in `context_assembler.py`. A single `recall()` call searches three
-layers simultaneously and returns a unified result.
+Scheduler state is persisted in `consolidation_scheduler` to support deterministic lease/trigger behavior.
 
-```mermaid
-flowchart LR
-    Q[Query] --> E[Embed query]
-    E --> F[FAISS search<br/>k = n×3 or n×5 if filtered]
-    F --> G[Batch-fetch episodes<br/>single SQL query]
-    G --> H[Apply filters<br/>type, tags, date range]
-    H --> I[Priority scoring]
-    I --> J[Top-N episodes]
+## Trust and Safety Controls
 
-    E --> K[Topic cache<br/>semantic + keyword]
-    K --> L[Top-5 topics]
+- Prompt-safety sanitization before LLM extraction/merge prompts.
+- Structured output validation for extracted records.
+- Temporal querying (`as_of`) for records and claims.
+- Explicit contradiction tracking in `contradiction_log` and claim events.
+- Drift challenge workflow that writes auditable `code_drift_detected` events.
+- Path traversal guards for topic read operations.
 
-    E --> M[Record cache<br/>semantic + keyword<br/>procedure boost]
-    M --> N[Top-15 records]
+## Scope and Compatibility
 
-    J --> O[Merged response]
-    L --> O
-    N --> O
-```
+Default behavior remains compatible with legacy single-project usage.
 
-### Priority Scoring Formula
+When scope is provided, writes include canonical scope metadata and reads apply scope filters. Shared namespace modes can intentionally widen visibility while keeping private defaults available.
 
-```
-score = similarity × metadata_boost
-```
+## How To Verify This Document
 
-Where:
+Run these checks against live code:
 
-```
-metadata_boost = surprise^w_s × recency^w_r × access_factor
-
-recency        = exp(-age_days / 90)
-access_factor  = 1.0 + log(1 + access_count) × w_a
+```bash
+python -m consolidation_memory --help
+python -m consolidation_memory serve --help
+python - <<'PY'
+from consolidation_memory import __version__
+from consolidation_memory.database import CURRENT_SCHEMA_VERSION
+print(__version__, CURRENT_SCHEMA_VERSION)
+PY
 ```
 
-Default weights: `w_s = 0.4`, `w_r = 0.35`, `w_a = 0.25`.
+And inspect:
 
-**Intuition:** Recent, surprising, frequently-accessed episodes rank higher.
-The exponential decay gives a 90-day half-life — episodes from 3 months ago
-score ~50% of the recency factor.
-
-### Knowledge Search
-
-Topics and records are searched using cached embedding matrices (rebuilt on
-invalidation). Relevance is a weighted blend:
-
-| Layer | Formula | Threshold |
-|-------|---------|-----------|
-| Topics | `semantic × 0.8 + keyword × 0.2` | 0.25 |
-| Records | `semantic × 0.9 + keyword × 0.1` | 0.30 |
-
-Procedure-type records receive a 1.15× relevance boost when the query
-contains task-oriented words (`how`, `workflow`, `steps`, `deploy`, `test`,
-etc.).
-
----
-
-## Claim Graph, Drift, And Adaptive Scheduler
-
-### Claim graph model
-
-Consolidation emits and updates claim-graph rows in SQLite:
-
-- `claims`: canonical claim text, payload, temporal validity window, lifecycle status
-- `claim_edges`: directed links (for example `contradicts`, `supports`)
-- `claim_sources`: provenance links from claims to episodes/topics/records
-- `claim_events`: lifecycle and audit trail (`create`, `update`, `expire`, `contradiction`, `code_drift_detected`, etc.)
-- `episode_anchors`: path/tool/commit anchors extracted from stored episode content
-
-Claim retrieval endpoints (`browse_claims`, `search_claims`) are deterministic
-SQL + ranking flows over this graph and support temporal reconstruction with
-`as_of`.
-
-### Drift detection flow
-
-Code-drift invalidation is implemented in `drift.py` and exposed through
-`MemoryClient.detect_drift`, CLI, and REST.
-
-```mermaid
-flowchart TD
-    A[detect_drift request] --> B[git diff --name-only working tree]
-    B --> C[optional git diff base_ref...HEAD]
-    C --> D[normalize changed paths]
-    D --> E[map paths to episode_anchors]
-    E --> F[resolve linked claims via claim_sources]
-    F --> G[mark active impacted claims as challenged]
-    G --> H[write claim_event: code_drift_detected]
-    H --> I[return impacted/challenged claim IDs + matched anchors]
-```
-
-The output is deterministic because changed paths are normalized/sorted, claim
-IDs are sorted, and audit events are always written for impacted claims.
-
-### Adaptive utility scheduler
-
-The background consolidation loop uses an adaptive trigger in addition to the
-fixed interval fallback.
-
-Signals sampled each poll:
-
-- unconsolidated backlog
-- recall miss/fallback count in lookback window
-- contradiction spike count
-- challenged-claim backlog (typically from drift)
-
-The scheduler computes a normalized weighted score using
-`consolidation/utility_scheduler.py` and config-driven weights
-(`consolidation.utility_weights`). Consolidation runs when:
-
-1. `utility_score >= consolidation.utility_threshold`, or
-2. interval timer elapsed (`consolidation.interval_hours`) as a safety fallback
-
-This design keeps behavior deterministic under fixed config + state while still
-reacting quickly to drift and contradiction pressure.
-
----
-
-## Security Considerations
-
-### Prompt Injection Defense
-
-Episode content passes through an LLM during consolidation, creating a prompt
-injection surface. Defenses are layered:
-
-1. **Sanitization** (`_sanitize_for_prompt`): A regex strips common injection
-   patterns — `system:`, `you are`, `ignore previous`, `override`,
-   `[system]`, `<system>`, etc. — replacing them with `[REDACTED]`.
-
-2. **Structural isolation**: Episodes are wrapped in `<episode>` XML tags.
-   The system prompt explicitly states that tag contents are raw data.
-
-3. **Output validation**: LLM output must parse as valid JSON with the
-   expected schema. Free-text or instruction-like output fails validation
-   and triggers a retry (bounded by the circuit breaker).
-
-### Path Traversal Guards
-
-- **Topic filenames** are produced by `_slugify()`, which strips all
-  characters except lowercase alphanumeric and underscores, and caps length
-  at 60 characters. No user-supplied path components reach the filesystem
-  directly.
-- **Project names** are validated against `^[a-z0-9][a-z0-9_-]{0,63}$`
-  before any path derivation.
-- All file operations target known subdirectories under `DATA_DIR`
-  (`knowledge/`, `backups/`, `logs/`, etc.).
-
-### Input Sanitization
-
-- **Content types** are validated against an allowlist (`exchange`, `fact`,
-  `solution`, `preference`); unrecognized values default to `exchange`.
-- **Surprise scores** are clamped to `[0.0, 1.0]`.
-- **Confidence values** are clamped to `[0.5, 0.95]`.
-- **Tags** must parse as a JSON array.
-- **All SQL queries** use parameterized placeholders (`?`) — no string
-  interpolation.
-
-### Error Isolation
-
-- The **circuit breaker** (3 failures, 60s cooldown) prevents a misbehaving
-  LLM from being called in a tight loop.
-- **Consolidation timeouts** (`CONSOLIDATION_MAX_DURATION`, default 1800s)
-  prevent runaway background work.
-- **Race-safe upserts**: `upsert_knowledge_topic` catches `IntegrityError`
-  on concurrent inserts and falls back to an update.
+- `src/consolidation_memory/database.py`
+- `src/consolidation_memory/client.py`
+- `src/consolidation_memory/query_service.py`
+- `src/consolidation_memory/context_assembler.py`

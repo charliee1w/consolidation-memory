@@ -1,107 +1,67 @@
 # Novelty Eval Guide
 
-This guide covers the local novelty benchmark harness at:
+`benchmarks/novelty_eval.py` is the authoritative novelty harness.
 
-- `python -m benchmarks.novelty_eval`
+## What It Validates
 
-The harness is designed to validate novelty wedge behavior against metrics in [NOVELTY_METRICS.md](./NOVELTY_METRICS.md) using deterministic, local scenarios.
+- Belief freshness after code drift.
+- Contradiction resolution latency.
+- Temporal claim retrieval quality.
+- Provenance trace completeness.
 
-## What It Evaluates
+The harness is deterministic and local-first by default.
 
-The harness runs four scenario groups:
+## Run It
 
-1. Stale belief after code change
-2. Contradiction evolution
-3. Temporal belief reconstruction
-4. Provenance trace completeness
-
-These align to the metrics sections:
-
-- `1) Belief Freshness After Code Drift`
-- `2) Contradiction Resolution Latency`
-- `3) Provenance Coverage`
-- `4) Claim Retrieval Precision@k` (temporal slice)
-
-## Local-First Behavior
-
-Default execution avoids cloud dependencies:
-
-- Uses local temporary project data
-- Uses deterministic local embedding patches (no remote embedding API/model download)
-- Forces config to `EMBEDDING_BACKEND=fastembed`, `LLM_BACKEND=disabled`
-- Does not call OpenAI or remote LLM APIs
-
-## Run Instructions
-
-Quick run (recommended for PR checks):
+Quick mode (CI-like):
 
 ```bash
-python -m benchmarks.novelty_eval --mode quick
+python -m benchmarks.novelty_eval --mode quick --output benchmarks/results/novelty_eval_ci_quick_local.json
 ```
 
-Full run:
+Full mode (release-grade):
 
 ```bash
-python -m benchmarks.novelty_eval --mode full
+python -m benchmarks.novelty_eval --mode full --output benchmarks/results/novelty_eval_release_full.json
 ```
 
-Optional output path:
-
-```bash
-python -m benchmarks.novelty_eval --mode quick --output benchmarks/results/novelty_eval_quick.json
-```
-
-## Output JSON Schema
-
-Top-level:
-
-- `benchmark`: `"novelty_eval"`
-- `run_id`: unique benchmark run identifier
-- `mode`: `"quick"` or `"full"`
-- `generated_at`: ISO-8601 UTC timestamp
-- `cloud_dependencies_used`: boolean
-- `aligned_metrics_doc`: path string
-- `sections`: per-metric section objects
-- `overall_pass`: boolean (all sections pass)
-
-Each section includes:
-
-- `aligned_metric_section`
-- `formula`
-- `thresholds`
-- `measured`
-- `pass`
-- scenario/query detail rows
-
-## Interpreting Results
-
-- `overall_pass=true` means all measured novelty sections passed in the same run.
-- For drift freshness, inspect:
-  - `freshness_after_drift`
-  - `stale_claim_leak_rate`
-  - `p95_challenge_lag_seconds`
-- For contradiction evolution, inspect:
-  - `median_latency_seconds`
-  - `p95_latency_seconds`
-  - `unresolved_contradiction_scenarios`
-- For temporal reconstruction, inspect:
-  - `overall_macro_precision_at_5`
-  - per-query `precision_at_5`
-- For provenance completeness, inspect:
-  - `provenance_coverage`
-  - `missing_provenance_claims_per_1000`
-
-If a section fails, use its scenario/query details to locate regressions quickly.
-
-## Release Gate Validation
-
-Validate a Full-run artifact against release policy gates:
+## Validate Release Gates
 
 ```bash
 python scripts/verify_release_gates.py \
-  --novelty-result benchmarks/results/novelty_eval_full.json \
+  --novelty-result benchmarks/results/novelty_eval_release_full.json \
   --scope-use-case "Drift-aware debugging memory" \
   --output benchmarks/results/release_gate_report.json
 ```
 
-The command fails closed (exit code 1) when any mandatory gate fails.
+## Expected Output Shape
+
+`novelty_eval.py` writes one JSON object with:
+
+- `benchmark`
+- `run_id`
+- `mode`
+- `generated_at`
+- `sections`
+- `overall_pass`
+
+Each section includes `thresholds`, `measured`, and `pass`.
+
+## Troubleshooting
+
+1. Failing threshold in one section.
+- Inspect section-level `measured` values first; do not adjust thresholds to hide regressions.
+
+2. Gate validator fails on structure.
+- Ensure novelty JSON includes required top-level and section fields.
+
+3. Scope alignment fails.
+- Ensure the exact use-case string is present in `docs/NOVELTY_WEDGE.md`.
+
+4. Recency gate fails.
+- Regenerate full novelty evidence.
+
+## CI Mapping
+
+- `test.yml` uses quick novelty checks.
+- `publish.yml` and `novelty-full-nightly.yml` use full novelty checks.

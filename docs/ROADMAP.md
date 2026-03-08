@@ -1,98 +1,62 @@
-# consolidation-memory Roadmap (Objective)
+# Roadmap
 
-## North Star
-Make consolidation-memory the default long-term memory layer for coding agents:
-- high recall usefulness
-- temporal belief correctness
-- low operator overhead
-- broad integration compatibility
+This roadmap is outcome-based so it stays useful as implementation details evolve.
 
-## Success Metrics
-- Recall precision@5 on coding benchmark >= 0.80
-- Correction consistency (markdown/topic/records aligned) >= 99.5%
-- Temporal query correctness (`as_of`) >= 99%
-- Consolidation failure rate <= 2%
-- Time-to-first-value for a new user <= 10 minutes
+## Product Objective
 
-## Mandatory Release Gates
-- Releases must satisfy `docs/RELEASE_GATES.md`; this is a hard go/no-go control, not advisory guidance.
-- `docs/NOVELTY_WEDGE.md` is the scope contract for novelty claims and acceptable release scope.
-- `docs/NOVELTY_METRICS.md` defines release-blocking pass/fail thresholds for novelty outcomes.
-- Release is blocked if any required gate fails, lacks evidence, or has evidence older than 7 days (fail closed).
+Make `consolidation-memory` the most dependable local-first memory layer for coding agents: high recall usefulness, strong trust semantics, and low operational overhead.
 
-## Phase 1 (Weeks 1-4): Reliability + Eval Foundation
-Focus:
-- define memory invariants as testable contract
-- make extraction/correction quality measurable
+## Current Platform Baseline
 
-Deliverables:
-- golden eval corpus for coding sessions (facts, solutions, preferences, procedures)
-- benchmark runner with versioned metrics output
-- invariant checks for:
-  - topic markdown <-> topic metadata <-> knowledge records
-  - contradiction/expiry timeline integrity
-  - export/import round-trip consistency
+Already implemented:
 
-Exit Criteria:
-- CI runs eval harness
-- no critical/high integrity regressions in core paths
+- Hybrid retrieval over episodes/topics/records/claims.
+- Temporal query support (`as_of`) across key trust surfaces.
+- Claim graph + contradiction and lifecycle event tracking.
+- Drift-aware claim challenge flow using stored anchors and git deltas.
+- Release gate enforcement wired into CI and publish workflows.
 
-## Phase 2 (Weeks 5-8): Coding-Agent Product Wedge
-Focus:
-- make day-to-day coding memory workflows obvious and reliable
+## Near-Term Priorities
 
-Deliverables:
-- improved task-level retrieval ranking for debugging/build workflows
-- stronger correction workflow UX (clear before/after + confidence change visibility)
-- memory health summary at a glance (decay, contradictions, stale topics)
+1. Scope hardening and policy semantics.
+- Move from scope metadata + filtering to stricter policy enforcement primitives.
 
-Exit Criteria:
-- weekly dogfood users report recall usefulness improvement
-- correction workflow is predictable and auditable
+2. Adapter maturity.
+- Strengthen cross-surface contracts so MCP/REST/OpenAI/Python remain behaviorally aligned under new features.
 
-## Phase 3 (Weeks 9-12): OpenAI-Compatible Agent Integration
-Focus:
-- frictionless use in tool-calling chat loops
+3. Evaluation depth.
+- Expand benchmark coverage beyond current novelty harness and keep evidence fresh for release decisions.
 
-Deliverables:
-- canonical OpenAI tool-calling loop example kept production-grade
-- prompt pack covering all memory tools and common multi-tool flows
-- integration regression tests for tool dispatch contracts
+4. Operational resilience.
+- Continue improving migration safety, repair tooling, and observability around consolidation and drift workflows.
 
-Exit Criteria:
-- reference integration can run end-to-end with no manual patching
-- all tool contracts stable across patch releases
+## Mid-Term Priorities
 
-## Phase 4 (Weeks 13-18): Scale + Ops Hardening
-Focus:
-- resilience under larger memory volumes and long-lived usage
+1. Universal integration adapters.
+- Add first-class adapter paths for external agent ecosystems while preserving trust invariants.
 
-Deliverables:
-- performance profile and targets for:
-  - recall latency
-  - consolidation duration
-  - compaction overhead
-- observability outputs for consolidation outcomes and contradiction trends
-- safer migration/repair paths for storage/index drift
+2. Canonical service boundary.
+- Keep business semantics centralized in query/service layers and reduce adapter duplication.
 
-Exit Criteria:
-- predictable performance at larger dataset sizes
-- recovery runbooks validated by tests
+3. Deployment posture.
+- Preserve local-first default while supporting stronger shared/self-hosted operation models.
 
-## Phase 5 (Weeks 19-26): Platform Readiness
-Focus:
-- convert from useful project to dependable memory infrastructure
+## Success Criteria
 
-Deliverables:
-- compatibility matrix (MCP/REST/OpenAI-compatible workflows)
-- stronger multi-project isolation guarantees and tooling
-- mandatory release gating enforcement via `docs/RELEASE_GATES.md`, including novelty wedge and novelty metrics evidence
+- Retrieval quality remains stable or improves across benchmark suites.
+- Trust guarantees remain auditable (temporal correctness, contradiction traceability, provenance coverage).
+- Release gates pass with recent evidence.
+- API surface remains compatible across supported transports.
 
-Exit Criteria:
-- release confidence built on measurable quality, not ad hoc validation
-- clear differentiation: temporal, auditable, self-correcting agent memory
+## Non-Goals
 
-## Non-Goals (for This Roadmap)
-- generic "AI memory for everything" positioning
-- premature multi-tenant cloud service expansion
-- broad feature expansion without reliability evidence
+- Broad “memory for everything” positioning without benchmark evidence.
+- Feature sprawl that weakens trust semantics.
+- Shipping major behavior changes without cross-surface contract checks.
+
+## Planning References
+
+- [Release Gates](RELEASE_GATES.md)
+- [Novelty Metrics](NOVELTY_METRICS.md)
+- [Novelty Wedge](NOVELTY_WEDGE.md)
+- [Universal strategy docs](strategy/)

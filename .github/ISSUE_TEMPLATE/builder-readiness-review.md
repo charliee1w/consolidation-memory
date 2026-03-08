@@ -1,41 +1,34 @@
 ---
-name: Builder Readiness Review
-about: Report onboarding and extension-building findings from an external review pass.
-title: "[Builder Review] "
-labels: ["builder-readiness", "triage"]
+name: Builder readiness review
+about: Request an external builder-style readiness review before merge or release
+title: "[Builder Review] <scope>"
+labels: ["review", "readiness"]
+assignees: []
 ---
 
-## Reviewer Environment
+## Scope
 
-- OS:
-- Python version:
-- Install command used:
+What behavior or surface is being reviewed?
 
-## Onboarding Results
+## Risk Areas
 
-- `python scripts/smoke_builder_base.py`: pass/fail
-- `python -m pytest tests/ -q -W error::ResourceWarning`: pass/fail
-- Notes:
+Which areas need close attention?
 
-## Extension Exercise
+- [ ] Temporal semantics (`as_of`)
+- [ ] Claim/provenance integrity
+- [ ] Drift challenge behavior
+- [ ] Adapter surface consistency (Python/MCP/REST/OpenAI)
+- [ ] Schema/migration/export-import integrity
 
-- Extension attempted:
-- Did it work from docs only? yes/no
-- If no, where did it fail:
+## Required Evidence
 
-## Finding
+- Commit/PR:
+- Local verification commands run:
+- CI run links:
+- Relevant novelty/release-gate artifacts (if applicable):
 
-- Severity: `P0` / `P1` / `P2` / `P3`
-- Confidence: `high` / `medium` / `low`
-- Expected behavior:
-- Actual behavior:
+## Reviewer Deliverables
 
-## Reproduction
-
-```bash
-# copy-paste exact commands
-```
-
-## Proposed Fix Direction
-
-- 
+- Severity-ranked findings with file/line references
+- Reproduction notes
+- Gaps not reviewed

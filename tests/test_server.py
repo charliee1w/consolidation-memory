@@ -8,8 +8,6 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 class TestMCPDetectDriftTool:
     def test_memory_detect_drift_signature(self):

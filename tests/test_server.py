@@ -114,22 +114,22 @@ class TestMCPServerLifecycle:
         finally:
             server._client = original_client
 
-    def test_get_client_with_timeout_returns_client_even_if_slow(self):
+    def test_get_client_with_timeout_raises_timeout_error(self):
         import consolidation_memory.server as server
-
-        slow_client = MagicMock()
 
         def _slow_get_client():
             time.sleep(0.05)
-            return slow_client
+            return MagicMock()
 
         with (
             patch("consolidation_memory.server._get_client", side_effect=_slow_get_client),
             patch("consolidation_memory.server._CLIENT_INIT_TIMEOUT_SECONDS", 0.01),
         ):
-            resolved = asyncio.run(server._get_client_with_timeout())
-
-        assert resolved is slow_client
+            try:
+                asyncio.run(server._get_client_with_timeout())
+                assert False, "Expected TimeoutError"
+            except TimeoutError as exc:
+                assert "MemoryClient initialization timed out" in str(exc)
 
 
 class TestMCPRecallTool:
@@ -176,6 +176,66 @@ class TestMCPRecallTool:
         data = json.loads(output)
         assert "error" in data
         assert "client init failed" in data["error"]
+
+    def test_memory_recall_timeout_falls_back_to_episodes_only(self):
+        from consolidation_memory.server import memory_recall
+        from consolidation_memory.types import RecallResult
+
+        def _query_recall(*args, **kwargs):
+            include_knowledge = bool(args[2])
+            if include_knowledge:
+                time.sleep(0.05)
+                return RecallResult()
+            return RecallResult(
+                episodes=[{"id": "ep-1"}],
+                warnings=[],
+            )
+
+        mock_client = MagicMock()
+        mock_client.query_recall.side_effect = _query_recall
+
+        with (
+            patch("consolidation_memory.server._get_client", return_value=mock_client),
+            patch("consolidation_memory.server._MEMORY_RECALL_TIMEOUT_SECONDS", 0.01),
+            patch("consolidation_memory.server._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", 0.2),
+        ):
+            output = asyncio.run(
+                memory_recall(
+                    query="python runtime",
+                    include_knowledge=True,
+                )
+            )
+
+        data = json.loads(output)
+        assert data["episodes"] == [{"id": "ep-1"}]
+        assert any("episodes-only fallback" in msg for msg in data.get("warnings", []))
+        assert mock_client.query_recall.call_count == 2
+
+    def test_memory_recall_timeout_returns_error_without_fallback(self):
+        from consolidation_memory.server import memory_recall
+
+        def _slow_query_recall(*args, **kwargs):
+            del args, kwargs
+            time.sleep(0.05)
+            return MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.query_recall.side_effect = _slow_query_recall
+
+        with (
+            patch("consolidation_memory.server._get_client", return_value=mock_client),
+            patch("consolidation_memory.server._MEMORY_RECALL_TIMEOUT_SECONDS", 0.01),
+        ):
+            output = asyncio.run(
+                memory_recall(
+                    query="python runtime",
+                    include_knowledge=False,
+                )
+            )
+
+        data = json.loads(output)
+        assert "error" in data
+        assert "memory_recall timed out after" in data["error"]
 
 
 class TestMCPClaimTools:

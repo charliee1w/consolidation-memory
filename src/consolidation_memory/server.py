@@ -33,10 +33,16 @@ _MAX_BATCH_SIZE = 100
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
 )
+_MEMORY_RECALL_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS", "90")
+)
+_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", "20")
+)
 _CLIENT_INIT_TIMEOUT_SECONDS = float(
     # Cold-start imports (faiss/embedding deps) can exceed 20s on Windows;
     # keep a conservative default to avoid first-call MCP timeouts.
-    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "60")
+    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "90")
 )
 
 
@@ -45,9 +51,19 @@ def _drift_timeout_seconds() -> float:
     return configured if configured > 0 else 90.0
 
 
+def _recall_timeout_seconds() -> float:
+    configured = _MEMORY_RECALL_TIMEOUT_SECONDS
+    return configured if configured > 0 else 90.0
+
+
+def _recall_fallback_timeout_seconds() -> float:
+    configured = _MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS
+    return configured if configured > 0 else 20.0
+
+
 def _client_init_timeout_seconds() -> float:
     configured = _CLIENT_INIT_TIMEOUT_SECONDS
-    return configured if configured > 0 else 60.0
+    return configured if configured > 0 else 90.0
 
 
 def _get_client():
@@ -72,17 +88,26 @@ def _get_client():
 
 async def _get_client_with_timeout():
     timeout_seconds = _client_init_timeout_seconds()
-    started = time.monotonic()
-    client = await asyncio.to_thread(_get_client)
-    elapsed = time.monotonic() - started
-    if elapsed > timeout_seconds:
-        logger.warning(
-            "MemoryClient initialization exceeded timeout budget "
-            "(%.2fs > %.2fs) but completed successfully",
-            elapsed,
-            timeout_seconds,
+    try:
+        started = time.monotonic()
+        client = await asyncio.wait_for(
+            asyncio.to_thread(_get_client),
+            timeout=timeout_seconds,
         )
-    return client
+        elapsed = time.monotonic() - started
+        if elapsed > timeout_seconds * 0.8:
+            logger.warning(
+                "MemoryClient initialization was slow (%.2fs, budget %.2fs)",
+                elapsed,
+                timeout_seconds,
+            )
+        return client
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            f"MemoryClient initialization timed out after {timeout_seconds:g}s. "
+            "Retry in a few seconds, or increase "
+            "CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS."
+        ) from exc
 
 
 @asynccontextmanager
@@ -181,14 +206,69 @@ async def memory_recall(
     try:
         client = await _get_client_with_timeout()
         n_results = max(1, min(n_results, 50))
-        result = await asyncio.to_thread(
-            lambda: client.query_recall(
-                query, n_results, include_knowledge,
-                content_types=content_types, tags=tags, after=after, before=before,
-                include_expired=include_expired, as_of=as_of,
+        recall_timeout = _recall_timeout_seconds()
+
+        def _run_recall(include_knowledge_flag: bool):
+            return client.query_recall(
+                query,
+                n_results,
+                include_knowledge_flag,
+                content_types=content_types,
+                tags=tags,
+                after=after,
+                before=before,
+                include_expired=include_expired,
+                as_of=as_of,
                 scope=scope,
             )
-        )
+
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_run_recall, include_knowledge),
+                timeout=recall_timeout,
+            )
+        except asyncio.TimeoutError:
+            # Graceful degradation for heavy recall requests:
+            # return episodes-only instead of hitting outer MCP deadlines.
+            if include_knowledge:
+                fallback_timeout = _recall_fallback_timeout_seconds()
+                logger.warning(
+                    "memory_recall timed out after %.2fs with include_knowledge=true; "
+                    "retrying episodes-only fallback",
+                    recall_timeout,
+                )
+                try:
+                    fallback_result = await asyncio.wait_for(
+                        asyncio.to_thread(_run_recall, False),
+                        timeout=fallback_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    message = (
+                        f"memory_recall timed out after {recall_timeout:g}s and fallback "
+                        f"timed out after {fallback_timeout:g}s. "
+                        "Try a shorter query, reduce n_results, or set "
+                        "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS higher."
+                    )
+                    logger.error(message)
+                    return json.dumps({"error": message})
+
+                payload = dataclasses.asdict(fallback_result)
+                warnings = list(payload.get("warnings", []))
+                warnings.append(
+                    f"Knowledge retrieval timed out after {recall_timeout:g}s; "
+                    "returned episodes-only fallback."
+                )
+                payload["warnings"] = warnings
+                return json.dumps(payload, default=str)
+
+            message = (
+                f"memory_recall timed out after {recall_timeout:g}s. "
+                "Try reducing n_results or set "
+                "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS higher."
+            )
+            logger.error(message)
+            return json.dumps({"error": message})
+
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_recall failed")

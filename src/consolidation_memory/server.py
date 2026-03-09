@@ -296,6 +296,15 @@ async def memory_recall(
                 logger.error(message)
                 return json.dumps({"error": message})
 
+            warnings: list[str] = [
+                (
+                    f"Recall timed out after {recall_timeout:g}s; "
+                    "returned episodes-only fallback."
+                )
+            ]
+            if include_knowledge:
+                warnings.append("Knowledge retrieval skipped in fallback mode.")
+
             payload = {
                 "episodes": list(keyword_result.episodes),
                 "knowledge": [],
@@ -306,17 +315,8 @@ async def memory_recall(
                 "message": (
                     "Semantic recall timed out; returned keyword episodes-only fallback."
                 ),
-                "warnings": [
-                    (
-                        f"Recall timed out after {recall_timeout:g}s; "
-                        "returned episodes-only fallback."
-                    )
-                ],
+                "warnings": warnings,
             }
-            if include_knowledge:
-                payload["warnings"].append(
-                    "Knowledge retrieval skipped in fallback mode."
-                )
             return json.dumps(payload, default=str)
 
         return json.dumps(dataclasses.asdict(result), default=str)

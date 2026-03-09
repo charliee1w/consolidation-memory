@@ -31,19 +31,25 @@ _client_lock = threading.Lock()
 
 _MAX_BATCH_SIZE = 100
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "180")
+    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
 )
 _MEMORY_RECALL_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS", "90")
+    os.environ.get("CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS", "45")
 )
 _MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", "20")
+    os.environ.get("CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", "10")
 )
 _CLIENT_INIT_TIMEOUT_SECONDS = float(
     # Cold-start imports (faiss/embedding deps) can exceed 20s on Windows;
     # keep a conservative default to avoid first-call MCP timeouts.
-    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "90")
+    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "45")
 )
+_WARMUP_ON_START = os.environ.get(
+    "CONSOLIDATION_MEMORY_WARMUP_ON_START",
+    "1",
+).strip().lower() not in {"0", "false", "no", "off"}
+
+_warmup_task: asyncio.Task | None = None
 
 
 def _drift_timeout_seconds() -> float:
@@ -64,6 +70,10 @@ def _recall_fallback_timeout_seconds() -> float:
 def _client_init_timeout_seconds() -> float:
     configured = _CLIENT_INIT_TIMEOUT_SECONDS
     return configured if configured > 0 else 90.0
+
+
+def _warmup_on_start() -> bool:
+    return _WARMUP_ON_START
 
 
 def _get_client():
@@ -110,18 +120,35 @@ async def _get_client_with_timeout():
         ) from exc
 
 
+async def _warm_client_background():
+    try:
+        await _get_client_with_timeout()
+    except Exception as exc:
+        logger.warning("Background client warmup failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Log startup metadata and close any initialized client on shutdown."""
-    global _client
+    global _client, _warmup_task
 
     from consolidation_memory import __version__
 
     logger.info("Starting consolidation_memory MCP server v%s...", __version__)
     from consolidation_memory.config import get_active_project
     logger.info("Active project: %s", get_active_project())
+    if _warmup_on_start():
+        _warmup_task = asyncio.create_task(_warm_client_background())
 
     yield
+
+    if _warmup_task is not None:
+        _warmup_task.cancel()
+        try:
+            await _warmup_task
+        except asyncio.CancelledError:
+            pass
+        _warmup_task = None
 
     if _client is not None:
         _client.close()
@@ -222,6 +249,17 @@ async def memory_recall(
                 scope=scope,
             )
 
+        def _run_keyword_fallback():
+            return client.query_search(
+                query=query,
+                content_types=content_types,
+                tags=tags,
+                after=after,
+                before=before,
+                limit=n_results,
+                scope=scope,
+            )
+
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(_run_recall, include_knowledge),
@@ -229,45 +267,57 @@ async def memory_recall(
             )
         except asyncio.TimeoutError:
             # Graceful degradation for heavy recall requests:
-            # return episodes-only instead of hitting outer MCP deadlines.
-            if include_knowledge:
-                fallback_timeout = _recall_fallback_timeout_seconds()
-                logger.warning(
-                    "memory_recall timed out after %.2fs with include_knowledge=true; "
-                    "retrying episodes-only fallback",
-                    recall_timeout,
-                )
-                try:
-                    fallback_result = await asyncio.wait_for(
-                        asyncio.to_thread(_run_recall, False),
-                        timeout=fallback_timeout,
-                    )
-                except asyncio.TimeoutError:
-                    message = (
-                        f"memory_recall timed out after {recall_timeout:g}s and fallback "
-                        f"timed out after {fallback_timeout:g}s. "
-                        "Try a shorter query, reduce n_results, or set "
-                        "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS higher."
-                    )
-                    logger.error(message)
-                    return json.dumps({"error": message})
-
-                payload = dataclasses.asdict(fallback_result)
-                warnings = list(payload.get("warnings", []))
-                warnings.append(
-                    f"Knowledge retrieval timed out after {recall_timeout:g}s; "
-                    "returned episodes-only fallback."
-                )
-                payload["warnings"] = warnings
-                return json.dumps(payload, default=str)
-
-            message = (
-                f"memory_recall timed out after {recall_timeout:g}s. "
-                "Try reducing n_results or set "
-                "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS higher."
+            # use keyword-only episode search instead of another semantic recall,
+            # so we still return useful results when embedding operations stall.
+            fallback_timeout = _recall_fallback_timeout_seconds()
+            logger.warning(
+                "memory_recall timed out after %.2fs; retrying keyword episodes-only fallback",
+                recall_timeout,
             )
-            logger.error(message)
-            return json.dumps({"error": message})
+            try:
+                keyword_result = await asyncio.wait_for(
+                    asyncio.to_thread(_run_keyword_fallback),
+                    timeout=fallback_timeout,
+                )
+            except asyncio.TimeoutError:
+                message = (
+                    f"memory_recall timed out after {recall_timeout:g}s and keyword fallback "
+                    f"timed out after {fallback_timeout:g}s. "
+                    "Try a shorter query, reduce n_results, or set "
+                    "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS higher."
+                )
+                logger.error(message)
+                return json.dumps({"error": message})
+            except Exception as fallback_error:
+                message = (
+                    f"memory_recall timed out after {recall_timeout:g}s and keyword fallback "
+                    f"failed: {fallback_error}"
+                )
+                logger.error(message)
+                return json.dumps({"error": message})
+
+            payload = {
+                "episodes": list(keyword_result.episodes),
+                "knowledge": [],
+                "records": [],
+                "claims": [],
+                "total_episodes": int(keyword_result.total_matches),
+                "total_knowledge_topics": 0,
+                "message": (
+                    "Semantic recall timed out; returned keyword episodes-only fallback."
+                ),
+                "warnings": [
+                    (
+                        f"Recall timed out after {recall_timeout:g}s; "
+                        "returned episodes-only fallback."
+                    )
+                ],
+            }
+            if include_knowledge:
+                payload["warnings"].append(
+                    "Knowledge retrieval skipped in fallback mode."
+                )
+            return json.dumps(payload, default=str)
 
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:

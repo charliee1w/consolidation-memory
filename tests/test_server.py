@@ -108,7 +108,10 @@ class TestMCPServerLifecycle:
                 async with server.lifespan(server.mcp):
                     assert server._client is None
 
-            with patch("consolidation_memory.client.MemoryClient") as mock_ctor:
+            with (
+                patch("consolidation_memory.server._WARMUP_ON_START", False),
+                patch("consolidation_memory.client.MemoryClient") as mock_ctor,
+            ):
                 asyncio.run(_enter_and_exit_lifespan())
                 mock_ctor.assert_not_called()
         finally:
@@ -186,13 +189,13 @@ class TestMCPRecallTool:
             if include_knowledge:
                 time.sleep(0.05)
                 return RecallResult()
-            return RecallResult(
-                episodes=[{"id": "ep-1"}],
-                warnings=[],
-            )
 
         mock_client = MagicMock()
         mock_client.query_recall.side_effect = _query_recall
+        mock_client.query_search.return_value = MagicMock(
+            episodes=[{"id": "ep-1"}],
+            total_matches=1,
+        )
 
         with (
             patch("consolidation_memory.server._get_client", return_value=mock_client),
@@ -209,12 +212,15 @@ class TestMCPRecallTool:
         data = json.loads(output)
         assert data["episodes"] == [{"id": "ep-1"}]
         assert any("episodes-only fallback" in msg for msg in data.get("warnings", []))
-        # CI can occasionally time out before the first worker thread starts,
-        # so fallback may be the only observed call. Verify fallback semantics
-        # instead of enforcing an exact call count.
-        calls = mock_client.query_recall.call_args_list
-        assert calls
-        assert any(len(c.args) >= 3 and c.args[2] is False for c in calls)
+        mock_client.query_search.assert_called_once_with(
+            query="python runtime",
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            limit=10,
+            scope=None,
+        )
 
     def test_memory_recall_timeout_returns_error_without_fallback(self):
         from consolidation_memory.server import memory_recall
@@ -224,12 +230,19 @@ class TestMCPRecallTool:
             time.sleep(0.05)
             return MagicMock()
 
+        def _slow_query_search(*args, **kwargs):
+            del args, kwargs
+            time.sleep(0.05)
+            return MagicMock()
+
         mock_client = MagicMock()
         mock_client.query_recall.side_effect = _slow_query_recall
+        mock_client.query_search.side_effect = _slow_query_search
 
         with (
             patch("consolidation_memory.server._get_client", return_value=mock_client),
             patch("consolidation_memory.server._MEMORY_RECALL_TIMEOUT_SECONDS", 0.01),
+            patch("consolidation_memory.server._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", 0.01),
         ):
             output = asyncio.run(
                 memory_recall(
@@ -241,6 +254,7 @@ class TestMCPRecallTool:
         data = json.loads(output)
         assert "error" in data
         assert "memory_recall timed out after" in data["error"]
+        assert "keyword fallback timed out after" in data["error"]
 
 
 class TestMCPClaimTools:

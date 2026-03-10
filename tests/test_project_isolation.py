@@ -12,6 +12,7 @@ from consolidation_memory.config import (
     get_active_project,
     set_active_project,
     get_config,
+    override_config,
     maybe_migrate_to_projects,
 )
 from consolidation_memory import config
@@ -206,6 +207,28 @@ class TestSetActiveProject:
         release.set()
         thread.join(timeout=5)
         assert not thread.is_alive()
+
+    def test_db_path_change_does_not_accumulate_closed_connections(self, tmp_data_dir):
+        from consolidation_memory.database import ensure_schema, get_connection
+
+        database.close_all_connections()
+        ensure_schema()
+        with get_connection() as first_conn:
+            first_conn_id = id(first_conn)
+        assert len(database._all_connections) == 1
+
+        cfg = get_config()
+        alt_base = cfg._base_data_dir / "alt-project-root"
+        with override_config(_base_data_dir=alt_base):
+            ensure_schema()
+            with get_connection() as second_conn:
+                assert id(second_conn) != first_conn_id
+            assert len(database._all_connections) == 1
+
+        ensure_schema()
+        with get_connection() as third_conn:
+            assert id(third_conn) != first_conn_id
+        assert len(database._all_connections) == 1
 
 
 # ── Project isolation (end-to-end) ──────────────────────────────────────────

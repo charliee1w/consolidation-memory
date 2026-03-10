@@ -38,6 +38,8 @@ _client_initializing = False
 _client_init_owner_thread_id: int | None = None
 _client_init_error: Exception | None = None
 _client_init_cond = threading.Condition(_client_lock)
+_server_shutting_down = False
+_server_lifecycle_epoch = 0
 
 
 _MAX_BATCH_SIZE = 100
@@ -77,6 +79,9 @@ _PRELOAD_NUMERIC_BACKENDS_ON_START = os.environ.get(
     "CONSOLIDATION_MEMORY_PRELOAD_NUMERIC_BACKENDS_ON_START",
     "1",
 ).strip().lower() not in {"0", "false", "no", "off"}
+_WARMUP_START_DELAY_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_WARMUP_START_DELAY_SECONDS", "0.25")
+)
 
 _warmup_task: asyncio.Task | None = None
 _idle_task: asyncio.Task | None = None
@@ -110,6 +115,11 @@ def _client_init_timeout_seconds() -> float:
 
 def _warmup_on_start() -> bool:
     return _WARMUP_ON_START
+
+
+def _warmup_start_delay_seconds() -> float:
+    configured = _WARMUP_START_DELAY_SECONDS
+    return configured if configured > 0 else 0.0
 
 
 def _preload_numeric_backends() -> None:
@@ -198,6 +208,8 @@ def _get_client():
     global _client_initializing
     global _client_init_owner_thread_id
     global _client_init_error
+    global _server_shutting_down
+    global _server_lifecycle_epoch
 
     client = _client
     if client is not None:
@@ -205,10 +217,14 @@ def _get_client():
 
     should_initialize = False
     current_thread_id = threading.get_ident()
+    lifecycle_epoch = 0
 
     with _client_init_cond:
         if _client is not None:
             return _client
+        if _server_shutting_down:
+            raise RuntimeError("MemoryClient initialization aborted: MCP server is shutting down")
+        lifecycle_epoch = _server_lifecycle_epoch
 
         # Re-entrant protection: if initialization path invokes _get_client()
         # again on the same thread, fail fast instead of deadlocking.
@@ -226,6 +242,10 @@ def _get_client():
         else:
             while _client_initializing and _client is None:
                 _client_init_cond.wait(timeout=0.5)
+                if _server_shutting_down or _server_lifecycle_epoch != lifecycle_epoch:
+                    raise RuntimeError(
+                        "MemoryClient initialization aborted: MCP server lifecycle changed"
+                    )
             if _client is not None:
                 return _client
             if _client_init_error is not None:
@@ -251,12 +271,29 @@ def _get_client():
             _client_init_cond.notify_all()
         raise
 
+    abort_error: RuntimeError | None = None
     with _client_init_cond:
-        _client = initialized_client
-        _client_initializing = False
-        _client_init_owner_thread_id = None
-        _client_init_error = None
-        _client_init_cond.notify_all()
+        if _server_shutting_down or _server_lifecycle_epoch != lifecycle_epoch:
+            abort_error = RuntimeError(
+                "MemoryClient initialization aborted: MCP server lifecycle changed during startup"
+            )
+            _client_initializing = False
+            _client_init_owner_thread_id = None
+            _client_init_error = abort_error
+            _client_init_cond.notify_all()
+        else:
+            _client = initialized_client
+            _client_initializing = False
+            _client_init_owner_thread_id = None
+            _client_init_error = None
+            _client_init_cond.notify_all()
+
+    if abort_error is not None:
+        try:
+            initialized_client.close()
+        except Exception:
+            logger.debug("Failed to close aborted MemoryClient instance", exc_info=True)
+        raise abort_error
 
     return initialized_client
 
@@ -309,8 +346,16 @@ async def _get_client_with_timeout():
 
 async def _warm_client_background():
     try:
+        delay_seconds = _warmup_start_delay_seconds()
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+        with _client_init_cond:
+            if _server_shutting_down:
+                return
         client = await _get_client_with_timeout()
         await _run_blocking(_warm_recall_caches, client)
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         logger.warning("Background client warmup failed: %s", exc)
 
@@ -342,10 +387,14 @@ async def lifespan(server: FastMCP):
     """Log startup metadata and close any initialized client on shutdown."""
     global _client, _warmup_task, _idle_task
     global _client_initializing, _client_init_owner_thread_id, _client_init_error
+    global _server_shutting_down, _server_lifecycle_epoch
 
     from consolidation_memory import __version__
 
     logger.info("Starting consolidation_memory MCP server v%s...", __version__)
+    with _client_init_cond:
+        _server_shutting_down = False
+        _server_lifecycle_epoch += 1
     from consolidation_memory.config import get_active_project
     logger.info("Active project: %s", get_active_project())
     _preload_numeric_backends()
@@ -355,6 +404,11 @@ async def lifespan(server: FastMCP):
         _idle_task = asyncio.create_task(_idle_shutdown_monitor())
 
     yield
+
+    with _client_init_cond:
+        _server_shutting_down = True
+        _server_lifecycle_epoch += 1
+        _client_init_cond.notify_all()
 
     if _idle_task is not None:
         _idle_task.cancel()
@@ -375,9 +429,12 @@ async def lifespan(server: FastMCP):
     if _client is not None:
         _client.close()
         _client = None
-    _client_initializing = False
-    _client_init_owner_thread_id = None
-    _client_init_error = None
+    with _client_init_cond:
+        _client_initializing = False
+        _client_init_owner_thread_id = None
+        _client_init_error = None
+        _server_shutting_down = False
+        _client_init_cond.notify_all()
     logger.info("Shutting down consolidation_memory MCP server.")
 
 

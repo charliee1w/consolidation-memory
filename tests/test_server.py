@@ -267,11 +267,15 @@ class TestMCPServerLifecycle:
         original_initializing = server._client_initializing
         original_owner_thread_id = server._client_init_owner_thread_id
         original_init_error = server._client_init_error
+        original_shutting_down = server._server_shutting_down
+        original_epoch = server._server_lifecycle_epoch
         try:
             server._client = None
             server._client_initializing = False
             server._client_init_owner_thread_id = None
             server._client_init_error = None
+            server._server_shutting_down = False
+            server._server_lifecycle_epoch = 0
 
             mock_client = MagicMock()
             entered = threading.Event()
@@ -298,6 +302,78 @@ class TestMCPServerLifecycle:
             server._client_initializing = original_initializing
             server._client_init_owner_thread_id = original_owner_thread_id
             server._client_init_error = original_init_error
+            server._server_shutting_down = original_shutting_down
+            server._server_lifecycle_epoch = original_epoch
+
+    def test_get_client_aborts_when_lifecycle_changes_mid_init(self):
+        import consolidation_memory.server as server
+
+        original_client = server._client
+        original_initializing = server._client_initializing
+        original_owner_thread_id = server._client_init_owner_thread_id
+        original_init_error = server._client_init_error
+        original_shutting_down = server._server_shutting_down
+        original_epoch = server._server_lifecycle_epoch
+        try:
+            server._client = None
+            server._client_initializing = False
+            server._client_init_owner_thread_id = None
+            server._client_init_error = None
+            server._server_shutting_down = False
+            server._server_lifecycle_epoch = 7
+
+            mock_client = MagicMock()
+            entered = threading.Event()
+            release = threading.Event()
+
+            def _constructor():
+                entered.set()
+                release.wait(timeout=1.0)
+                return mock_client
+
+            with (
+                patch("consolidation_memory.client.MemoryClient", side_effect=_constructor),
+                concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool,
+            ):
+                future = pool.submit(server._get_client)
+                assert entered.wait(timeout=1.0)
+                with server._client_init_cond:
+                    server._server_shutting_down = True
+                    server._server_lifecycle_epoch += 1
+                    server._client_init_cond.notify_all()
+                release.set()
+                try:
+                    future.result(timeout=1.0)
+                    assert False, "Expected initialization abort after lifecycle change"
+                except RuntimeError as exc:
+                    assert "lifecycle changed" in str(exc)
+
+            assert server._client is None
+            mock_client.close.assert_called_once()
+        finally:
+            server._client = original_client
+            server._client_initializing = original_initializing
+            server._client_init_owner_thread_id = original_owner_thread_id
+            server._client_init_error = original_init_error
+            server._server_shutting_down = original_shutting_down
+            server._server_lifecycle_epoch = original_epoch
+
+    def test_warm_client_background_skips_init_when_shutdown_flag_set(self):
+        import consolidation_memory.server as server
+
+        original_shutting_down = server._server_shutting_down
+        original_delay = server._WARMUP_START_DELAY_SECONDS
+        try:
+            server._server_shutting_down = True
+            server._WARMUP_START_DELAY_SECONDS = 0.0
+            with patch(
+                "consolidation_memory.server._get_client_with_timeout",
+                side_effect=AssertionError("warmup should not initialize during shutdown"),
+            ):
+                asyncio.run(server._warm_client_background())
+        finally:
+            server._server_shutting_down = original_shutting_down
+            server._WARMUP_START_DELAY_SECONDS = original_delay
 
 
 class TestMCPRecallTool:

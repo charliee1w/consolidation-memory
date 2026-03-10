@@ -555,6 +555,19 @@ def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _close_and_untrack_connection(conn: sqlite3.Connection) -> None:
+    """Close a cached connection and remove it from global tracking."""
+    try:
+        conn.close()
+    except Exception:  # nosec B110
+        pass
+    with _conn_list_lock:
+        try:
+            _all_connections.remove(conn)
+        except ValueError:
+            pass
+
+
 def _get_cached_connection() -> sqlite3.Connection:
     """Return a thread-local cached connection. Creates one if needed."""
     current_db_path = str(_get_config().DB_PATH)
@@ -564,10 +577,7 @@ def _get_cached_connection() -> sqlite3.Connection:
         # Project switching updates config paths at runtime; if the DB path changed,
         # discard the stale thread-local connection and open a new one.
         if cached_db_path and cached_db_path != current_db_path:
-            try:
-                conn.close()
-            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
-                pass
+            _close_and_untrack_connection(conn)
             _local.conn = None
             _local.db_path = None
             _local.conn_depth = 0
@@ -577,6 +587,7 @@ def _get_cached_connection() -> sqlite3.Connection:
                 conn.execute("SELECT 1")
                 return conn
             except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+                _close_and_untrack_connection(conn)
                 _local.conn = None
                 _local.db_path = None
                 _local.conn_depth = 0
@@ -600,15 +611,7 @@ def close_thread_local_connection() -> None:
     """Close only the current thread's cached connection, if present."""
     conn: sqlite3.Connection | None = getattr(_local, "conn", None)
     if conn is not None:
-        try:
-            conn.close()
-        except Exception:  # nosec B110
-            pass
-        with _conn_list_lock:
-            try:
-                _all_connections.remove(conn)
-            except ValueError:
-                pass
+        _close_and_untrack_connection(conn)
     _local.conn = None
     _local.db_path = None
     _local.conn_depth = 0

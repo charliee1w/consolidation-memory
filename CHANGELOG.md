@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.6 - 2026-03-10
+
+### Highlights
+
+- Start consolidation MCP server
+- Add auto MCP server start
+- Determine MCP timeout root cause
+- Resolve context assembler mypy error
+- Clean up MCP processes
+- Assess codebase and plan fixes
+- Fix consolidation workflow issues
+- Fix memory drift detection
+- Adjust consolidation force limits
+- Implement persisted policy ACLs
+- Implement policy ACL entities
+- Fix B608 warnings in database
+
+
 ## 0.13.5 - 2026-03-08
 
 ### Highlights

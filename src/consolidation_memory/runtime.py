@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import functools
+import logging
 import threading
 from collections.abc import Callable
 from typing import TypeVar
@@ -12,6 +13,7 @@ from typing import TypeVar
 from consolidation_memory.database import close_all_connections, ensure_schema
 
 _T = TypeVar("_T")
+logger = logging.getLogger(__name__)
 
 
 def _default_client_factory():
@@ -210,7 +212,7 @@ class MemoryRuntime:
             try:
                 initialized_client.close()
             except Exception:
-                pass
+                logger.warning("Failed to close aborted MemoryClient initialization cleanly", exc_info=True)
             raise abort_error
 
         return initialized_client

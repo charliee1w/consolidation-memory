@@ -759,10 +759,12 @@ def cmd_reindex():
     dim = get_dimension()
     print(f"Embedding dimension: {dim}")
 
+    import numpy as np
+
     # Process in batches
     batch_size = 50
-    all_ids = []
-    all_vecs = []
+    all_ids: list[str] = []
+    all_vecs: list[np.ndarray] = []
 
     for i in range(0, len(episodes), batch_size):
         batch = episodes[i:i + batch_size]
@@ -779,8 +781,7 @@ def cmd_reindex():
         print("No embeddings produced. Aborting.")
         return
 
-    import numpy as np
-    all_vecs_arr = np.vstack(all_vecs)
+    all_vecs_arr: np.ndarray = np.vstack(all_vecs)
 
     # Rebuild FAISS index
     index = faiss.IndexFlatIP(dim)
@@ -948,10 +949,10 @@ def cmd_dashboard():
     """Launch the TUI dashboard."""
     try:
         from consolidation_memory.dashboard import DashboardApp
+        app = DashboardApp()
     except ImportError:
         print("Dashboard requires textual. Install with: pip install consolidation-memory[dashboard]")
         sys.exit(1)
-    app = DashboardApp()
     app.run()
 
 

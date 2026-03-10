@@ -211,9 +211,13 @@ def create_app() -> FastAPI:
         version=__version__,
         lifespan=lifespan,
     )
+    _install_auth_middleware(app)
+    _register_memory_routes(app)
+    return app
 
+def _install_auth_middleware(app: FastAPI) -> None:
     @app.middleware("http")
-    async def _rest_auth_middleware(request: Request, call_next):
+    async def _rest_auth_middleware(request: Request, call_next):  # pragma: no cover - exercised in REST tests
         token = get_rest_auth_token()
         if token is None or request.method == "OPTIONS" or request.url.path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
@@ -234,8 +238,8 @@ def create_app() -> FastAPI:
             )
         return await call_next(request)
 
+def _register_memory_routes(app: FastAPI) -> None:
     # ── Endpoints ────────────────────────────────────────────────────────
-
     @app.get("/health")
     async def health():
         """Health check."""
@@ -483,5 +487,3 @@ def create_app() -> FastAPI:
         """Show what would be forgotten if pruning ran right now."""
         result = await asyncio.to_thread(_require_client().decay_report)
         return dataclasses.asdict(result)
-
-    return app

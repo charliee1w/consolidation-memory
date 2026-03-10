@@ -567,39 +567,22 @@ def _emit_claims_for_records(
     return claim_ids
 
 
-def _merge_into_existing(
+def _load_existing_topic_merge_state(
     existing: dict,
-    extraction_data: dict,
-    cluster_episodes: list[dict],
+    *,
     cluster_ep_ids: list[str],
-    confidence: float,
-    cluster_scope: dict[str, str | None] | None = None,
-) -> tuple[str, int]:
-    """Merge new extracted records into an existing topic.
-
-    Returns:
-        Tuple of (status, api_calls) where status is 'updated' or 'failed'.
-
-    Raises:
-        Exception: Propagated from LLM or file I/O failures (caller handles).
-    """
-    if cluster_scope is None:
-        cluster_scope = _episode_scope_row(cluster_episodes[0]) if cluster_episodes else _default_scope_row()
-
-    # Load existing records from DB
+) -> tuple[list[dict], list[dict], list[str], Path] | None:
+    """Load DB records/frontmatter needed to merge into an existing topic."""
     existing_db_records = get_records_by_topic(existing["id"])
-    existing_records = []
-    for r in existing_db_records:
+    existing_records: list[dict] = []
+    for row in existing_db_records:
         try:
-            content = json.loads(r["content"]) if isinstance(r["content"], str) else r["content"]
+            content = json.loads(row["content"]) if isinstance(row["content"], str) else row["content"]
         except (json.JSONDecodeError, TypeError):
-            content = {"type": "fact", "subject": "?", "info": r.get("content", "")}
+            content = {"type": "fact", "subject": "?", "info": row.get("content", "")}
         existing_records.append(content)
 
-    new_records = extraction_data.get("records", [])
-
-    # Parse existing topic metadata
-    existing_tags = []
+    existing_tags: list[str] = []
     filepath = get_config().KNOWLEDGE_DIR / existing["filename"]
 
     # Validate that the resolved path stays within KNOWLEDGE_DIR (path traversal guard)
@@ -609,13 +592,28 @@ def _merge_into_existing(
             "Path traversal detected: %s resolves outside KNOWLEDGE_DIR", existing["filename"]
         )
         increment_consolidation_attempts(cluster_ep_ids)
-        return "failed", 0
+        return None
 
     if filepath.exists():
         existing_content = filepath.read_text(encoding="utf-8")
         parsed_fm = _parse_frontmatter(existing_content)
         existing_tags = parsed_fm["meta"].get("tags", [])
 
+    return existing_db_records, existing_records, existing_tags, filepath
+
+
+def _resolve_merged_payload(
+    *,
+    existing: dict,
+    extraction_data: dict,
+    existing_db_records: list[dict],
+    existing_records: list[dict],
+    existing_tags: list[str],
+    cluster_episodes: list[dict],
+    cluster_ep_ids: list[str],
+) -> tuple[tuple[str, str, list[str], list[dict]] | None, int]:
+    """Resolve merged topic metadata/records with deterministic fallbacks."""
+    new_records = extraction_data.get("records", [])
     merge_prompt = _build_merge_extraction_prompt(
         existing_records=existing_records,
         new_records=new_records,
@@ -662,7 +660,7 @@ def _merge_into_existing(
         if not merged_records:
             logger.error("Deterministic merge also produced no records for %s", existing["filename"])
             increment_consolidation_attempts(cluster_ep_ids)
-            return "failed", merge_calls
+            return None, merge_calls
 
     # Guard: reject merge if LLM drastically reduced record count
     if len(existing_db_records) >= 4 and len(merged_records) < len(existing_db_records) * 0.5:
@@ -689,7 +687,48 @@ def _merge_into_existing(
                 len(merged_records),
             )
             increment_consolidation_attempts(cluster_ep_ids)
-            return "failed", merge_calls
+            return None, merge_calls
+
+    return (merged_title, merged_summary, merged_tags, merged_records), merge_calls
+
+
+def _merge_into_existing(
+    existing: dict,
+    extraction_data: dict,
+    cluster_episodes: list[dict],
+    cluster_ep_ids: list[str],
+    confidence: float,
+    cluster_scope: dict[str, str | None] | None = None,
+) -> tuple[str, int]:
+    """Merge new extracted records into an existing topic.
+
+    Returns:
+        Tuple of (status, api_calls) where status is 'updated' or 'failed'.
+
+    Raises:
+        Exception: Propagated from LLM or file I/O failures (caller handles).
+    """
+    if cluster_scope is None:
+        cluster_scope = _episode_scope_row(cluster_episodes[0]) if cluster_episodes else _default_scope_row()
+
+    state = _load_existing_topic_merge_state(existing, cluster_ep_ids=cluster_ep_ids)
+    if state is None:
+        return "failed", 0
+    existing_db_records, existing_records, existing_tags, filepath = state
+
+    merged_payload, merge_calls = _resolve_merged_payload(
+        existing=existing,
+        extraction_data=extraction_data,
+        existing_db_records=existing_db_records,
+        existing_records=existing_records,
+        existing_tags=existing_tags,
+        cluster_episodes=cluster_episodes,
+        cluster_ep_ids=cluster_ep_ids,
+    )
+    if merged_payload is None:
+        return "failed", merge_calls
+    merged_title, merged_summary, merged_tags, merged_records = merged_payload
+    new_records = extraction_data.get("records", [])
 
     # Detect silent drops: pre-merge records not preserved in merged output
     cfg = get_config()
@@ -1130,6 +1169,148 @@ def _process_cluster(
         return {"status": "created", "api_calls": api_calls}
 
 
+def _build_scope_isolated_similarity(
+    valid_episodes: list[dict],
+    vectors: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build similarity/distance matrices with scope isolation applied."""
+    sim_matrix = vectors @ vectors.T
+    np.fill_diagonal(sim_matrix, 1.0)
+    dist_matrix = 1.0 - sim_matrix
+    dist_matrix = np.clip(dist_matrix, 0, 2)
+
+    # Scope isolation guard: never cluster episodes from different
+    # namespace/project/client/agent/session scopes together.
+    scope_keys = [_scope_key(_episode_scope_row(ep)) for ep in valid_episodes]
+    for i in range(len(scope_keys)):
+        for j in range(i + 1, len(scope_keys)):
+            if scope_keys[i] != scope_keys[j]:
+                dist_matrix[i, j] = 2.0
+                dist_matrix[j, i] = 2.0
+                sim_matrix[i, j] = 0.0
+                sim_matrix[j, i] = 0.0
+
+    return sim_matrix, dist_matrix
+
+
+def _build_clusters_from_distance(
+    valid_episodes: list[dict],
+    dist_matrix: np.ndarray,
+) -> tuple[dict[int, list[tuple[dict, int]]], dict[int, list[tuple[dict, int]]]]:
+    """Build all clusters and the subset meeting min-size threshold."""
+    cfg = get_config()
+    condensed = squareform(dist_matrix, checks=False)
+    linkage_matrix = linkage(condensed, method="average")
+    labels = fcluster(
+        linkage_matrix,
+        t=1.0 - cfg.CONSOLIDATION_CLUSTER_THRESHOLD,
+        criterion="distance",
+    )
+
+    clusters: dict[int, list[tuple[dict, int]]] = {}
+    for idx, (ep, label) in enumerate(zip(valid_episodes, labels)):
+        clusters.setdefault(int(label), []).append((ep, idx))
+
+    valid_clusters = {
+        cluster_id: items
+        for cluster_id, items in clusters.items()
+        if len(items) >= cfg.CONSOLIDATION_MIN_CLUSTER_SIZE
+    }
+    return clusters, valid_clusters
+
+
+def _run_cluster_processing_loop(
+    valid_clusters: dict[int, list[tuple[dict, int]]],
+    sim_matrix: np.ndarray,
+    cfg,
+) -> tuple[int, int, int, int, list[float], list[str], float]:
+    """Process clusters and aggregate counters for the consolidation report."""
+    topics_created = 0
+    topics_updated = 0
+    clusters_failed = 0
+    consecutive_failures = 0
+    api_calls = 0
+    run_start = time.monotonic()
+    cluster_confidences: list[float] = []
+    all_failed_ep_ids: list[str] = []
+
+    for cluster_id, cluster_items in valid_clusters.items():
+        elapsed = time.monotonic() - run_start
+        if elapsed > cfg.CONSOLIDATION_MAX_DURATION:
+            logger.warning(
+                "Consolidation max duration (%.0fs) exceeded after %.0fs, stopping early",
+                cfg.CONSOLIDATION_MAX_DURATION,
+                elapsed,
+            )
+            break
+
+        if consecutive_failures >= 3:
+            logger.warning(
+                "3 consecutive cluster failures — aborting consolidation "
+                "(backend likely unavailable)"
+            )
+            break
+
+        cluster_result = _process_cluster(
+            cluster_id,
+            cluster_items,
+            sim_matrix,
+            cluster_confidences,
+        )
+        api_calls += cluster_result["api_calls"]
+        if cluster_result["status"] == "created":
+            topics_created += 1
+            consecutive_failures = 0
+        elif cluster_result["status"] == "updated":
+            topics_updated += 1
+            consecutive_failures = 0
+        elif cluster_result["status"] == "failed":
+            clusters_failed += 1
+            consecutive_failures += 1
+            all_failed_ep_ids.extend(cluster_result.get("failed_ep_ids", []))
+
+    return (
+        topics_created,
+        topics_updated,
+        clusters_failed,
+        api_calls,
+        cluster_confidences,
+        all_failed_ep_ids,
+        run_start,
+    )
+
+
+def _maybe_prune_and_compact(vs: VectorStore, cfg) -> list[dict]:
+    """Handle pruning/tombstone compaction and return pruned episode rows."""
+    prunable: list[dict] = []
+    if cfg.CONSOLIDATION_PRUNE_ENABLED:
+        prunable = get_prunable_episodes(days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS)
+        if prunable:
+            prune_ids = [ep["id"] for ep in prunable]
+            mark_pruned(prune_ids)
+            removed = vs.remove_batch(prune_ids)
+            logger.info(
+                "Pruned %d old episodes (%d vectors tombstoned)",
+                len(prunable),
+                removed,
+            )
+            get_plugin_manager().fire("on_prune", episode_ids=prune_ids)
+    else:
+        logger.debug("Pruning disabled (set prune_enabled = true in config to enable)")
+
+    logger.info(
+        "FAISS tombstone ratio: %.1f%% (compaction threshold: %.1f%%)",
+        vs.tombstone_ratio * 100,
+        cfg.FAISS_COMPACTION_THRESHOLD * 100,
+    )
+    if vs.tombstone_ratio >= cfg.FAISS_COMPACTION_THRESHOLD:
+        compacted = vs.compact()
+        logger.info("Compacted %d tombstoned vectors from FAISS index", compacted)
+
+    VectorStore.signal_reload()
+    return prunable
+
+
 # ── Main consolidation loop ───────────────────────────────────────────────────
 
 
@@ -1209,21 +1390,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             id_to_episode = {ep["id"]: ep for ep in episodes}
             valid_episodes = [id_to_episode[uid] for uid in found_ids if uid in id_to_episode]
 
-            sim_matrix = vectors @ vectors.T
-            np.fill_diagonal(sim_matrix, 1.0)
-            dist_matrix = 1.0 - sim_matrix
-            dist_matrix = np.clip(dist_matrix, 0, 2)
-
-            # Scope isolation guard: never cluster episodes from different
-            # namespace/project/client/agent/session scopes together.
-            scope_keys = [_scope_key(_episode_scope_row(ep)) for ep in valid_episodes]
-            for i in range(len(scope_keys)):
-                for j in range(i + 1, len(scope_keys)):
-                    if scope_keys[i] != scope_keys[j]:
-                        dist_matrix[i, j] = 2.0
-                        dist_matrix[j, i] = 2.0
-                        sim_matrix[i, j] = 0.0
-                        sim_matrix[j, i] = 0.0
+            sim_matrix, dist_matrix = _build_scope_isolated_similarity(valid_episodes, vectors)
 
             if len(valid_episodes) < 2:
                 logger.info("Only 1 valid episode — skipping clustering.")
@@ -1234,17 +1401,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                 get_plugin_manager().fire("on_consolidation_complete", report=early_report_fe)
                 return early_report_fe
 
-            condensed = squareform(dist_matrix, checks=False)
-            Z = linkage(condensed, method="average")
-            labels = fcluster(Z, t=1.0 - cfg.CONSOLIDATION_CLUSTER_THRESHOLD, criterion="distance")
-
-            clusters: dict[int, list[tuple[dict, int]]] = {}
-            for idx, (ep, label) in enumerate(zip(valid_episodes, labels)):
-                clusters.setdefault(int(label), []).append((ep, idx))
-
-            valid_clusters = {
-                k: v for k, v in clusters.items() if len(v) >= cfg.CONSOLIDATION_MIN_CLUSTER_SIZE
-            }
+            clusters, valid_clusters = _build_clusters_from_distance(valid_episodes, dist_matrix)
 
             logger.info(
                 "Formed %d clusters, %d valid (>=%d episodes)",
@@ -1253,80 +1410,21 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                 cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
             )
 
-            topics_created = 0
-            topics_updated = 0
-            clusters_failed = 0
-            consecutive_failures = 0
-            api_calls = 0
-            _run_start = time.monotonic()
-            cluster_confidences: list[float] = []
-            all_failed_ep_ids: list[str] = []
-
-            for cluster_id, cluster_items in valid_clusters.items():
-                elapsed = time.monotonic() - _run_start
-                if elapsed > cfg.CONSOLIDATION_MAX_DURATION:
-                    logger.warning(
-                        "Consolidation max duration (%.0fs) exceeded after %.0fs, stopping early",
-                        cfg.CONSOLIDATION_MAX_DURATION,
-                        elapsed,
-                    )
-                    break
-
-                if consecutive_failures >= 3:
-                    logger.warning(
-                        "3 consecutive cluster failures — aborting consolidation "
-                        "(backend likely unavailable)"
-                    )
-                    break
-
-                cluster_result = _process_cluster(
-                    cluster_id,
-                    cluster_items,
-                    sim_matrix,
-                    cluster_confidences,
-                )
-                api_calls += cluster_result["api_calls"]
-                if cluster_result["status"] == "created":
-                    topics_created += 1
-                    consecutive_failures = 0
-                elif cluster_result["status"] == "updated":
-                    topics_updated += 1
-                    consecutive_failures = 0
-                elif cluster_result["status"] == "failed":
-                    clusters_failed += 1
-                    consecutive_failures += 1
-                    all_failed_ep_ids.extend(cluster_result.get("failed_ep_ids", []))
+            (
+                topics_created,
+                topics_updated,
+                clusters_failed,
+                api_calls,
+                cluster_confidences,
+                all_failed_ep_ids,
+                _run_start,
+            ) = _run_cluster_processing_loop(valid_clusters, sim_matrix, cfg)
 
             _update_index()
 
             surprise_adjusted = _adjust_surprise_scores()
 
-            prunable = []
-            if cfg.CONSOLIDATION_PRUNE_ENABLED:
-                prunable = get_prunable_episodes(days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS)
-                if prunable:
-                    prune_ids = [ep["id"] for ep in prunable]
-                    mark_pruned(prune_ids)
-                    removed = vs.remove_batch(prune_ids)
-                    logger.info(
-                        "Pruned %d old episodes (%d vectors tombstoned)",
-                        len(prunable),
-                        removed,
-                    )
-                    get_plugin_manager().fire("on_prune", episode_ids=prune_ids)
-            else:
-                logger.debug("Pruning disabled (set prune_enabled = true in config to enable)")
-
-            logger.info(
-                "FAISS tombstone ratio: %.1f%% (compaction threshold: %.1f%%)",
-                vs.tombstone_ratio * 100,
-                cfg.FAISS_COMPACTION_THRESHOLD * 100,
-            )
-            if vs.tombstone_ratio >= cfg.FAISS_COMPACTION_THRESHOLD:
-                compacted = vs.compact()
-                logger.info("Compacted %d tombstoned vectors from FAISS index", compacted)
-
-            VectorStore.signal_reload()
+            prunable = _maybe_prune_and_compact(vs, cfg)
 
             report_ts = datetime.now(timezone.utc)
             report: ConsolidationReport = {

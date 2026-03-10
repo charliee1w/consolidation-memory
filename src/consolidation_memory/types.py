@@ -48,6 +48,8 @@ AppClientType = Literal[
     "other",
 ]
 SessionKind = Literal["conversation", "thread", "workflow", "job"]
+PolicyReadVisibility = Literal["private", "namespace", "project"]
+PolicyWriteMode = Literal["allow", "deny"]
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,14 @@ class ProjectRepoScope:
 
 
 @dataclass(frozen=True)
+class PolicyScope:
+    """Explicit access-policy controls layered on top of scope identity."""
+
+    read_visibility: PolicyReadVisibility = "private"
+    write_mode: PolicyWriteMode = "allow"
+
+
+@dataclass(frozen=True)
 class ScopeEnvelope:
     """Canonical scope envelope for read/write operations."""
 
@@ -112,6 +122,7 @@ class ScopeEnvelope:
     agent: AgentScope | None = None
     session: SessionScope | None = None
     project: ProjectRepoScope | None = None
+    policy: PolicyScope | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +134,7 @@ class ResolvedScopeEnvelope:
     project: ProjectRepoScope
     agent: AgentScope | None = None
     session: SessionScope | None = None
+    policy: PolicyScope = field(default_factory=PolicyScope)
 
 
 @dataclass(frozen=True)
@@ -202,6 +214,26 @@ def _coerce_session_kind(value: object) -> SessionKind:
     if cleaned == "job":
         return "job"
     return "conversation"
+
+
+def _coerce_policy_read_visibility(value: object) -> PolicyReadVisibility:
+    cleaned = _clean_str(value)
+    if cleaned == "private":
+        return "private"
+    if cleaned == "namespace":
+        return "namespace"
+    if cleaned == "project":
+        return "project"
+    return "private"
+
+
+def _coerce_policy_write_mode(value: object) -> PolicyWriteMode:
+    cleaned = _clean_str(value)
+    if cleaned == "deny":
+        return "deny"
+    if cleaned == "allow":
+        return "allow"
+    return "allow"
 
 
 def coerce_scope_envelope(
@@ -294,12 +326,27 @@ def coerce_scope_envelope(
                 default_branch=_clean_str(project_map.get("default_branch")),
             )
 
+    policy_raw = scope.get("policy")
+    if isinstance(policy_raw, PolicyScope):
+        policy = policy_raw
+    else:
+        policy_map = _as_mapping(policy_raw)
+        policy = None
+        if policy_map:
+            policy = PolicyScope(
+                read_visibility=_coerce_policy_read_visibility(
+                    policy_map.get("read_visibility")
+                ),
+                write_mode=_coerce_policy_write_mode(policy_map.get("write_mode")),
+            )
+
     return ScopeEnvelope(
         namespace=namespace,
         app_client=app_client,
         agent=agent,
         session=session,
         project=project,
+        policy=policy,
     )
 
 
@@ -422,7 +469,7 @@ class ConsolidationReport(TypedDict, total=False):
 class StoreResult:
     """Result of a memory store operation."""
 
-    status: Literal["stored", "duplicate_detected", "backend_unavailable"]
+    status: Literal["stored", "duplicate_detected", "backend_unavailable", "write_denied"]
     id: str | None = None
     content_type: str | None = None
     tags: list[str] = field(default_factory=list)
@@ -537,7 +584,7 @@ class ClaimSearchResult:
 class BatchStoreResult:
     """Result of a batch memory store operation."""
 
-    status: Literal["stored", "backend_unavailable"]
+    status: Literal["stored", "backend_unavailable", "write_denied"]
     stored: int = 0
     duplicates: int = 0
     results: list[dict[str, Any]] = field(default_factory=list)

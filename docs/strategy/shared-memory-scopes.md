@@ -13,6 +13,7 @@ The canonical scope envelope includes:
 - `app_client`
 - `agent`
 - `session`
+- `policy`
 
 `MemoryClient.resolve_scope()` fills defaults when fields are omitted.
 
@@ -46,10 +47,14 @@ This keeps legacy single-project usage working.
 - Writes persist resolved scope columns.
 - Reads apply scope filters built from resolved scope.
 - Namespace sharing modes `shared`, `team`, and `managed` intentionally broaden app-client isolation behavior.
+- Policy controls are additive:
+  - `policy.write_mode=deny` blocks scoped write operations.
+  - `policy.read_visibility=project` allows cross-app reads within a project.
+  - `policy.read_visibility=namespace` allows namespace-wide reads across projects.
 
 ## Privacy Boundary Today
 
-Current privacy boundary is enforced by scope-filter semantics in service/client logic.
+Current privacy boundary is enforced by scope-filter + policy semantics in service/client logic.
 
 Future work should introduce explicit policy/ACL semantics for stronger governance.
 

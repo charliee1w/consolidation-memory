@@ -59,6 +59,10 @@ class TestStoreEndpoint:
     def test_store_with_scope_uses_scoped_client_method(self, api_client):
         from consolidation_memory.types import StoreResult
 
+        scope_payload = {
+            "namespace": {"slug": "team-a"},
+            "policy": {"write_mode": "deny"},
+        }
         with patch(
             "consolidation_memory.client.MemoryClient.store_with_scope",
             return_value=StoreResult(status="stored", id="scoped-id", content_type="fact"),
@@ -68,13 +72,19 @@ class TestStoreEndpoint:
                 json={
                     "content": "scoped store",
                     "content_type": "fact",
-                    "scope": {"namespace": {"slug": "team-a"}},
+                    "scope": scope_payload,
                 },
             )
 
         assert resp.status_code == 200
         assert resp.json()["id"] == "scoped-id"
-        assert mock_store_with_scope.call_count == 1
+        mock_store_with_scope.assert_called_once_with(
+            content="scoped store",
+            content_type="fact",
+            tags=None,
+            surprise=0.5,
+            scope=scope_payload,
+        )
 
 
 class TestRecallEndpoint:
@@ -183,6 +193,10 @@ class TestBatchStoreEndpoint:
     def test_batch_store_with_scope_uses_scoped_client_method(self, api_client):
         from consolidation_memory.types import BatchStoreResult
 
+        scope_payload = {
+            "project": {"slug": "repo-a"},
+            "policy": {"write_mode": "allow"},
+        }
         with patch(
             "consolidation_memory.client.MemoryClient.store_batch_with_scope",
             return_value=BatchStoreResult(status="stored", stored=1, duplicates=0),
@@ -191,13 +205,16 @@ class TestBatchStoreEndpoint:
                 "/memory/store/batch",
                 json={
                     "episodes": [{"content": "Episode 1"}],
-                    "scope": {"project": {"slug": "repo-a"}},
+                    "scope": scope_payload,
                 },
             )
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "stored"
-        assert mock_store_batch_with_scope.call_count == 1
+        mock_store_batch_with_scope.assert_called_once_with(
+            episodes=[{"content": "Episode 1", "content_type": "exchange", "tags": None, "surprise": 0.5}],
+            scope=scope_payload,
+        )
 
     def test_batch_store_malformed_episode(self, api_client):
         """Missing required 'content' field should return 422, not 500."""

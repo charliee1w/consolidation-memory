@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import json
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -82,6 +84,78 @@ class TestMCPDetectDriftTool:
         assert "timed out after" in data["error"]
 
 
+class TestMCPStoreTools:
+    def test_memory_store_signature_supports_scope(self):
+        from consolidation_memory.server import memory_store
+
+        sig = inspect.signature(memory_store)
+        assert "scope" in sig.parameters
+        assert sig.parameters["scope"].default is None
+
+    def test_memory_store_with_scope_calls_scoped_client_method(self):
+        from consolidation_memory.server import memory_store
+        from consolidation_memory.types import StoreResult
+
+        scoped_payload = {
+            "namespace": {"slug": "team-a"},
+            "policy": {"write_mode": "deny"},
+        }
+        mock_client = MagicMock()
+        mock_client.store_with_scope.return_value = StoreResult(status="stored", id="scoped-id")
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(
+                memory_store(
+                    content="scoped write",
+                    scope=scoped_payload,
+                )
+            )
+
+        assert json.loads(output)["id"] == "scoped-id"
+        mock_client.store_with_scope.assert_called_once_with(
+            "scoped write",
+            "exchange",
+            None,
+            0.5,
+            scoped_payload,
+        )
+        mock_client.store.assert_not_called()
+
+    def test_memory_store_batch_signature_supports_scope(self):
+        from consolidation_memory.server import memory_store_batch
+
+        sig = inspect.signature(memory_store_batch)
+        assert "scope" in sig.parameters
+        assert sig.parameters["scope"].default is None
+
+    def test_memory_store_batch_with_scope_calls_scoped_client_method(self):
+        from consolidation_memory.server import memory_store_batch
+        from consolidation_memory.types import BatchStoreResult
+
+        scoped_payload = {"project": {"slug": "repo-a"}, "policy": {"write_mode": "allow"}}
+        mock_client = MagicMock()
+        mock_client.store_batch_with_scope.return_value = BatchStoreResult(
+            status="stored",
+            stored=1,
+            duplicates=0,
+        )
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(
+                memory_store_batch(
+                    episodes=[{"content": "x"}],
+                    scope=scoped_payload,
+                )
+            )
+
+        assert json.loads(output)["stored"] == 1
+        mock_client.store_batch_with_scope.assert_called_once_with(
+            [{"content": "x"}],
+            scoped_payload,
+        )
+        mock_client.store_batch.assert_not_called()
+
+
 class TestMCPServerLifecycle:
     def test_get_client_initializes_lazily(self):
         import consolidation_memory.server as server
@@ -133,6 +207,81 @@ class TestMCPServerLifecycle:
                 assert False, "Expected TimeoutError"
             except TimeoutError as exc:
                 assert "MemoryClient initialization timed out" in str(exc)
+
+    def test_get_client_reentrant_init_fails_fast_without_deadlock(self):
+        import consolidation_memory.server as server
+
+        original_client = server._client
+        original_initializing = server._client_initializing
+        original_owner_thread_id = server._client_init_owner_thread_id
+        original_init_error = server._client_init_error
+        try:
+            server._client = None
+            server._client_initializing = False
+            server._client_init_owner_thread_id = None
+            server._client_init_error = None
+
+            mock_client = MagicMock()
+
+            def _constructor():
+                try:
+                    server._get_client()
+                    assert False, "Expected re-entrant init to fail fast"
+                except RuntimeError as exc:
+                    assert "Re-entrant MemoryClient initialization detected" in str(exc)
+                return mock_client
+
+            with (
+                patch("consolidation_memory.client.MemoryClient", side_effect=_constructor),
+                concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool,
+            ):
+                resolved = pool.submit(server._get_client).result(timeout=1.0)
+                assert resolved is mock_client
+                assert server._client is mock_client
+        finally:
+            server._client = original_client
+            server._client_initializing = original_initializing
+            server._client_init_owner_thread_id = original_owner_thread_id
+            server._client_init_error = original_init_error
+
+    def test_get_client_concurrent_calls_share_single_initialization(self):
+        import consolidation_memory.server as server
+
+        original_client = server._client
+        original_initializing = server._client_initializing
+        original_owner_thread_id = server._client_init_owner_thread_id
+        original_init_error = server._client_init_error
+        try:
+            server._client = None
+            server._client_initializing = False
+            server._client_init_owner_thread_id = None
+            server._client_init_error = None
+
+            mock_client = MagicMock()
+            entered = threading.Event()
+            release = threading.Event()
+
+            def _constructor():
+                entered.set()
+                # Keep initialization in-flight long enough for second caller to wait.
+                release.wait(timeout=1.0)
+                return mock_client
+
+            with (
+                patch("consolidation_memory.client.MemoryClient", side_effect=_constructor),
+                concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool,
+            ):
+                fut1 = pool.submit(server._get_client)
+                assert entered.wait(timeout=1.0)
+                fut2 = pool.submit(server._get_client)
+                release.set()
+                assert fut1.result(timeout=1.0) is mock_client
+                assert fut2.result(timeout=1.0) is mock_client
+        finally:
+            server._client = original_client
+            server._client_initializing = original_initializing
+            server._client_init_owner_thread_id = original_owner_thread_id
+            server._client_init_error = original_init_error
 
 
 class TestMCPRecallTool:

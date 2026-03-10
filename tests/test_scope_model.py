@@ -6,6 +6,7 @@ from consolidation_memory.types import (
     AgentScope,
     AppClientScope,
     NamespaceScope,
+    PolicyScope,
     ProjectRepoScope,
     ScopeEnvelope,
     SessionScope,
@@ -24,6 +25,7 @@ class TestScopeEnvelopeCoercion:
             agent=AgentScope(name="triage"),
             session=SessionScope(external_key="thread-1", session_kind="thread"),
             project=ProjectRepoScope(slug="repo-a"),
+            policy=PolicyScope(read_visibility="project", write_mode="allow"),
         )
         assert coerce_scope_envelope(scope) is scope
 
@@ -35,6 +37,7 @@ class TestScopeEnvelopeCoercion:
                 "agent": {"name": "assistant"},
                 "session": {"external_key": "sess-9", "session_kind": "workflow"},
                 "project_repo": {"slug": "repo-b", "default_branch": "main"},
+                "policy": {"read_visibility": "namespace", "write_mode": "deny"},
             }
         )
         assert scope is not None
@@ -45,6 +48,20 @@ class TestScopeEnvelopeCoercion:
         assert scope.agent is not None and scope.agent.name == "assistant"
         assert scope.session is not None and scope.session.session_kind == "workflow"
         assert scope.project is not None and scope.project.slug == "repo-b"
+        assert scope.policy is not None and scope.policy.read_visibility == "namespace"
+        assert scope.policy is not None and scope.policy.write_mode == "deny"
+
+    def test_mapping_scope_invalid_policy_values_fall_back_to_defaults(self):
+        scope = coerce_scope_envelope(
+            {
+                "namespace": {"slug": "team-c"},
+                "policy": {"read_visibility": "invalid", "write_mode": "invalid"},
+            }
+        )
+        assert scope is not None
+        assert scope.policy is not None
+        assert scope.policy.read_visibility == "private"
+        assert scope.policy.write_mode == "allow"
 
     def test_invalid_scope_type_raises(self):
         with pytest.raises(TypeError, match="scope must be a ScopeEnvelope, mapping, or None"):

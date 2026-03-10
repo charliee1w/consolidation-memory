@@ -58,6 +58,7 @@ from consolidation_memory.types import (
     AgentScope,
     MemoryOperationContext,
     NamespaceScope,
+    PolicyScope,
     ProjectRepoScope,
     ResolvedScopeEnvelope,
     ScopeEnvelope,
@@ -92,6 +93,7 @@ logger = logging.getLogger("consolidation_memory")
 _DEFAULT_NAMESPACE_SLUG = "default"
 _DEFAULT_APP_CLIENT_NAME = "legacy_client"
 _SHARED_NAMESPACE_MODES = {"shared", "team", "managed"}
+_WRITE_DENIED_MESSAGE = "Writes are denied by scope policy (write_mode='deny')."
 
 
 def _normalize_content_type(ct: str) -> str:
@@ -138,12 +140,20 @@ def _resolved_scope_to_db_row(scope: ResolvedScopeEnvelope) -> dict[str, str | N
 
 def _resolved_scope_to_query_filter(scope: ResolvedScopeEnvelope) -> dict[str, str | None]:
     """Build query-time scope filters from a resolved scope envelope."""
+    read_visibility = scope.policy.read_visibility
     filters: dict[str, str | None] = {
         "namespace_slug": scope.namespace.slug,
-        "project_slug": scope.project.slug,
     }
+
+    # Visibility rules are additive and preserve legacy behavior:
+    # - private: legacy semantics (namespace+project, private app isolation unless shared mode)
+    # - project: namespace+project, cross-app visibility
+    # - namespace: namespace-wide visibility across projects and apps
+    if read_visibility != "namespace":
+        filters["project_slug"] = scope.project.slug
+
     shared_namespace = scope.namespace.sharing_mode in _SHARED_NAMESPACE_MODES
-    if not shared_namespace:
+    if read_visibility == "private" and not shared_namespace:
         filters["app_client_name"] = scope.app_client.name
         filters["app_client_type"] = scope.app_client.app_type
         if scope.app_client.provider:
@@ -163,6 +173,13 @@ def _resolved_scope_to_query_filter(scope: ResolvedScopeEnvelope) -> dict[str, s
         filters["session_kind"] = scope.session.session_kind
 
     return filters
+
+
+def _write_denied_message(scope: ResolvedScopeEnvelope) -> str | None:
+    """Return a policy denial message when writes are disabled for scope."""
+    if scope.policy.write_mode == "deny":
+        return _WRITE_DENIED_MESSAGE
+    return None
 
 
 def _row_matches_scope_filter(
@@ -348,12 +365,19 @@ class MemoryClient:
                 session_kind=parsed_scope.session.session_kind,
             )
 
+        parsed_policy = parsed_scope.policy or PolicyScope()
+        policy = PolicyScope(
+            read_visibility=parsed_policy.read_visibility,
+            write_mode=parsed_policy.write_mode,
+        )
+
         return ResolvedScopeEnvelope(
             namespace=namespace,
             app_client=app_client,
             project=project,
             agent=agent,
             session=session,
+            policy=policy,
         )
 
     def build_operation_context(
@@ -524,6 +548,15 @@ class MemoryClient:
         from consolidation_memory.config import get_config
 
         cfg = get_config()
+        denied_message = _write_denied_message(resolved_scope)
+        if denied_message is not None:
+            logger.warning(
+                "Denied store for namespace=%s project=%s due to scope policy",
+                resolved_scope.namespace.slug,
+                resolved_scope.project.slug,
+            )
+            return StoreResult(status="write_denied", message=denied_message)
+
         self._vector_store.reload_if_stale()
         scope_row = _resolved_scope_to_db_row(resolved_scope)
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
@@ -654,6 +687,19 @@ class MemoryClient:
         import numpy as np
 
         cfg = get_config()
+        denied_message = _write_denied_message(resolved_scope)
+        if denied_message is not None:
+            logger.warning(
+                "Denied batch store for namespace=%s project=%s due to scope policy",
+                resolved_scope.namespace.slug,
+                resolved_scope.project.slug,
+            )
+            return BatchStoreResult(
+                status="write_denied",
+                stored=0,
+                duplicates=0,
+                results=[{"status": "write_denied", "message": denied_message}],
+            )
 
         if not episodes:
             return BatchStoreResult(status="stored", stored=0, duplicates=0)

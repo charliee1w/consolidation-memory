@@ -84,6 +84,17 @@ class TestSchemaStructure:
         assert "scope" in search["function"]["parameters"]["properties"]
         assert "scope" in claim_browse["function"]["parameters"]["properties"]
         assert "scope" in claim_search["function"]["parameters"]["properties"]
+        scope_schema = store["function"]["parameters"]["properties"]["scope"]
+        assert "policy" in scope_schema["properties"]
+        assert scope_schema["properties"]["policy"]["properties"]["read_visibility"]["enum"] == [
+            "private",
+            "namespace",
+            "project",
+        ]
+        assert scope_schema["properties"]["policy"]["properties"]["write_mode"]["enum"] == [
+            "allow",
+            "deny",
+        ]
 
 
 class TestDispatch:
@@ -108,7 +119,10 @@ class TestDispatch:
             {
                 "content": "test",
                 "content_type": "fact",
-                "scope": {"namespace": {"slug": "team-a"}},
+                "scope": {
+                    "namespace": {"slug": "team-a"},
+                    "policy": {"write_mode": "deny"},
+                },
             },
         )
 
@@ -118,7 +132,10 @@ class TestDispatch:
             content_type="fact",
             tags=None,
             surprise=0.5,
-            scope={"namespace": {"slug": "team-a"}},
+            scope={
+                "namespace": {"slug": "team-a"},
+                "policy": {"write_mode": "deny"},
+            },
         )
         client.store.assert_not_called()
 

@@ -37,6 +37,7 @@ _LAZY_IMPORTS = {
     "AgentScope": "consolidation_memory.types",
     "SessionScope": "consolidation_memory.types",
     "ProjectRepoScope": "consolidation_memory.types",
+    "PolicyScope": "consolidation_memory.types",
     "ScopeEnvelope": "consolidation_memory.types",
     "ResolvedScopeEnvelope": "consolidation_memory.types",
     "MemoryOperationContext": "consolidation_memory.types",

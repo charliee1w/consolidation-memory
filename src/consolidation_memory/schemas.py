@@ -109,6 +109,19 @@ SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
                 "default_branch": {"type": "string"},
             },
         },
+        "policy": {
+            "type": "object",
+            "properties": {
+                "read_visibility": {
+                    "type": "string",
+                    "enum": ["private", "namespace", "project"],
+                },
+                "write_mode": {
+                    "type": "string",
+                    "enum": ["allow", "deny"],
+                },
+            },
+        },
     },
 }
 

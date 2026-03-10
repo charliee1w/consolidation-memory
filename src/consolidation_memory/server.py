@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, TypeVar
 
@@ -32,6 +33,10 @@ _T = TypeVar("_T")
 # ── Global client initialized lazily on first tool call ───────────────────
 _client = None
 _client_lock = threading.Lock()
+_client_initializing = False
+_client_init_owner_thread_id: int | None = None
+_client_init_error: Exception | None = None
+_client_init_cond = threading.Condition(_client_lock)
 
 
 _MAX_BATCH_SIZE = 100
@@ -63,6 +68,14 @@ _IDLE_TIMEOUT_SECONDS = float(
 _IDLE_CHECK_INTERVAL_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_IDLE_CHECK_INTERVAL_SECONDS", "15")
 )
+_DUMP_STACKS_ON_CLIENT_INIT_TIMEOUT = os.environ.get(
+    "CONSOLIDATION_MEMORY_DUMP_STACKS_ON_CLIENT_INIT_TIMEOUT",
+    "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+_PRELOAD_NUMERIC_BACKENDS_ON_START = os.environ.get(
+    "CONSOLIDATION_MEMORY_PRELOAD_NUMERIC_BACKENDS_ON_START",
+    "1",
+).strip().lower() not in {"0", "false", "no", "off"}
 
 _warmup_task: asyncio.Task | None = None
 _idle_task: asyncio.Task | None = None
@@ -96,6 +109,20 @@ def _client_init_timeout_seconds() -> float:
 
 def _warmup_on_start() -> bool:
     return _WARMUP_ON_START
+
+
+def _preload_numeric_backends() -> None:
+    """Preload numpy/faiss on the main thread to avoid worker-thread import stalls."""
+    if not _PRELOAD_NUMERIC_BACKENDS_ON_START:
+        return
+    started = time.monotonic()
+    try:
+        import numpy  # noqa: F401
+        import faiss  # noqa: F401
+    except Exception as exc:
+        logger.warning("Numeric backend preload failed: %s", exc)
+        return
+    logger.info("Preloaded numpy/faiss in %.3fs", time.monotonic() - started)
 
 
 def _idle_timeout_seconds() -> float:
@@ -167,21 +194,87 @@ async def _idle_shutdown_monitor() -> None:
 def _get_client():
     """Return the global client, creating it on first access."""
     global _client
+    global _client_initializing
+    global _client_init_owner_thread_id
+    global _client_init_error
 
     client = _client
     if client is not None:
         return client
 
-    with _client_lock:
-        client = _client
-        if client is None:
-            from consolidation_memory.client import MemoryClient
+    should_initialize = False
+    current_thread_id = threading.get_ident()
 
-            logger.info("Initializing MemoryClient...")
-            client = MemoryClient()
-            _client = client
+    with _client_init_cond:
+        if _client is not None:
+            return _client
 
-    return client
+        # Re-entrant protection: if initialization path invokes _get_client()
+        # again on the same thread, fail fast instead of deadlocking.
+        if _client_initializing and _client_init_owner_thread_id == current_thread_id:
+            raise RuntimeError(
+                "Re-entrant MemoryClient initialization detected. "
+                "Avoid calling memory tools/hooks during client startup."
+            )
+
+        if not _client_initializing:
+            _client_initializing = True
+            _client_init_owner_thread_id = current_thread_id
+            _client_init_error = None
+            should_initialize = True
+        else:
+            while _client_initializing and _client is None:
+                _client_init_cond.wait(timeout=0.5)
+            if _client is not None:
+                return _client
+            if _client_init_error is not None:
+                raise RuntimeError(
+                    f"MemoryClient initialization failed: {_client_init_error}"
+                ) from _client_init_error
+
+    if not should_initialize:
+        if _client is None:
+            raise RuntimeError("MemoryClient initialization did not complete")
+        return _client
+
+    from consolidation_memory.client import MemoryClient
+
+    logger.info("Initializing MemoryClient...")
+    try:
+        initialized_client = MemoryClient()
+    except Exception as exc:
+        with _client_init_cond:
+            _client_initializing = False
+            _client_init_owner_thread_id = None
+            _client_init_error = exc
+            _client_init_cond.notify_all()
+        raise
+
+    with _client_init_cond:
+        _client = initialized_client
+        _client_initializing = False
+        _client_init_owner_thread_id = None
+        _client_init_error = None
+        _client_init_cond.notify_all()
+
+    return initialized_client
+
+
+def _format_thread_stacks() -> str:
+    """Return a debug string containing stack traces for all live threads."""
+    frames = sys._current_frames()
+    chunks: list[str] = []
+    for thread in threading.enumerate():
+        thread_ident = thread.ident
+        frame = frames.get(thread_ident) if thread_ident is not None else None
+        chunks.append(
+            f"\n--- thread name={thread.name!r} ident={thread_ident} daemon={thread.daemon} ---"
+        )
+        if frame is None:
+            chunks.append("<no frame available>")
+            continue
+        chunks.extend(traceback.format_stack(frame))
+    return "\n".join(chunks)
 
 
 async def _get_client_with_timeout():
@@ -201,6 +294,11 @@ async def _get_client_with_timeout():
             )
         return client
     except asyncio.TimeoutError as exc:
+        if _DUMP_STACKS_ON_CLIENT_INIT_TIMEOUT:
+            logger.error(
+                "Client init timeout thread dump:%s",
+                _format_thread_stacks(),
+            )
         raise TimeoutError(
             f"MemoryClient initialization timed out after {timeout_seconds:g}s. "
             "Retry in a few seconds, or increase "
@@ -242,12 +340,14 @@ def _warm_recall_caches(client=None) -> None:
 async def lifespan(server: FastMCP):
     """Log startup metadata and close any initialized client on shutdown."""
     global _client, _warmup_task, _idle_task
+    global _client_initializing, _client_init_owner_thread_id, _client_init_error
 
     from consolidation_memory import __version__
 
     logger.info("Starting consolidation_memory MCP server v%s...", __version__)
     from consolidation_memory.config import get_active_project
     logger.info("Active project: %s", get_active_project())
+    _preload_numeric_backends()
     if _warmup_on_start():
         _warmup_task = asyncio.create_task(_warm_client_background())
     if _idle_timeout_seconds() > 0:
@@ -274,6 +374,9 @@ async def lifespan(server: FastMCP):
     if _client is not None:
         _client.close()
         _client = None
+    _client_initializing = False
+    _client_init_owner_thread_id = None
+    _client_init_error = None
     logger.info("Shutting down consolidation_memory MCP server.")
 
 
@@ -311,6 +414,7 @@ async def memory_store(
     content_type: str = "exchange",
     tags: list[str] | None = None,
     surprise: float = 0.5,
+    scope: dict[str, object] | None = None,
 ) -> str:
     """Store a memory episode in the episodic buffer.
 
@@ -326,12 +430,23 @@ async def memory_store(
                       'solution' (problem+fix), 'preference' (user preference).
         tags: Optional topic tags for organization (e.g., ['vr', 'steamvr']).
         surprise: How novel this is, 0.0 (routine) to 1.0 (very surprising).
+        scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
         client = await _get_client_with_timeout()
         if len(content) > 50_000:
             return json.dumps({"error": "Content exceeds maximum length of 50KB"})
-        result = await _run_blocking(client.store, content, content_type, tags, surprise)
+        if scope is not None:
+            result = await _run_blocking(
+                client.store_with_scope,
+                content,
+                content_type,
+                tags,
+                surprise,
+                scope,
+            )
+        else:
+            result = await _run_blocking(client.store, content, content_type, tags, surprise)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_store failed")
@@ -470,6 +585,7 @@ async def memory_recall(
 @_tracked_tool()
 async def memory_store_batch(
     episodes: list[dict],
+    scope: dict[str, object] | None = None,
 ) -> str:
     """Store multiple memory episodes in a single operation.
 
@@ -482,12 +598,16 @@ async def memory_store_batch(
             - content_type (str): One of 'exchange', 'fact', 'solution', 'preference'.
             - tags (list[str]): Optional topic tags.
             - surprise (float): Novelty score 0.0-1.0.
+        scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
         client = await _get_client_with_timeout()
         if len(episodes) > _MAX_BATCH_SIZE:
             return json.dumps({"error": f"Batch size {len(episodes)} exceeds maximum of {_MAX_BATCH_SIZE}"})
-        result = await _run_blocking(client.store_batch, episodes)
+        if scope is not None:
+            result = await _run_blocking(client.store_batch_with_scope, episodes, scope)
+        else:
+            result = await _run_blocking(client.store_batch, episodes)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_store_batch failed")

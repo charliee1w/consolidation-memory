@@ -67,6 +67,7 @@ class TestClientScopeModel:
             AgentScope,
             AppClientScope,
             NamespaceScope,
+            PolicyScope,
             ProjectRepoScope,
             ScopeEnvelope,
             SessionScope,
@@ -81,6 +82,7 @@ class TestClientScopeModel:
                 agent=AgentScope(name="triage-agent", model_provider="openai", model_name="gpt-5"),
                 session=SessionScope(external_key="thread-42", session_kind="thread"),
                 project=ProjectRepoScope(slug="repo-a", repo_remote="https://example.com/repo-a.git"),
+                policy=PolicyScope(read_visibility="project", write_mode="allow"),
             )
 
             resolved = client.resolve_scope(scope)
@@ -93,6 +95,21 @@ class TestClientScopeModel:
             assert resolved.session is not None
             assert resolved.session.external_key == "thread-42"
             assert resolved.project.slug == "repo-a"
+            assert resolved.policy.read_visibility == "project"
+            assert resolved.policy.write_mode == "allow"
+        finally:
+            client.close()
+
+    def test_resolve_scope_defaults_policy_to_private_allow(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            resolved = client.resolve_scope()
+            assert resolved.policy.read_visibility == "private"
+            assert resolved.policy.write_mode == "allow"
         finally:
             client.close()
 
@@ -127,6 +144,77 @@ class TestClientScopeModel:
             assert kwargs["surprise"] == 0.7
             assert kwargs["resolved_scope"].namespace.slug == "team-a"
             assert kwargs["resolved_scope"].project.slug == "repo-a"
+        finally:
+            client.close()
+
+    def test_store_with_scope_write_deny_policy_returns_write_denied(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch("consolidation_memory.backends.encode_documents") as mock_embed:
+                result = client.store_with_scope(
+                    content="blocked write",
+                    scope={
+                        "namespace": {"slug": "team-a"},
+                        "project": {"slug": "repo-a"},
+                        "policy": {"write_mode": "deny"},
+                    },
+                )
+
+            assert result.status == "write_denied"
+            assert "write_mode='deny'" in (result.message or "")
+            mock_embed.assert_not_called()
+        finally:
+            client.close()
+
+    def test_store_batch_with_scope_write_deny_policy_returns_write_denied(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch("consolidation_memory.backends.encode_documents") as mock_embed:
+                result = client.store_batch_with_scope(
+                    episodes=[{"content": "blocked write"}],
+                    scope={
+                        "namespace": {"slug": "team-a"},
+                        "project": {"slug": "repo-a"},
+                        "policy": {"write_mode": "deny"},
+                    },
+                )
+
+            assert result.status == "write_denied"
+            assert result.stored == 0
+            assert result.results and result.results[0]["status"] == "write_denied"
+            mock_embed.assert_not_called()
+        finally:
+            client.close()
+
+    def test_read_visibility_namespace_widens_scope_filter(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient, _resolved_scope_to_query_filter
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            resolved = client.resolve_scope(
+                {
+                    "namespace": {"slug": "team-a", "sharing_mode": "private"},
+                    "app_client": {"name": "app-a", "app_type": "rest"},
+                    "project": {"slug": "repo-a"},
+                    "policy": {"read_visibility": "namespace"},
+                }
+            )
+            scope_filter = _resolved_scope_to_query_filter(resolved)
+
+            assert scope_filter["namespace_slug"] == "team-a"
+            assert "project_slug" not in scope_filter
+            assert "app_client_name" not in scope_filter
+            assert "app_client_type" not in scope_filter
         finally:
             client.close()
 

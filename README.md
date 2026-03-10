@@ -187,6 +187,11 @@ When a scope envelope is provided, records are persisted with explicit scope dim
 
 This allows selective sharing without mixing unrelated contexts.
 
+Optional `scope.policy` controls:
+
+- `read_visibility`: `private` (default), `project`, `namespace`
+- `write_mode`: `allow` (default), `deny`
+
 ## Storage Layout
 
 Data is under `platformdirs.user_data_dir("consolidation_memory")/projects/<project>/`.

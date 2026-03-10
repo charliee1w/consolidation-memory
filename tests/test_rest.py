@@ -172,6 +172,27 @@ class TestForgetEndpoint:
         resp = api_client.delete("/memory/episodes/nonexistent-uuid")
         assert resp.status_code == 404
 
+    def test_forget_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import ForgetResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.forget",
+            return_value=ForgetResult(status="forgotten", id="ep-1"),
+        ) as mock_forget:
+            resp = api_client.post(
+                "/memory/forget",
+                json={
+                    "episode_id": "ep-1",
+                    "scope": {"project": {"slug": "repo-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_forget.assert_called_once_with(
+            episode_id="ep-1",
+            scope={"project": {"slug": "repo-a"}},
+        )
+
 
 class TestBatchStoreEndpoint:
     @patch("consolidation_memory.backends.encode_documents")
@@ -233,6 +254,139 @@ class TestExportEndpoint:
         data = resp.json()
         assert data["status"] == "exported"
         assert "path" in data
+
+    def test_export_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import ExportResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.export",
+            return_value=ExportResult(status="exported", path="/tmp/export.json"),
+        ) as mock_export:
+            resp = api_client.post(
+                "/memory/export",
+                json={"scope": {"namespace": {"slug": "team-a"}}},
+            )
+
+        assert resp.status_code == 200
+        mock_export.assert_called_once_with(scope={"namespace": {"slug": "team-a"}})
+
+
+class TestKnowledgeEndpoints:
+    def test_correct_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import CorrectResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.correct",
+            return_value=CorrectResult(status="write_denied", filename="topic.md"),
+        ) as mock_correct:
+            resp = api_client.post(
+                "/memory/correct",
+                json={
+                    "topic_filename": "topic.md",
+                    "correction": "fix",
+                    "scope": {"project": {"slug": "repo-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_correct.assert_called_once_with(
+            topic_filename="topic.md",
+            correction="fix",
+            scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_protect_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import ProtectResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.protect",
+            return_value=ProtectResult(status="protected", protected_count=1),
+        ) as mock_protect:
+            resp = api_client.post(
+                "/memory/protect",
+                json={
+                    "episode_id": "ep-1",
+                    "scope": {"namespace": {"slug": "team-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_protect.assert_called_once_with(
+            episode_id="ep-1",
+            tag=None,
+            scope={"namespace": {"slug": "team-a"}},
+        )
+
+    def test_browse_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import BrowseResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.browse",
+            return_value=BrowseResult(topics=[], total=0),
+        ) as mock_browse:
+            resp = api_client.post(
+                "/memory/browse",
+                json={"scope": {"project": {"slug": "repo-a"}}},
+            )
+
+        assert resp.status_code == 200
+        mock_browse.assert_called_once_with(scope={"project": {"slug": "repo-a"}})
+
+    def test_read_topic_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import TopicDetailResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.read_topic",
+            return_value=TopicDetailResult(status="ok", filename="topic.md", content="# hi"),
+        ) as mock_read_topic:
+            resp = api_client.post(
+                "/memory/topics/read",
+                json={
+                    "filename": "topic.md",
+                    "scope": {"namespace": {"slug": "team-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_read_topic.assert_called_once_with(
+            filename="topic.md",
+            scope={"namespace": {"slug": "team-a"}},
+        )
+
+    def test_timeline_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import TimelineResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.timeline",
+            return_value=TimelineResult(query="python", entries=[], total=0),
+        ) as mock_timeline:
+            resp = api_client.post(
+                "/memory/timeline",
+                json={
+                    "topic": "python",
+                    "scope": {"project": {"slug": "repo-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_timeline.assert_called_once_with(
+            topic="python",
+            scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_client_init_timeout_returns_408(self):
+        from consolidation_memory.rest import create_app
+
+        with patch(
+            "consolidation_memory.runtime.MemoryRuntime.get_client_with_timeout",
+            side_effect=TimeoutError("timed out"),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                resp = client.get("/memory/status")
+
+        assert resp.status_code == 408
+        assert "MemoryClient initialization timed out" in resp.json()["detail"]
 
 
 class TestClaimEndpoints:

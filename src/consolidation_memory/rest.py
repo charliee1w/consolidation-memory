@@ -48,6 +48,9 @@ _MAX_BATCH_SIZE = 100
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "180")
 )
+_CLIENT_INIT_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "45")
+)
 _REST_AUTH_TOKEN_ENV = "CONSOLIDATION_MEMORY_REST_AUTH_TOKEN"  # nosec B105
 _REST_ALLOW_PUBLIC_BIND_ENV = "CONSOLIDATION_MEMORY_REST_ALLOW_PUBLIC_BIND"
 _AUTH_EXEMPT_PATHS = frozenset({"/health"})
@@ -56,6 +59,11 @@ _AUTH_EXEMPT_PATHS = frozenset({"/health"})
 def _drift_timeout_seconds() -> float:
     configured = _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS
     return configured if configured > 0 else 180.0
+
+
+def _client_init_timeout_seconds() -> float:
+    configured = _CLIENT_INIT_TIMEOUT_SECONDS
+    return configured if configured > 0 else 90.0
 
 
 def _run_detect_drift(
@@ -180,15 +188,36 @@ class DetectDriftRequest(BaseModel):
 class CorrectRequest(BaseModel):
     topic_filename: str
     correction: str
+    scope: dict[str, object] | None = None
+
+
+class ExportRequest(BaseModel):
+    scope: dict[str, object] | None = None
+
+
+class ForgetRequest(BaseModel):
+    episode_id: str
+    scope: dict[str, object] | None = None
 
 
 class ProtectRequest(BaseModel):
     episode_id: str | None = None
     tag: str | None = None
+    scope: dict[str, object] | None = None
 
 
 class TimelineRequest(BaseModel):
     topic: str
+    scope: dict[str, object] | None = None
+
+
+class BrowseRequest(BaseModel):
+    scope: dict[str, object] | None = None
+
+
+class ReadTopicRequest(BaseModel):
+    filename: str
+    scope: dict[str, object] | None = None
 
 
 class ContradictionsRequest(BaseModel):
@@ -265,7 +294,20 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     ) -> dict[str, object]:
         client = None
         if name != "memory_detect_drift":
-            client = await runtime.get_client_with_timeout()
+            timeout_seconds = _client_init_timeout_seconds()
+            try:
+                client = await runtime.get_client_with_timeout(
+                    timeout=timeout_seconds
+                )
+            except TimeoutError as exc:
+                raise HTTPException(
+                    status_code=408,
+                    detail=(
+                        f"MemoryClient initialization timed out after "
+                        f"{timeout_seconds:g}s. Retry in a few seconds, or "
+                        "increase CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS."
+                    ),
+                ) from exc
         return await runtime.run_blocking(
             execute_tool_call,
             name,
@@ -347,6 +389,14 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
             raise HTTPException(status_code=404, detail="Episode not found")
         return result
 
+    @app.post("/memory/forget")
+    async def forget_with_scope(req: ForgetRequest):
+        """Soft-delete an episode with optional explicit scope."""
+        result = await _execute("memory_forget", req.model_dump())
+        if result.get("status") == "not_found":
+            raise HTTPException(status_code=404, detail="Episode not found")
+        return result
+
     @app.post("/memory/consolidate")
     async def consolidate():
         """Run consolidation manually."""
@@ -361,12 +411,15 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         result = await _execute("memory_correct", req.model_dump())
         if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Knowledge topic not found")
+        if result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=str(result.get("message", "Unknown error")))
         return result
 
     @app.post("/memory/export")
-    async def export():
+    async def export(req: ExportRequest | None = None):
         """Export all episodes and knowledge to a JSON snapshot."""
-        return await _execute("memory_export", {})
+        payload = {} if req is None else req.model_dump()
+        return await _execute("memory_export", payload)
 
     @app.post("/memory/compact")
     async def compact():
@@ -378,6 +431,12 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         """Browse all knowledge topics with summaries and metadata."""
         return await _execute("memory_browse", {})
 
+    @app.post("/memory/browse")
+    async def browse_with_scope(req: BrowseRequest | None = None):
+        """Browse knowledge topics with optional explicit scope."""
+        payload = {} if req is None else req.model_dump()
+        return await _execute("memory_browse", payload)
+
     @app.get("/memory/topics/{filename}")
     async def read_topic(filename: str):
         """Read the full markdown content of a knowledge topic."""
@@ -387,6 +446,21 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
                 detail="Invalid filename: must not contain '/', '\\', or '..'",
             )
         result = await _execute("memory_read_topic", {"filename": filename})
+        if result.get("status") == "not_found":
+            raise HTTPException(status_code=404, detail="Knowledge topic not found")
+        if result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=str(result.get("message", "Unknown error")))
+        return result
+
+    @app.post("/memory/topics/read")
+    async def read_topic_with_scope(req: ReadTopicRequest):
+        """Read a knowledge topic with optional explicit scope."""
+        if _UNSAFE_FILENAME_RE.search(req.filename):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid filename: must not contain '/', '\\', or '..'",
+            )
+        result = await _execute("memory_read_topic", req.model_dump())
         if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Knowledge topic not found")
         if result.get("status") == "error":

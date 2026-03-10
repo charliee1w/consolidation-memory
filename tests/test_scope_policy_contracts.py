@@ -262,3 +262,105 @@ class TestScopePolicyCrossSurfaceParity:
                 for ep in rest_result.json()["episodes"]
             }
             assert rest_ids == {legacy_episode_id}
+
+    def test_forget_protect_and_correct_respect_write_deny_policy_across_surfaces(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import ensure_schema, insert_episode, upsert_knowledge_topic
+        from consolidation_memory.server import memory_correct, memory_forget, memory_protect
+
+        ensure_schema()
+        cfg = get_config()
+        episode_id = insert_episode(content="protected content")
+        filename = "policy-topic.md"
+        (cfg.KNOWLEDGE_DIR / filename).write_text(
+            "---\ntitle: Policy Topic\nsummary: Topic\n---\n\n## Facts\n- **Policy**: topic\n",
+            encoding="utf-8",
+        )
+        upsert_knowledge_topic(
+            filename=filename,
+            title="Policy Topic",
+            summary="Topic",
+            source_episodes=[episode_id],
+            fact_count=1,
+            confidence=0.8,
+        )
+
+        with MemoryClient(auto_consolidate=False) as client:
+            python_forget = client.forget(episode_id, scope=_DENY_SCOPE)
+            python_protect = client.protect(episode_id=episode_id, scope=_DENY_SCOPE)
+            python_correct = client.correct(filename, "blocked", scope=_DENY_SCOPE)
+            assert python_forget.status == "write_denied"
+            assert python_protect.status == "write_denied"
+            assert python_correct.status == "write_denied"
+
+            openai_forget = dispatch_tool_call(
+                client,
+                "memory_forget",
+                {"episode_id": episode_id, "scope": _DENY_SCOPE},
+            )
+            openai_protect = dispatch_tool_call(
+                client,
+                "memory_protect",
+                {"episode_id": episode_id, "scope": _DENY_SCOPE},
+            )
+            openai_correct = dispatch_tool_call(
+                client,
+                "memory_correct",
+                {"topic_filename": filename, "correction": "blocked", "scope": _DENY_SCOPE},
+            )
+            assert openai_forget["status"] == "write_denied"
+            assert openai_protect["status"] == "write_denied"
+            assert openai_correct["status"] == "write_denied"
+
+            with pytest.MonkeyPatch.context() as mp:
+                async def _get_client():
+                    return client
+
+                mp.setattr("consolidation_memory.server._get_client_with_timeout", _get_client)
+                mcp_forget = json.loads(
+                    asyncio.run(memory_forget(episode_id=episode_id, scope=_DENY_SCOPE))
+                )
+                mcp_protect = json.loads(
+                    asyncio.run(memory_protect(episode_id=episode_id, scope=_DENY_SCOPE))
+                )
+                mcp_correct = json.loads(
+                    asyncio.run(
+                        memory_correct(
+                            topic_filename=filename,
+                            correction="blocked",
+                            scope=_DENY_SCOPE,
+                        )
+                    )
+                )
+
+            assert mcp_forget["status"] == "write_denied"
+            assert mcp_protect["status"] == "write_denied"
+            assert mcp_correct["status"] == "write_denied"
+
+        if HAS_FASTAPI:
+            app = create_app()
+            with TestClient(app) as api_client:
+                rest_forget = api_client.post(
+                    "/memory/forget",
+                    json={"episode_id": episode_id, "scope": _DENY_SCOPE},
+                )
+                rest_protect = api_client.post(
+                    "/memory/protect",
+                    json={"episode_id": episode_id, "scope": _DENY_SCOPE},
+                )
+                rest_correct = api_client.post(
+                    "/memory/correct",
+                    json={
+                        "topic_filename": filename,
+                        "correction": "blocked",
+                        "scope": _DENY_SCOPE,
+                    },
+                )
+
+            assert rest_forget.status_code == 200
+            assert rest_forget.json()["status"] == "write_denied"
+            assert rest_protect.status_code == 200
+            assert rest_protect.json()["status"] == "write_denied"
+            assert rest_correct.status_code == 200
+            assert rest_correct.json()["status"] == "write_denied"

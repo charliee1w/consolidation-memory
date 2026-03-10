@@ -7,6 +7,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tests.helpers import make_normalized_vec as _make_normalized_vec
 from tests.helpers import mock_encode as _mock_encode
 
@@ -801,6 +803,43 @@ class TestClientForget:
 
         client.close()
 
+    def test_forget_respects_write_policy_and_scope(self):
+        from consolidation_memory.database import ensure_schema, insert_episode
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        visible_id = insert_episode(
+            content="visible episode",
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "legacy_client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        hidden_id = insert_episode(
+            content="hidden episode",
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            denied = client.forget(
+                visible_id,
+                scope={"policy": {"write_mode": "deny"}},
+            )
+            assert denied.status == "write_denied"
+
+            hidden = client.forget(hidden_id)
+            assert hidden.status == "not_found"
+        finally:
+            client.close()
+
 
 class TestClientStatus:
     @patch("consolidation_memory.backends.encode_documents")
@@ -904,6 +943,157 @@ class TestClientExport:
         assert len(export_data["episode_anchors"]) >= 1
 
         client.close()
+
+    def test_export_respects_scope_for_all_exported_entities(self):
+        from pathlib import Path
+
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_claim_edge,
+            insert_claim_event,
+            insert_claim_sources,
+            insert_episode,
+            insert_episode_anchors,
+            insert_knowledge_records,
+            upsert_claim,
+            upsert_knowledge_topic,
+        )
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
+
+        ensure_schema()
+        cfg = get_config()
+        visible_id = insert_episode(
+            content="visible export episode",
+            tags=["visible"],
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "legacy_client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        hidden_id = insert_episode(
+            content="hidden export episode",
+            tags=["hidden"],
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+        visible_filename = "visible-export.md"
+        hidden_filename = "hidden-export.md"
+        (cfg.KNOWLEDGE_DIR / visible_filename).write_text("# visible\n", encoding="utf-8")
+        (cfg.KNOWLEDGE_DIR / hidden_filename).write_text("# hidden\n", encoding="utf-8")
+        visible_topic_id = upsert_knowledge_topic(
+            filename=visible_filename,
+            title="Visible Export",
+            summary="Visible summary",
+            source_episodes=[visible_id],
+            fact_count=1,
+            confidence=0.8,
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "legacy_client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        hidden_topic_id = upsert_knowledge_topic(
+            filename=hidden_filename,
+            title="Hidden Export",
+            summary="Hidden summary",
+            source_episodes=[hidden_id],
+            fact_count=1,
+            confidence=0.8,
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+        insert_knowledge_records(
+            visible_topic_id,
+            [{
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Visible", "info": "allowed"},
+                "embedding_text": "Visible allowed",
+                "confidence": 0.8,
+            }],
+            source_episodes=[visible_id],
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "legacy_client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        insert_knowledge_records(
+            hidden_topic_id,
+            [{
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Hidden", "info": "denied"},
+                "embedding_text": "Hidden denied",
+                "confidence": 0.8,
+            }],
+            source_episodes=[hidden_id],
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+        upsert_claim(
+            claim_id="visible-claim",
+            claim_type="fact",
+            canonical_text="visible export claim",
+            payload={"subject": "visible", "info": "allowed"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="hidden-claim",
+            claim_type="fact",
+            canonical_text="hidden export claim",
+            payload={"subject": "hidden", "info": "denied"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources("visible-claim", [{"source_episode_id": visible_id}])
+        insert_claim_sources("hidden-claim", [{"source_episode_id": hidden_id}])
+        insert_claim_event("visible-claim", event_type="create", details={"source": "visible"})
+        insert_claim_event("hidden-claim", event_type="create", details={"source": "hidden"})
+        insert_claim_edge(
+            from_claim_id="visible-claim",
+            to_claim_id="hidden-claim",
+            edge_type="contradicts",
+            details={"reason": "scope filtered"},
+        )
+        insert_episode_anchors(
+            visible_id,
+            [{"anchor_type": "path", "anchor_value": "src/visible.py"}],
+        )
+        insert_episode_anchors(
+            hidden_id,
+            [{"anchor_type": "path", "anchor_value": "src/hidden.py"}],
+        )
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            result = client.export()
+            export_data = json.loads(Path(result.path).read_text(encoding="utf-8"))
+            assert {episode["id"] for episode in export_data["episodes"]} == {visible_id}
+            assert {topic["filename"] for topic in export_data["knowledge_topics"]} == {visible_filename}
+            assert {record["topic_id"] for record in export_data["knowledge_records"]} == {visible_topic_id}
+            assert {claim["id"] for claim in export_data["claims"]} == {"visible-claim"}
+            assert export_data["claim_edges"] == []
+            assert {source["claim_id"] for source in export_data["claim_sources"]} == {"visible-claim"}
+            assert {event["claim_id"] for event in export_data["claim_events"]} == {"visible-claim"}
+            assert {anchor["episode_id"] for anchor in export_data["episode_anchors"]} == {visible_id}
+        finally:
+            client.close()
 
 
 class TestClientCompact:
@@ -1093,6 +1283,29 @@ class TestClientCorrect:
         finally:
             client.close()
 
+    def test_correct_rejects_orphan_files_not_present_in_topic_table(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import ensure_schema
+
+        ensure_schema()
+        cfg = get_config()
+        filename = "orphan.md"
+        original = "---\ntitle: Orphan\nsummary: Orphan\n---\n\n## Facts\n- **Orphan**: file only\n"
+        (cfg.KNOWLEDGE_DIR / filename).write_text(original, encoding="utf-8")
+
+        mock_llm = MagicMock()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch("consolidation_memory.backends.get_llm_backend", return_value=mock_llm):
+                result = client.correct(filename, "Should not be adopted")
+
+            assert result.status == "not_found"
+            assert (cfg.KNOWLEDGE_DIR / filename).read_text(encoding="utf-8") == original
+            mock_llm.generate.assert_not_called()
+        finally:
+            client.close()
+
     @patch("consolidation_memory.backends.encode_query")
     @patch("consolidation_memory.backends.encode_documents")
     def test_topic_surfaces_apply_default_scope_filter(self, mock_embed_docs, mock_embed_query):
@@ -1200,3 +1413,102 @@ class TestClientCorrect:
             assert {entry["topic_filename"] for entry in timeline_result.entries} == {visible_filename}
         finally:
             client.close()
+
+    @patch("consolidation_memory.backends.encode_query")
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_topic_surfaces_accept_explicit_scope(self, mock_embed_docs, mock_embed_query):
+        import numpy as np
+
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_knowledge_records,
+            upsert_knowledge_topic,
+        )
+
+        ensure_schema()
+        cfg = get_config()
+        shared_vec = _make_normalized_vec(seed=11)
+        mock_embed_query.return_value = shared_vec
+        mock_embed_docs.side_effect = lambda texts: np.vstack([shared_vec for _ in texts]).astype("float32")
+
+        filename = "cross-app.md"
+        (cfg.KNOWLEDGE_DIR / filename).write_text(
+            "---\ntitle: Cross App\nsummary: Shared topic\n---\n\n## Facts\n- **Python**: 3.13\n",
+            encoding="utf-8",
+        )
+        topic_id = upsert_knowledge_topic(
+            filename=filename,
+            title="Cross App",
+            summary="Shared topic",
+            source_episodes=[],
+            fact_count=1,
+            confidence=0.9,
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+        insert_knowledge_records(
+            topic_id,
+            [{
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Python", "info": "3.13"},
+                "embedding_text": "Python 3.13 cross app",
+                "confidence": 0.9,
+            }],
+            source_episodes=[],
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+
+        scope = {
+            "namespace": {"slug": "default"},
+            "project": {"slug": "default"},
+            "policy": {"read_visibility": "project"},
+        }
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            browse_result = client.browse(scope=scope)
+            assert {topic["filename"] for topic in browse_result.topics} == {filename}
+
+            topic_result = client.read_topic(filename, scope=scope)
+            assert topic_result.status == "ok"
+
+            timeline_result = client.timeline("Python", scope=scope)
+            assert {entry["topic_filename"] for entry in timeline_result.entries} == {filename}
+        finally:
+            client.close()
+
+
+class TestClosedClientSemantics:
+    def test_closed_client_methods_fail_fast(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        client.close()
+
+        calls = [
+            lambda: client.status(),
+            lambda: client.browse(),
+            lambda: client.export(),
+            lambda: client.forget("episode-1"),
+            lambda: client.protect(episode_id="episode-1"),
+            lambda: client.read_topic("topic.md"),
+            lambda: client.timeline("python"),
+            lambda: client.consolidate(),
+            lambda: client.compact(),
+        ]
+
+        for call in calls:
+            with pytest.raises(RuntimeError, match="MemoryClient is closed."):
+                call()

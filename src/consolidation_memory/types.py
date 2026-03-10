@@ -499,8 +499,9 @@ class RecallResult:
 class ForgetResult:
     """Result of a memory forget operation."""
 
-    status: Literal["forgotten", "not_found"]
+    status: Literal["forgotten", "not_found", "write_denied"]
     id: str = ""
+    message: str | None = None
 
 
 @dataclass
@@ -544,7 +545,7 @@ class ExportResult:
 class CorrectResult:
     """Result of a knowledge correction operation."""
 
-    status: Literal["corrected", "not_found", "error"]
+    status: Literal["corrected", "not_found", "error", "write_denied"]
     filename: str | None = None
     title: str | None = None
     message: str | None = None
@@ -644,7 +645,7 @@ class DecayReportResult:
 class ProtectResult:
     """Result of protecting episodes from pruning."""
 
-    status: Literal["protected", "not_found", "error"]
+    status: Literal["protected", "not_found", "error", "write_denied"]
     protected_count: int = 0
     message: str = ""
 

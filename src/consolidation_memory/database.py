@@ -1015,11 +1015,18 @@ def insert_episode(
     return episode_id
 
 
-def get_episode(episode_id: str) -> dict[str, Any] | None:
+def get_episode(
+    episode_id: str,
+    scope: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    conditions = ["id = ?", "deleted = 0"]
+    params: list[Any] = [episode_id]
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT * FROM episodes WHERE id = ? AND deleted = 0",
-            (episode_id,),
+            f"SELECT * FROM episodes WHERE {where_clause}",  # nosec B608
+            params,
         ).fetchone()
     return dict(row) if row else None
 
@@ -1090,11 +1097,19 @@ def mark_pruned(episode_ids: list[str]) -> None:
         )
 
 
-def soft_delete_episode(episode_id: str) -> bool:
+def soft_delete_episode(
+    episode_id: str,
+    scope: Mapping[str, Any] | None = None,
+) -> bool:
+    conditions = ["id = ?", "deleted = 0"]
+    params: list[Any] = [episode_id]
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
+    now = _now()
     with get_connection() as conn:
         cursor = conn.execute(
-            "UPDATE episodes SET deleted = 1, updated_at = ? WHERE id = ? AND deleted = 0",
-            (_now(), episode_id),
+            f"UPDATE episodes SET deleted = 1, updated_at = ? WHERE {where_clause}",  # nosec B608
+            [now, *params],
         )
         deleted = bool(cursor.rowcount and cursor.rowcount > 0)
         if deleted:
@@ -1251,29 +1266,47 @@ def get_prunable_episodes(days: int = 30) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def protect_episode(episode_id: str) -> bool:
+def protect_episode(
+    episode_id: str,
+    scope: Mapping[str, Any] | None = None,
+) -> bool:
     """Mark an episode as protected from pruning. Returns True if found."""
     now = _now()
+    conditions = ["id = ?", "deleted = 0"]
+    params: list[Any] = [episode_id]
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         cursor = conn.execute(
-            "UPDATE episodes SET protected = 1, updated_at = ? WHERE id = ? AND deleted = 0",
-            (now, episode_id),
+            f"UPDATE episodes SET protected = 1, updated_at = ? WHERE {where_clause}",  # nosec B608
+            [now, *params],
         )
     return bool(cursor.rowcount and cursor.rowcount > 0)
 
 
-def protect_by_tag(tag: str) -> int:
+def protect_by_tag(
+    tag: str,
+    scope: Mapping[str, Any] | None = None,
+) -> int:
     """Mark all episodes with a given tag as protected. Returns count updated."""
     now = _now()
     # Tags are stored as JSON arrays, use LIKE with the tag value.
     # Escape LIKE wildcards in the tag to prevent injection (e.g. tag="%" matching all).
     escaped = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f'%"{escaped}"%'
+    conditions = [
+        "tags LIKE ? ESCAPE '\\'",
+        "deleted = 0",
+        "protected = 0",
+    ]
+    params: list[Any] = [pattern]
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         cursor = conn.execute(
             "UPDATE episodes SET protected = 1, updated_at = ? "
-            "WHERE tags LIKE ? ESCAPE '\\' AND deleted = 0 AND protected = 0",
-            (now, pattern),
+            f"WHERE {where_clause}",  # nosec B608
+            [now, *params],
         )
     return cursor.rowcount or 0
 
@@ -1415,6 +1448,22 @@ def get_all_knowledge_topics(
             params,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_knowledge_topic(
+    filename: str,
+    scope: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    conditions = ["filename = ?"]
+    params: list[Any] = [filename]
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT * FROM knowledge_topics WHERE {where_clause}",  # nosec B608
+            params,
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def increment_topic_access(filenames: list[str]) -> None:
@@ -2890,72 +2939,144 @@ def get_recent_consolidation_runs(limit: int = 5) -> list[dict[str, Any]]:
 
 # ── Export / Bulk queries ────────────────────────────────────────────────────
 
-def get_all_episodes(include_deleted: bool = False) -> list[dict[str, Any]]:
+def get_all_episodes(
+    include_deleted: bool = False,
+    scope: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Return all episodes for export."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if not include_deleted:
+        conditions.append("deleted = 0")
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
-        if include_deleted:
-            rows = conn.execute(
-                "SELECT * FROM episodes ORDER BY created_at"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM episodes WHERE deleted = 0 ORDER BY created_at"
-            ).fetchall()
+        rows = conn.execute(
+            f"SELECT * FROM episodes {where_clause} ORDER BY created_at",  # nosec B608
+            params,
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_all_claims() -> list[dict[str, Any]]:
+def get_all_claims(
+    claim_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return all claims for export."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if claim_ids is not None:
+        if not claim_ids:
+            return []
+        placeholders = ",".join("?" for _ in claim_ids)
+        conditions.append(f"id IN ({placeholders})")  # nosec B608
+        params.extend(claim_ids)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT id, claim_type, canonical_text, payload, status, confidence,
                       valid_from, valid_until, created_at, updated_at
                FROM claims
-               ORDER BY created_at ASC, id ASC"""
+               {where_clause}
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_all_claim_edges() -> list[dict[str, Any]]:
+def get_all_claim_edges(
+    claim_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return all claim edges for export."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if claim_ids is not None:
+        if not claim_ids:
+            return []
+        placeholders = ",".join("?" for _ in claim_ids)
+        conditions.append(f"from_claim_id IN ({placeholders})")  # nosec B608
+        params.extend(claim_ids)
+        conditions.append(f"to_claim_id IN ({placeholders})")  # nosec B608
+        params.extend(claim_ids)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT id, from_claim_id, to_claim_id, edge_type, confidence, details, created_at
                FROM claim_edges
-               ORDER BY created_at ASC, id ASC"""
+               {where_clause}
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_all_claim_sources() -> list[dict[str, Any]]:
+def get_all_claim_sources(
+    claim_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return all claim source links for export."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if claim_ids is not None:
+        if not claim_ids:
+            return []
+        placeholders = ",".join("?" for _ in claim_ids)
+        conditions.append(f"claim_id IN ({placeholders})")  # nosec B608
+        params.extend(claim_ids)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT id, claim_id, source_episode_id, source_topic_id, source_record_id, created_at
                FROM claim_sources
-               ORDER BY created_at ASC, id ASC"""
+               {where_clause}
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_all_claim_events() -> list[dict[str, Any]]:
+def get_all_claim_events(
+    claim_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return all claim lifecycle events for export."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if claim_ids is not None:
+        if not claim_ids:
+            return []
+        placeholders = ",".join("?" for _ in claim_ids)
+        conditions.append(f"claim_id IN ({placeholders})")  # nosec B608
+        params.extend(claim_ids)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT id, claim_id, event_type, details, created_at
                FROM claim_events
-               ORDER BY created_at ASC, id ASC"""
+               {where_clause}
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_all_episode_anchors() -> list[dict[str, Any]]:
+def get_all_episode_anchors(
+    episode_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return all episode anchors for export."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if episode_ids is not None:
+        if not episode_ids:
+            return []
+        placeholders = ",".join("?" for _ in episode_ids)
+        conditions.append(f"episode_id IN ({placeholders})")  # nosec B608
+        params.extend(episode_ids)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT id, episode_id, anchor_type, anchor_value, created_at
                FROM episode_anchors
-               ORDER BY created_at ASC, id ASC"""
+               {where_clause}
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 

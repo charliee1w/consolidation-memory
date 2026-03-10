@@ -152,6 +152,36 @@ class TestPluginManager:
         assert len(tracker.calls) == 1
         assert tracker.calls[0][0] == "on_store"
 
+    def test_load_plugins_is_idempotent(self):
+        mgr = PluginManager()
+        with (
+            patch.object(mgr, "_load_from_entry_points") as mock_entry_points,
+            patch.object(mgr, "_load_from_config") as mock_config,
+        ):
+            mgr.load_plugins()
+            mgr.load_plugins()
+
+        mock_entry_points.assert_called_once()
+        mock_config.assert_called_once()
+
+    def test_acquire_and_release_fire_lifecycle_once_for_active_client_set(self):
+        mgr = PluginManager()
+        tracker = TrackingPlugin()
+        mgr.register(tracker)
+
+        client_a = object()
+        client_b = object()
+        mgr.acquire(client=client_a, auto_load=False)
+        mgr.acquire(client=client_b, auto_load=False)
+        mgr.release()
+        mgr.release()
+
+        startup_calls = [call for call in tracker.calls if call[0] == "on_startup"]
+        shutdown_calls = [call for call in tracker.calls if call[0] == "on_shutdown"]
+        assert len(startup_calls) == 1
+        assert startup_calls[0][1]["client"] is client_a
+        assert len(shutdown_calls) == 1
+
 
 # ── Singleton tests ──────────────────────────────────────────────────────────
 
@@ -383,6 +413,29 @@ class TestClientHooks:
         client = MemoryClient(auto_consolidate=False)
         client.close()
 
+        shutdown_calls = [c for c in tracker.calls if c[0] == "on_shutdown"]
+        assert len(shutdown_calls) == 1
+
+    def test_multiple_clients_share_single_startup_and_shutdown_cycle(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+
+        tracker = TrackingPlugin()
+        mgr = reset_plugin_manager()
+        mgr.register(tracker)
+
+        client_a = MemoryClient(auto_consolidate=False)
+        client_b = MemoryClient(auto_consolidate=False)
+        startup_calls = [c for c in tracker.calls if c[0] == "on_startup"]
+        assert len(startup_calls) == 1
+
+        client_a.close()
+        shutdown_calls = [c for c in tracker.calls if c[0] == "on_shutdown"]
+        assert len(shutdown_calls) == 0
+
+        client_b.close()
         shutdown_calls = [c for c in tracker.calls if c[0] == "on_shutdown"]
         assert len(shutdown_calls) == 1
 

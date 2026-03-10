@@ -9,7 +9,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from consolidation_memory.schemas import dispatch_tool_call
-from consolidation_memory.types import ClaimSearchResult, RecallResult
+from consolidation_memory.types import (
+    BrowseResult,
+    ClaimSearchResult,
+    RecallResult,
+    TimelineResult,
+    TopicDetailResult,
+)
 
 try:
     from fastapi.testclient import TestClient
@@ -132,5 +138,120 @@ class TestSurfaceClaimSearchContract:
             rest_out = rest_resp.json()
         assert rest_resp.status_code == 200
         rest_call.assert_called_once_with(**expected_args)
+
+        assert dispatch_out == mcp_out == rest_out
+
+
+class TestSurfaceKnowledgeContracts:
+    def test_browse_scope_and_output_match_across_surfaces(self):
+        from consolidation_memory.rest import create_app
+        from consolidation_memory.server import memory_browse
+
+        scope = {"project": {"slug": "repo-a"}, "policy": {"read_visibility": "project"}}
+        expected = BrowseResult(
+            topics=[{"filename": "topic.md", "title": "Topic"}],
+            total=1,
+        )
+
+        dispatch_client = MagicMock()
+        dispatch_client.browse.return_value = expected
+        dispatch_out = dispatch_tool_call(
+            dispatch_client,
+            "memory_browse",
+            {"scope": scope},
+        )
+        dispatch_client.browse.assert_called_once_with(scope=scope)
+
+        mcp_client = MagicMock()
+        mcp_client.browse.return_value = expected
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
+            mcp_out = json.loads(asyncio.run(memory_browse(scope=scope)))
+        mcp_client.browse.assert_called_once_with(scope=scope)
+
+        with patch("consolidation_memory.client.MemoryClient.browse", return_value=expected) as rest_call:
+            app = create_app()
+            with TestClient(app) as client:
+                rest_resp = client.post("/memory/browse", json={"scope": scope})
+            rest_out = rest_resp.json()
+        assert rest_resp.status_code == 200
+        rest_call.assert_called_once_with(scope=scope)
+
+        assert dispatch_out == mcp_out == rest_out
+
+    def test_read_topic_scope_and_output_match_across_surfaces(self):
+        from consolidation_memory.rest import create_app
+        from consolidation_memory.server import memory_read_topic
+
+        scope = {"namespace": {"slug": "team-a"}}
+        expected = TopicDetailResult(
+            status="ok",
+            filename="topic.md",
+            content="# topic\n",
+        )
+
+        dispatch_client = MagicMock()
+        dispatch_client.read_topic.return_value = expected
+        dispatch_out = dispatch_tool_call(
+            dispatch_client,
+            "memory_read_topic",
+            {"filename": "topic.md", "scope": scope},
+        )
+        dispatch_client.read_topic.assert_called_once_with(filename="topic.md", scope=scope)
+
+        mcp_client = MagicMock()
+        mcp_client.read_topic.return_value = expected
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
+            mcp_out = json.loads(asyncio.run(memory_read_topic(filename="topic.md", scope=scope)))
+        mcp_client.read_topic.assert_called_once_with(filename="topic.md", scope=scope)
+
+        with patch("consolidation_memory.client.MemoryClient.read_topic", return_value=expected) as rest_call:
+            app = create_app()
+            with TestClient(app) as client:
+                rest_resp = client.post(
+                    "/memory/topics/read",
+                    json={"filename": "topic.md", "scope": scope},
+                )
+            rest_out = rest_resp.json()
+        assert rest_resp.status_code == 200
+        rest_call.assert_called_once_with(filename="topic.md", scope=scope)
+
+        assert dispatch_out == mcp_out == rest_out
+
+    def test_timeline_scope_and_output_match_across_surfaces(self):
+        from consolidation_memory.rest import create_app
+        from consolidation_memory.server import memory_timeline
+
+        scope = {"project": {"slug": "repo-a"}}
+        expected = TimelineResult(
+            query="python",
+            entries=[{"topic_filename": "topic.md", "embedding_text": "python"}],
+            total=1,
+        )
+
+        dispatch_client = MagicMock()
+        dispatch_client.timeline.return_value = expected
+        dispatch_out = dispatch_tool_call(
+            dispatch_client,
+            "memory_timeline",
+            {"topic": "python", "scope": scope},
+        )
+        dispatch_client.timeline.assert_called_once_with(topic="python", scope=scope)
+
+        mcp_client = MagicMock()
+        mcp_client.timeline.return_value = expected
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
+            mcp_out = json.loads(asyncio.run(memory_timeline(topic="python", scope=scope)))
+        mcp_client.timeline.assert_called_once_with(topic="python", scope=scope)
+
+        with patch("consolidation_memory.client.MemoryClient.timeline", return_value=expected) as rest_call:
+            app = create_app()
+            with TestClient(app) as client:
+                rest_resp = client.post(
+                    "/memory/timeline",
+                    json={"topic": "python", "scope": scope},
+                )
+            rest_out = rest_resp.json()
+        assert rest_resp.status_code == 200
+        rest_call.assert_called_once_with(topic="python", scope=scope)
 
         assert dispatch_out == mcp_out == rest_out

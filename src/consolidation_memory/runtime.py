@@ -7,10 +7,11 @@ import concurrent.futures
 import functools
 import logging
 import threading
+import time
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
-from consolidation_memory.database import close_all_connections, ensure_schema
+from consolidation_memory.database import ensure_schema
 
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
@@ -34,11 +35,12 @@ class MemoryRuntime:
         self._client_factory = client_factory or _default_client_factory
         self._max_workers = max(1, int(max_workers))
 
-        self._client = None
+        self._client: object | None = None
         self._client_lock = threading.Lock()
         self._client_initializing = False
         self._client_init_owner_thread_id: int | None = None
         self._client_init_error: Exception | None = None
+        self._client_init_thread: threading.Thread | None = None
         self._client_init_cond = threading.Condition(self._client_lock)
         self._shutting_down = False
         self._lifecycle_epoch = 0
@@ -82,20 +84,23 @@ class MemoryRuntime:
         with self._client_init_cond:
             self._shutting_down = False
             self._lifecycle_epoch += 1
+            self._client_init_error = None
         ensure_schema()
 
     def shutdown(self) -> None:
         with self._client_init_cond:
             self._shutting_down = True
             self._lifecycle_epoch += 1
+            self._client_initializing = False
+            self._client_init_owner_thread_id = None
+            self._client_init_error = None
+            self._client_init_thread = None
             self._client_init_cond.notify_all()
 
         client = self._client
         self._client = None
         if client is not None:
-            client.close()
-
-        close_all_connections()
+            cast(Any, client).close()
 
         with self._blocking_executor_lock:
             executor = self._blocking_executor
@@ -134,88 +139,123 @@ class MemoryRuntime:
             return await future
         return await asyncio.wait_for(future, timeout=timeout)
 
-    def get_client(self):
+    def get_client(self, *, wait_timeout: float | None = None):
         """Return the process-local client, initializing it lazily once."""
-        client = self._client
-        if client is not None:
-            return client
-
-        should_initialize = False
         current_thread_id = threading.get_ident()
-        lifecycle_epoch = 0
-
         with self._client_init_cond:
             if self._client is not None:
                 return self._client
             if self._shutting_down:
                 raise RuntimeError("MemoryClient initialization aborted: runtime is shutting down")
             lifecycle_epoch = self._lifecycle_epoch
-
             if self._client_initializing and self._client_init_owner_thread_id == current_thread_id:
                 raise RuntimeError(
                     "Re-entrant MemoryClient initialization detected. "
                     "Avoid calling memory tools/hooks during client startup."
                 )
-
             if not self._client_initializing:
-                self._client_initializing = True
-                self._client_init_owner_thread_id = current_thread_id
-                self._client_init_error = None
-                should_initialize = True
-            else:
-                while self._client_initializing and self._client is None:
-                    self._client_init_cond.wait(timeout=0.5)
-                    if self._shutting_down or self._lifecycle_epoch != lifecycle_epoch:
-                        raise RuntimeError(
-                            "MemoryClient initialization aborted: runtime lifecycle changed"
-                        )
-                if self._client is not None:
-                    return self._client
-                if self._client_init_error is not None:
-                    raise RuntimeError(
-                        f"MemoryClient initialization failed: {self._client_init_error}"
-                    ) from self._client_init_error
+                self._start_client_init_locked(lifecycle_epoch=lifecycle_epoch)
+            return self._wait_for_client_locked(
+                lifecycle_epoch=lifecycle_epoch,
+                wait_timeout=wait_timeout,
+            )
 
-        if not should_initialize:
-            if self._client is None:
+    async def get_client_with_timeout(self, timeout: float | None = None):
+        return await self.run_blocking(self.get_client, wait_timeout=timeout)
+
+    def _start_client_init_locked(self, *, lifecycle_epoch: int) -> None:
+        """Start a detached client initializer under ``_client_init_cond``."""
+        self._client_initializing = True
+        self._client_init_owner_thread_id = None
+        self._client_init_error = None
+        init_thread = threading.Thread(
+            target=self._initialize_client_background,
+            args=(lifecycle_epoch,),
+            name="consolidation_memory_client_init",
+            daemon=True,
+        )
+        self._client_init_thread = init_thread
+        init_thread.start()
+
+    def _wait_for_client_locked(
+        self,
+        *,
+        lifecycle_epoch: int,
+        wait_timeout: float | None,
+    ):
+        """Wait under ``_client_init_cond`` for client initialization to finish."""
+        deadline = None if wait_timeout is None else time.monotonic() + max(0.0, wait_timeout)
+        while True:
+            if self._client is not None:
+                return self._client
+            if self._shutting_down or self._lifecycle_epoch != lifecycle_epoch:
+                raise RuntimeError("MemoryClient initialization aborted: runtime lifecycle changed")
+            if self._client_init_error is not None:
+                raise RuntimeError(
+                    f"MemoryClient initialization failed: {self._client_init_error}"
+                ) from self._client_init_error
+            if not self._client_initializing:
                 raise RuntimeError("MemoryClient initialization did not complete")
-            return self._client
 
+            wait_seconds = 0.5
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("MemoryClient initialization timed out")
+                wait_seconds = min(wait_seconds, remaining)
+            self._client_init_cond.wait(timeout=wait_seconds)
+
+    def _initialize_client_background(self, lifecycle_epoch: int) -> None:
+        """Run client construction on a daemon thread so callers can time out safely."""
+        current_thread_id = threading.get_ident()
+        with self._client_init_cond:
+            if self._client_init_thread is None:
+                return
+            self._client_init_owner_thread_id = current_thread_id
+            self._client_init_cond.notify_all()
+
+        initialized_client = None
+        init_error: Exception | None = None
         try:
             initialized_client = self._client_factory()
         except Exception as exc:
-            with self._client_init_cond:
-                self._client_initializing = False
-                self._client_init_owner_thread_id = None
-                self._client_init_error = exc
-                self._client_init_cond.notify_all()
-            raise
+            init_error = exc
 
         abort_error: RuntimeError | None = None
+        client_to_close: object | None = None
         with self._client_init_cond:
-            if self._shutting_down or self._lifecycle_epoch != lifecycle_epoch:
+            if self._client_init_owner_thread_id != current_thread_id:
+                client_to_close = initialized_client
+            elif init_error is not None:
+                self._client_initializing = False
+                self._client_init_owner_thread_id = None
+                self._client_init_thread = None
+                self._client_init_error = init_error
+                self._client_init_cond.notify_all()
+                return
+            elif self._shutting_down or self._lifecycle_epoch != lifecycle_epoch or self._client is not None:
                 abort_error = RuntimeError(
                     "MemoryClient initialization aborted: runtime lifecycle changed during startup"
                 )
                 self._client_initializing = False
                 self._client_init_owner_thread_id = None
+                self._client_init_thread = None
                 self._client_init_error = abort_error
                 self._client_init_cond.notify_all()
+                client_to_close = initialized_client
             else:
                 self._client = initialized_client
                 self._client_initializing = False
                 self._client_init_owner_thread_id = None
+                self._client_init_thread = None
                 self._client_init_error = None
                 self._client_init_cond.notify_all()
+                return
 
-        if abort_error is not None:
+        if client_to_close is not None:
             try:
-                initialized_client.close()
+                cast(Any, client_to_close).close()
             except Exception:
                 logger.warning("Failed to close aborted MemoryClient initialization cleanly", exc_info=True)
-            raise abort_error
-
-        return initialized_client
-
-    async def get_client_with_timeout(self, timeout: float | None = None):
-        return await self.run_blocking(self.get_client, timeout=timeout)
+            if abort_error is None and init_error is None:
+                logger.warning("Discarded late MemoryClient initialization result after lifecycle change")

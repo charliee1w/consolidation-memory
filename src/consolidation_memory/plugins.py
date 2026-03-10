@@ -132,39 +132,79 @@ class PluginManager:
 
     def __init__(self) -> None:
         self._plugins: list[PluginBase] = []
+        self._lock = threading.RLock()
+        self._plugins_loaded = False
+        self._active_clients = 0
 
     @property
     def plugins(self) -> list[PluginBase]:
         """Return a copy of the registered plugin list."""
-        return list(self._plugins)
+        with self._lock:
+            return list(self._plugins)
 
     # ── registration ──
 
     def register(self, plugin: PluginBase) -> None:
         """Add a plugin instance. Silently ignores duplicates."""
-        if plugin in self._plugins:
-            return
-        self._plugins.append(plugin)
+        with self._lock:
+            if plugin in self._plugins:
+                return
+            self._plugins.append(plugin)
         logger.info("Registered plugin: %s", plugin.name)
 
     def unregister(self, plugin: PluginBase) -> None:
         """Remove a plugin instance."""
-        try:
-            self._plugins.remove(plugin)
-            logger.info("Unregistered plugin: %s", plugin.name)
-        except ValueError:
-            pass
+        with self._lock:
+            try:
+                self._plugins.remove(plugin)
+                logger.info("Unregistered plugin: %s", plugin.name)
+            except ValueError:
+                pass
 
     def clear(self) -> None:
         """Remove all registered plugins."""
-        self._plugins.clear()
+        with self._lock:
+            self._plugins.clear()
+            self._plugins_loaded = False
 
     # ── discovery & loading ──
 
     def load_plugins(self) -> None:
         """Discover and instantiate plugins from entry points and config."""
-        self._load_from_entry_points()
-        self._load_from_config()
+        with self._lock:
+            if self._plugins_loaded:
+                return
+            self._load_from_entry_points()
+            self._load_from_config()
+            self._plugins_loaded = True
+
+    def acquire(self, *, client: Any, auto_load: bool = True) -> None:
+        """Acquire plugin lifecycle ownership for a live client.
+
+        Plugin discovery is idempotent and startup hooks fire only when the
+        first client in the process becomes active.
+        """
+        if auto_load:
+            self.load_plugins()
+        should_fire_startup = False
+        with self._lock:
+            if self._active_clients == 0:
+                should_fire_startup = True
+            self._active_clients += 1
+        if should_fire_startup:
+            self.fire("on_startup", client=client)
+
+    def release(self) -> None:
+        """Release plugin lifecycle ownership for a closing client."""
+        should_fire_shutdown = False
+        with self._lock:
+            if self._active_clients == 0:
+                return
+            self._active_clients -= 1
+            if self._active_clients == 0:
+                should_fire_shutdown = True
+        if should_fire_shutdown:
+            self.fire("on_shutdown")
 
     def _load_from_entry_points(self) -> None:
         from importlib.metadata import entry_points
@@ -219,7 +259,9 @@ class PluginManager:
                 f"Valid hooks: {sorted(HOOK_NAMES)}"
             )
         # Copy list to avoid issues if plugins are registered/unregistered during iteration
-        for plugin in list(self._plugins):
+        with self._lock:
+            plugins = list(self._plugins)
+        for plugin in plugins:
             method = getattr(plugin, hook_name, None)
             if method is None:
                 continue

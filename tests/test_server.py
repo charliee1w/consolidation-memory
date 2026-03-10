@@ -217,14 +217,10 @@ class TestMCPServerLifecycle:
                 async with server.lifespan(server.mcp):
                     await server._run_blocking(lambda: 1)
 
-            with (
-                patch("consolidation_memory.server._WARMUP_ON_START", False),
-                patch("consolidation_memory.runtime.close_all_connections") as mock_close_all,
-            ):
+            with patch("consolidation_memory.server._WARMUP_ON_START", False):
                 asyncio.run(_enter_and_exit_lifespan())
 
             mock_client.close.assert_called_once()
-            mock_close_all.assert_called_once()
             assert runtime.blocking_executor is None
 
     def test_lifespan_survives_startup_failure_and_tools_return_error_json(self):
@@ -248,12 +244,12 @@ class TestMCPServerLifecycle:
     def test_get_client_with_timeout_raises_timeout_error(self):
         import consolidation_memory.server as server
 
-        def _slow_get_client():
-            time.sleep(0.05)
-            return MagicMock()
-
         with (
-            patch("consolidation_memory.server._get_client", side_effect=_slow_get_client),
+            patch("consolidation_memory.server._ensure_runtime_started"),
+            patch(
+                "consolidation_memory.server._runtime.get_client_with_timeout",
+                side_effect=TimeoutError("MemoryClient initialization timed out"),
+            ),
             patch("consolidation_memory.server._CLIENT_INIT_TIMEOUT_SECONDS", 0.01),
         ):
             try:
@@ -357,14 +353,14 @@ class TestMCPRecallTool:
         mock_client = MagicMock()
         mock_client.query_recall.return_value = RecallResult()
 
-        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(
                 memory_recall(
                     query="python runtime",
                     as_of="2025-06-01T00:00:00+00:00",
                     scope={"project": {"slug": "repo-a"}},
                 )
-        )
+            )
 
         data = json.loads(output)
         assert data["total_episodes"] == 0
@@ -385,7 +381,7 @@ class TestMCPRecallTool:
         from consolidation_memory.server import memory_recall
 
         with patch(
-            "consolidation_memory.server._get_client",
+            "consolidation_memory.server._get_client_with_timeout",
             side_effect=RuntimeError("client init failed"),
         ):
             output = asyncio.run(memory_recall(query="test"))
@@ -393,6 +389,106 @@ class TestMCPRecallTool:
         data = json.loads(output)
         assert "error" in data
         assert "client init failed" in data["error"]
+
+
+class TestMCPScopeForwarding:
+    def test_memory_forget_signature_supports_scope(self):
+        from consolidation_memory.server import memory_forget
+
+        sig = inspect.signature(memory_forget)
+        assert "scope" in sig.parameters
+        assert sig.parameters["scope"].default is None
+
+    def test_memory_forget_with_scope_calls_client_method(self):
+        from consolidation_memory.server import memory_forget
+        from consolidation_memory.types import ForgetResult
+
+        scope = {"project": {"slug": "repo-a"}}
+        mock_client = MagicMock()
+        mock_client.forget.return_value = ForgetResult(status="forgotten", id="ep-1")
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(memory_forget(episode_id="ep-1", scope=scope))
+
+        assert json.loads(output)["status"] == "forgotten"
+        mock_client.forget.assert_called_once_with(episode_id="ep-1", scope=scope)
+
+    def test_memory_export_signature_supports_scope(self):
+        from consolidation_memory.server import memory_export
+
+        sig = inspect.signature(memory_export)
+        assert "scope" in sig.parameters
+        assert sig.parameters["scope"].default is None
+
+    def test_memory_export_with_scope_calls_client_method(self):
+        from consolidation_memory.server import memory_export
+        from consolidation_memory.types import ExportResult
+
+        scope = {"namespace": {"slug": "team-a"}}
+        mock_client = MagicMock()
+        mock_client.export.return_value = ExportResult(status="exported", path="/tmp/export.json")
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(memory_export(scope=scope))
+
+        assert json.loads(output)["status"] == "exported"
+        mock_client.export.assert_called_once_with(scope=scope)
+
+    def test_memory_correct_with_scope_calls_client_method(self):
+        from consolidation_memory.server import memory_correct
+        from consolidation_memory.types import CorrectResult
+
+        scope = {"project": {"slug": "repo-a"}}
+        mock_client = MagicMock()
+        mock_client.correct.return_value = CorrectResult(status="write_denied", filename="topic.md")
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(
+                memory_correct(topic_filename="topic.md", correction="fix", scope=scope)
+            )
+
+        assert json.loads(output)["status"] == "write_denied"
+        mock_client.correct.assert_called_once_with(
+            topic_filename="topic.md",
+            correction="fix",
+            scope=scope,
+        )
+
+    def test_memory_protect_with_scope_calls_client_method(self):
+        from consolidation_memory.server import memory_protect
+        from consolidation_memory.types import ProtectResult
+
+        scope = {"namespace": {"slug": "team-a"}}
+        mock_client = MagicMock()
+        mock_client.protect.return_value = ProtectResult(status="protected", protected_count=1)
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(memory_protect(episode_id="ep-1", scope=scope))
+
+        assert json.loads(output)["status"] == "protected"
+        mock_client.protect.assert_called_once_with(episode_id="ep-1", tag=None, scope=scope)
+
+    def test_memory_browse_read_topic_and_timeline_with_scope_call_client_methods(self):
+        from consolidation_memory.server import memory_browse, memory_read_topic, memory_timeline
+        from consolidation_memory.types import BrowseResult, TimelineResult, TopicDetailResult
+
+        scope = {"project": {"slug": "repo-a"}}
+        mock_client = MagicMock()
+        mock_client.browse.return_value = BrowseResult(topics=[], total=0)
+        mock_client.read_topic.return_value = TopicDetailResult(status="ok", filename="topic.md")
+        mock_client.timeline.return_value = TimelineResult(query="python", entries=[], total=0)
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            browse_output = asyncio.run(memory_browse(scope=scope))
+            read_output = asyncio.run(memory_read_topic(filename="topic.md", scope=scope))
+            timeline_output = asyncio.run(memory_timeline(topic="python", scope=scope))
+
+        assert json.loads(browse_output)["total"] == 0
+        assert json.loads(read_output)["status"] == "ok"
+        assert json.loads(timeline_output)["query"] == "python"
+        mock_client.browse.assert_called_once_with(scope=scope)
+        mock_client.read_topic.assert_called_once_with(filename="topic.md", scope=scope)
+        mock_client.timeline.assert_called_once_with(topic="python", scope=scope)
 
     def test_memory_recall_timeout_falls_back_to_episodes_only(self):
         from consolidation_memory.server import memory_recall
@@ -413,7 +509,7 @@ class TestMCPRecallTool:
         )
 
         with (
-            patch("consolidation_memory.server._get_client", return_value=mock_client),
+            patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client),
             patch("consolidation_memory.server._MEMORY_RECALL_TIMEOUT_SECONDS", 0.01),
             patch("consolidation_memory.server._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", 0.2),
         ):
@@ -455,7 +551,7 @@ class TestMCPRecallTool:
         mock_client.query_search.side_effect = _slow_query_search
 
         with (
-            patch("consolidation_memory.server._get_client", return_value=mock_client),
+            patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client),
             patch("consolidation_memory.server._MEMORY_RECALL_TIMEOUT_SECONDS", 0.01),
             patch("consolidation_memory.server._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", 0.01),
         ):
@@ -480,7 +576,7 @@ class TestMCPClaimTools:
         mock_client = MagicMock()
         mock_client.query_browse_claims.return_value = ClaimBrowseResult(claims=[], total=0)
 
-        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(
                 memory_claim_browse(
                     claim_type="fact",
@@ -507,7 +603,7 @@ class TestMCPClaimTools:
             query="python",
         )
 
-        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(
                 memory_claim_search(
                     query="python",
@@ -532,7 +628,7 @@ class TestMCPConsolidateTool:
         mock_client = MagicMock()
         mock_client.consolidate.return_value = {"status": "error", "message": "boom"}
 
-        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(memory_consolidate())
 
         assert json.loads(output) == {"status": "error", "message": "boom"}
@@ -543,7 +639,7 @@ class TestMCPConsolidateTool:
         mock_client = MagicMock()
         mock_client.consolidate.return_value = {"status": "already_running"}
 
-        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(memory_consolidate())
 
         assert json.loads(output) == {

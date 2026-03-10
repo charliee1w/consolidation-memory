@@ -7,14 +7,20 @@ from unittest.mock import MagicMock
 
 from consolidation_memory.schemas import openai_tools, dispatch_tool_call
 from consolidation_memory.types import (
+    BrowseResult,
     StoreResult,
     BatchStoreResult,
+    CorrectResult,
+    ExportResult,
     RecallResult,
     SearchResult,
     ClaimBrowseResult,
     ClaimSearchResult,
     ForgetResult,
+    ProtectResult,
     StatusResult,
+    TimelineResult,
+    TopicDetailResult,
 )
 
 
@@ -71,19 +77,33 @@ class TestSchemaStructure:
         assert "topic_filename" in required
         assert "correction" in required
 
-    def test_scope_schema_present_for_store_recall_batch_search_and_claim_queries(self):
+    def test_scope_schema_present_for_all_scoped_tools(self):
         store = next(t for t in openai_tools if t["function"]["name"] == "memory_store")
         store_batch = next(t for t in openai_tools if t["function"]["name"] == "memory_store_batch")
         recall = next(t for t in openai_tools if t["function"]["name"] == "memory_recall")
         search = next(t for t in openai_tools if t["function"]["name"] == "memory_search")
         claim_browse = next(t for t in openai_tools if t["function"]["name"] == "memory_claim_browse")
         claim_search = next(t for t in openai_tools if t["function"]["name"] == "memory_claim_search")
+        forget = next(t for t in openai_tools if t["function"]["name"] == "memory_forget")
+        export = next(t for t in openai_tools if t["function"]["name"] == "memory_export")
+        correct = next(t for t in openai_tools if t["function"]["name"] == "memory_correct")
+        protect = next(t for t in openai_tools if t["function"]["name"] == "memory_protect")
+        timeline = next(t for t in openai_tools if t["function"]["name"] == "memory_timeline")
+        browse = next(t for t in openai_tools if t["function"]["name"] == "memory_browse")
+        read_topic = next(t for t in openai_tools if t["function"]["name"] == "memory_read_topic")
         assert "scope" in store["function"]["parameters"]["properties"]
         assert "scope" in store_batch["function"]["parameters"]["properties"]
         assert "scope" in recall["function"]["parameters"]["properties"]
         assert "scope" in search["function"]["parameters"]["properties"]
         assert "scope" in claim_browse["function"]["parameters"]["properties"]
         assert "scope" in claim_search["function"]["parameters"]["properties"]
+        assert "scope" in forget["function"]["parameters"]["properties"]
+        assert "scope" in export["function"]["parameters"]["properties"]
+        assert "scope" in correct["function"]["parameters"]["properties"]
+        assert "scope" in protect["function"]["parameters"]["properties"]
+        assert "scope" in timeline["function"]["parameters"]["properties"]
+        assert "scope" in browse["function"]["parameters"]["properties"]
+        assert "scope" in read_topic["function"]["parameters"]["properties"]
         scope_schema = store["function"]["parameters"]["properties"]["scope"]
         assert "policy" in scope_schema["properties"]
         assert scope_schema["properties"]["policy"]["properties"]["read_visibility"]["enum"] == [
@@ -192,7 +212,54 @@ class TestDispatch:
 
         result = dispatch_tool_call(client, "memory_forget", {"episode_id": "abc"})
         assert result["status"] == "forgotten"
-        client.forget.assert_called_once_with(episode_id="abc")
+        client.forget.assert_called_once_with(episode_id="abc", scope=None)
+
+    def test_dispatch_forget_with_scope(self):
+        client = MagicMock()
+        client.forget.return_value = ForgetResult(status="write_denied", id="abc")
+
+        result = dispatch_tool_call(
+            client,
+            "memory_forget",
+            {"episode_id": "abc", "scope": {"project": {"slug": "repo-a"}}},
+        )
+        assert result["status"] == "write_denied"
+        client.forget.assert_called_once_with(
+            episode_id="abc",
+            scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_dispatch_export_with_scope(self):
+        client = MagicMock()
+        client.export.return_value = ExportResult(status="exported", path="/tmp/export.json")
+
+        result = dispatch_tool_call(
+            client,
+            "memory_export",
+            {"scope": {"namespace": {"slug": "team-a"}}},
+        )
+        assert result["status"] == "exported"
+        client.export.assert_called_once_with(scope={"namespace": {"slug": "team-a"}})
+
+    def test_dispatch_correct_with_scope(self):
+        client = MagicMock()
+        client.correct.return_value = CorrectResult(status="write_denied", filename="topic.md")
+
+        result = dispatch_tool_call(
+            client,
+            "memory_correct",
+            {
+                "topic_filename": "topic.md",
+                "correction": "fix",
+                "scope": {"project": {"slug": "repo-a"}},
+            },
+        )
+        assert result["status"] == "write_denied"
+        client.correct.assert_called_once_with(
+            topic_filename="topic.md",
+            correction="fix",
+            scope={"project": {"slug": "repo-a"}},
+        )
 
     def test_dispatch_search(self):
         client = MagicMock()
@@ -336,6 +403,64 @@ class TestDispatch:
             as_of=None,
             limit=50,
             scope={"namespace": {"slug": "team-a"}},
+        )
+
+    def test_dispatch_protect_with_scope(self):
+        client = MagicMock()
+        client.protect.return_value = ProtectResult(status="protected", protected_count=1)
+
+        result = dispatch_tool_call(
+            client,
+            "memory_protect",
+            {"episode_id": "abc", "scope": {"namespace": {"slug": "team-a"}}},
+        )
+        assert result["status"] == "protected"
+        client.protect.assert_called_once_with(
+            episode_id="abc",
+            tag=None,
+            scope={"namespace": {"slug": "team-a"}},
+        )
+
+    def test_dispatch_browse_with_scope(self):
+        client = MagicMock()
+        client.browse.return_value = BrowseResult(topics=[], total=0)
+
+        result = dispatch_tool_call(
+            client,
+            "memory_browse",
+            {"scope": {"project": {"slug": "repo-a"}}},
+        )
+        assert result["total"] == 0
+        client.browse.assert_called_once_with(scope={"project": {"slug": "repo-a"}})
+
+    def test_dispatch_read_topic_with_scope(self):
+        client = MagicMock()
+        client.read_topic.return_value = TopicDetailResult(status="ok", filename="topic.md", content="# hi")
+
+        result = dispatch_tool_call(
+            client,
+            "memory_read_topic",
+            {"filename": "topic.md", "scope": {"namespace": {"slug": "team-a"}}},
+        )
+        assert result["status"] == "ok"
+        client.read_topic.assert_called_once_with(
+            filename="topic.md",
+            scope={"namespace": {"slug": "team-a"}},
+        )
+
+    def test_dispatch_timeline_with_scope(self):
+        client = MagicMock()
+        client.timeline.return_value = TimelineResult(query="python", entries=[], total=0)
+
+        result = dispatch_tool_call(
+            client,
+            "memory_timeline",
+            {"topic": "python", "scope": {"project": {"slug": "repo-a"}}},
+        )
+        assert result["query"] == "python"
+        client.timeline.assert_called_once_with(
+            topic="python",
+            scope={"project": {"slug": "repo-a"}},
         )
 
     def test_dispatch_detect_drift(self):

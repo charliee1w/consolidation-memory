@@ -100,6 +100,7 @@ _DEFAULT_NAMESPACE_SLUG = "default"
 _DEFAULT_APP_CLIENT_NAME = "legacy_client"
 _SHARED_NAMESPACE_MODES = {"shared", "team", "managed"}
 _WRITE_DENIED_MESSAGE = "Writes are denied by scope policy (write_mode='deny')."
+_CLOSED_MESSAGE = "MemoryClient is closed."
 
 
 def _normalize_content_type(ct: str) -> str:
@@ -181,6 +182,32 @@ def _resolved_scope_to_query_filter(scope: ResolvedScopeEnvelope) -> dict[str, s
     return filters
 
 
+def _resolved_scope_to_mutation_filter(scope: ResolvedScopeEnvelope) -> dict[str, str | None]:
+    """Build an exact-scope filter for mutation authorization.
+
+    Writes are intentionally fail-closed: read visibility widening does not grant
+    cross-project or cross-app mutation rights.
+    """
+    filters: dict[str, str | None] = {
+        "namespace_slug": scope.namespace.slug,
+        "project_slug": scope.project.slug,
+        "app_client_name": scope.app_client.name,
+        "app_client_type": scope.app_client.app_type,
+        "app_client_provider": scope.app_client.provider,
+        "app_client_external_key": scope.app_client.external_key,
+    }
+    if scope.agent is not None:
+        if scope.agent.external_key:
+            filters["agent_external_key"] = scope.agent.external_key
+        elif scope.agent.name:
+            filters["agent_name"] = scope.agent.name
+    if scope.session is not None:
+        if scope.session.external_key:
+            filters["session_external_key"] = scope.session.external_key
+        filters["session_kind"] = scope.session.session_kind
+    return filters
+
+
 def _write_denied_message(scope: ResolvedScopeEnvelope) -> str | None:
     """Return a policy denial message when writes are disabled for scope."""
     if scope.policy.write_mode == "deny":
@@ -256,6 +283,8 @@ class MemoryClient:
         self._scheduler_signal_lock = threading.Lock()
         self._recall_miss_events: deque[float] = deque(maxlen=256)
         self._recall_fallback_events: deque[float] = deque(maxlen=256)
+        self._state_lock = threading.Lock()
+        self._closing = False
         self._closed = False
 
         if self._auto_consolidate_enabled and cfg.CONSOLIDATION_AUTO_RUN:
@@ -268,19 +297,19 @@ class MemoryClient:
         )
 
         # Discover and load plugins, then fire startup hook
-        from consolidation_memory.plugins import get_plugin_manager
-        if cfg.PLUGINS_ENABLED:
-            get_plugin_manager().load_plugins()
-        get_plugin_manager().fire("on_startup", client=self)
         with type(self)._instance_lock:
             type(self)._live_instances += 1
+        from consolidation_memory.plugins import get_plugin_manager
+        get_plugin_manager().acquire(client=self, auto_load=bool(cfg.PLUGINS_ENABLED))
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def close(self) -> None:
         """Stop background threads. Call when done."""
-        if self._closed:
-            return
+        with self._state_lock:
+            if self._closed or self._closing:
+                return
+            self._closing = True
 
         should_close_connections = False
 
@@ -288,11 +317,6 @@ class MemoryClient:
         from consolidation_memory.database import close_all_connections
 
         try:
-            try:
-                get_plugin_manager().fire("on_shutdown")
-            except Exception:
-                logger.warning("Plugin shutdown hook failed", exc_info=True)
-
             self._consolidation_stop.set()
             if self._consolidation_thread is not None:
                 self._consolidation_thread.join(timeout=30)
@@ -308,16 +332,30 @@ class MemoryClient:
             if self._llm_executor is not None:
                 self._llm_executor.shutdown(wait=True, cancel_futures=True)
                 self._llm_executor = None
+            try:
+                get_plugin_manager().release()
+            except Exception:
+                logger.warning("Plugin shutdown hook failed", exc_info=True)
         finally:
-            with type(self)._instance_lock:
+            newly_closed = False
+            with self._state_lock:
                 if not self._closed:
-                    self._closed = True
+                    newly_closed = True
+                self._closed = True
+                self._closing = False
+            with type(self)._instance_lock:
+                if newly_closed:
                     if type(self)._live_instances > 0:
                         type(self)._live_instances -= 1
                     should_close_connections = type(self)._live_instances == 0
 
             if should_close_connections:
                 close_all_connections()
+
+    def _ensure_open(self) -> None:
+        with self._state_lock:
+            if self._closed or self._closing:
+                raise RuntimeError(_CLOSED_MESSAGE)
 
     def __enter__(self) -> MemoryClient:
         return self
@@ -337,6 +375,7 @@ class MemoryClient:
         persisted ACL rows match this scope/principal, they are authoritative
         for read/write policy semantics.
         """
+        self._ensure_open()
         from consolidation_memory.config import get_active_project
 
         parsed_scope = coerce_scope_envelope(scope)
@@ -453,6 +492,7 @@ class MemoryClient:
         scope: ScopeEnvelope | dict[str, object] | None = None,
     ) -> MemoryOperationContext:
         """Build a canonical operation context for service-layer calls."""
+        self._ensure_open()
         return MemoryOperationContext(scope=self.resolve_scope(scope))
 
     def store_with_scope(
@@ -593,6 +633,7 @@ class MemoryClient:
         surprise: float = 0.5,
     ) -> StoreResult:
         """Store a memory episode using backward-compatible default scope."""
+        self._ensure_open()
         return self._store_internal(
             content=content,
             content_type=content_type,
@@ -723,6 +764,7 @@ class MemoryClient:
         episodes: list[dict],
     ) -> BatchStoreResult:
         """Store multiple episodes using backward-compatible default scope."""
+        self._ensure_open()
         return self._store_batch_internal(
             episodes=episodes,
             resolved_scope=self.resolve_scope(),
@@ -1181,6 +1223,7 @@ class MemoryClient:
         repo_path: str | None = None,
     ) -> DriftOutput:
         """Canonical drift detection/challenge entrypoint for all adapters."""
+        self._ensure_open()
         result = self._query_service.detect_drift(
             DriftQuery(
                 base_ref=base_ref,
@@ -1210,6 +1253,7 @@ class MemoryClient:
         Returns:
             StatusResult with counts, backend info, health, and last consolidation.
         """
+        self._ensure_open()
         from consolidation_memory.database import (
             get_consolidation_scheduler_state,
             get_stats,
@@ -1364,7 +1408,12 @@ class MemoryClient:
             scaling=scaling,
         )
 
-    def forget(self, episode_id: str) -> ForgetResult:
+    def forget(
+        self,
+        episode_id: str,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> ForgetResult:
         """Soft-delete an episode.
 
         Args:
@@ -1375,9 +1424,14 @@ class MemoryClient:
         """
         from consolidation_memory.database import soft_delete_episode
 
+        self._ensure_open()
+        resolved_scope = self.resolve_scope(scope)
+        denied_message = _write_denied_message(resolved_scope)
+        if denied_message is not None:
+            return ForgetResult(status="write_denied", id=episode_id, message=denied_message)
         self._vector_store.reload_if_stale()
-
-        deleted = soft_delete_episode(episode_id)
+        mutation_filter = _resolved_scope_to_mutation_filter(resolved_scope)
+        deleted = soft_delete_episode(episode_id, scope=mutation_filter)
         if deleted:
             self._vector_store.remove(episode_id)
             logger.info("Forgot episode %s", episode_id)
@@ -1390,7 +1444,11 @@ class MemoryClient:
             logger.warning("Episode %s not found for deletion", episode_id)
             return ForgetResult(status="not_found", id=episode_id)
 
-    def export(self) -> ExportResult:
+    def export(
+        self,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> ExportResult:
         """Export all episodes and knowledge to a JSON snapshot.
 
         Returns:
@@ -1407,13 +1465,17 @@ class MemoryClient:
             get_all_episodes,
             get_all_knowledge_topics,
         )
+        from consolidation_memory.query_semantics import filter_claims_for_scope
 
+        self._ensure_open()
         cfg = get_config()
         cfg.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        resolved_scope = self.resolve_scope(scope)
+        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
-        episodes = get_all_episodes(include_deleted=False)
+        episodes = get_all_episodes(include_deleted=False, scope=scope_filter)
 
-        topics = get_all_knowledge_topics()
+        topics = get_all_knowledge_topics(scope=scope_filter)
         knowledge = []
         knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
         for topic in topics:
@@ -1424,12 +1486,14 @@ class MemoryClient:
                 content = filepath.read_text(encoding="utf-8")
             knowledge.append({**topic, "file_content": content})
 
-        records = get_all_active_records()
-        claims = get_all_claims()
-        claim_edges = get_all_claim_edges()
-        claim_sources = get_all_claim_sources()
-        claim_events = get_all_claim_events()
-        episode_anchors = get_all_episode_anchors()
+        records = get_all_active_records(scope=scope_filter)
+        claims = filter_claims_for_scope(get_all_claims(), scope_filter)
+        claim_ids = [str(claim["id"]) for claim in claims if claim.get("id")]
+        claim_edges = get_all_claim_edges(claim_ids=claim_ids)
+        claim_sources = get_all_claim_sources(claim_ids=claim_ids)
+        claim_events = get_all_claim_events(claim_ids=claim_ids)
+        episode_ids = [str(ep["id"]) for ep in episodes if ep.get("id")]
+        episode_anchors = get_all_episode_anchors(episode_ids=episode_ids)
 
         snapshot = {
             "exported_at": datetime.now(timezone.utc).isoformat(),
@@ -1486,7 +1550,13 @@ class MemoryClient:
             episode_anchors=len(episode_anchors),
         )
 
-    def correct(self, topic_filename: str, correction: str) -> CorrectResult:
+    def correct(
+        self,
+        topic_filename: str,
+        correction: str,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> CorrectResult:
         """Correct a knowledge document with new information.
 
         Args:
@@ -1499,7 +1569,7 @@ class MemoryClient:
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             expire_record,
-            get_all_knowledge_topics,
+            get_knowledge_topic,
             get_records_by_topic,
             insert_knowledge_records,
             upsert_knowledge_topic,
@@ -1513,9 +1583,13 @@ class MemoryClient:
         )
         from consolidation_memory.backends import get_llm_backend
 
+        self._ensure_open()
         cfg = get_config()
-        resolved_scope = self.resolve_scope()
-        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
+        resolved_scope = self.resolve_scope(scope)
+        denied_message = _write_denied_message(resolved_scope)
+        if denied_message is not None:
+            return CorrectResult(status="write_denied", filename=topic_filename, message=denied_message)
+        mutation_filter = _resolved_scope_to_mutation_filter(resolved_scope)
 
         # Validate filename doesn't escape KNOWLEDGE_DIR (path traversal)
         filepath = (cfg.KNOWLEDGE_DIR / topic_filename).resolve()
@@ -1525,14 +1599,10 @@ class MemoryClient:
                 filename=topic_filename,
                 message="Invalid filename: path traversal detected.",
             )
-        if not filepath.exists():
+        existing_topic = get_knowledge_topic(topic_filename, scope=mutation_filter)
+        if existing_topic is None:
             return CorrectResult(status="not_found", filename=topic_filename)
-
-        topics = get_all_knowledge_topics()
-        scoped_topics = get_all_knowledge_topics(scope=scope_filter)
-        if any(t.get("filename") == topic_filename for t in topics) and not any(
-            t.get("filename") == topic_filename for t in scoped_topics
-        ):
+        if not filepath.exists():
             return CorrectResult(status="not_found", filename=topic_filename)
 
         llm = get_llm_backend()
@@ -1588,29 +1658,25 @@ class MemoryClient:
         meta = parsed["meta"]
         body = parsed.get("body", "")
 
-        existing_topic = next((t for t in scoped_topics if t["filename"] == topic_filename), None)
-        source_eps = parse_json_list(existing_topic.get("source_episodes") if existing_topic else None)
-        existing_confidence = float(existing_topic["confidence"]) if existing_topic else 0.8
-        if existing_topic is not None:
-            topic_scope = {
-                "namespace_slug": existing_topic.get("namespace_slug"),
-                "namespace_sharing_mode": existing_topic.get("namespace_sharing_mode"),
-                "app_client_name": existing_topic.get("app_client_name"),
-                "app_client_type": existing_topic.get("app_client_type"),
-                "app_client_provider": existing_topic.get("app_client_provider"),
-                "app_client_external_key": existing_topic.get("app_client_external_key"),
-                "agent_name": existing_topic.get("agent_name"),
-                "agent_external_key": existing_topic.get("agent_external_key"),
-                "session_external_key": existing_topic.get("session_external_key"),
-                "session_kind": existing_topic.get("session_kind"),
-                "project_slug": existing_topic.get("project_slug"),
-                "project_display_name": existing_topic.get("project_display_name"),
-                "project_root_uri": existing_topic.get("project_root_uri"),
-                "project_repo_remote": existing_topic.get("project_repo_remote"),
-                "project_default_branch": existing_topic.get("project_default_branch"),
-            }
-        else:
-            topic_scope = _resolved_scope_to_db_row(self.resolve_scope())
+        source_eps = parse_json_list(existing_topic.get("source_episodes"))
+        existing_confidence = float(existing_topic["confidence"])
+        topic_scope = {
+            "namespace_slug": existing_topic.get("namespace_slug"),
+            "namespace_sharing_mode": existing_topic.get("namespace_sharing_mode"),
+            "app_client_name": existing_topic.get("app_client_name"),
+            "app_client_type": existing_topic.get("app_client_type"),
+            "app_client_provider": existing_topic.get("app_client_provider"),
+            "app_client_external_key": existing_topic.get("app_client_external_key"),
+            "agent_name": existing_topic.get("agent_name"),
+            "agent_external_key": existing_topic.get("agent_external_key"),
+            "session_external_key": existing_topic.get("session_external_key"),
+            "session_kind": existing_topic.get("session_kind"),
+            "project_slug": existing_topic.get("project_slug"),
+            "project_display_name": existing_topic.get("project_display_name"),
+            "project_root_uri": existing_topic.get("project_root_uri"),
+            "project_repo_remote": existing_topic.get("project_repo_remote"),
+            "project_default_branch": existing_topic.get("project_default_branch"),
+        }
 
         try:
             confidence = float(meta.get("confidence", existing_confidence))
@@ -1646,8 +1712,8 @@ class MemoryClient:
 
         topic_id = upsert_knowledge_topic(
             filename=topic_filename,
-            title=str(meta.get("title", existing_topic["title"] if existing_topic else topic_filename)),
-            summary=str(meta.get("summary", existing_topic["summary"] if existing_topic else "")),
+            title=str(meta.get("title", existing_topic["title"])),
+            summary=str(meta.get("summary", existing_topic["summary"])),
             source_episodes=source_eps,
             fact_count=len(record_rows),
             confidence=confidence,
@@ -1682,7 +1748,11 @@ class MemoryClient:
             title=meta.get("title", ""),
         )
 
-    def browse(self) -> BrowseResult:
+    def browse(
+        self,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> BrowseResult:
         """List all knowledge topics with summaries and metadata.
 
         Returns:
@@ -1691,8 +1761,9 @@ class MemoryClient:
         from consolidation_memory.database import get_all_knowledge_topics, get_all_active_records
         from consolidation_memory.config import get_config
 
+        self._ensure_open()
         cfg = get_config()
-        resolved_scope = self.resolve_scope()
+        resolved_scope = self.resolve_scope(scope)
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
         topics = get_all_knowledge_topics(scope=scope_filter)
         records = get_all_active_records(include_expired=False, scope=scope_filter)
@@ -1726,7 +1797,12 @@ class MemoryClient:
 
         return BrowseResult(topics=result_topics, total=len(result_topics))
 
-    def read_topic(self, filename: str) -> TopicDetailResult:
+    def read_topic(
+        self,
+        filename: str,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> TopicDetailResult:
         """Read the full rendered markdown content of a knowledge file.
 
         Args:
@@ -1736,16 +1812,13 @@ class MemoryClient:
             TopicDetailResult with the markdown content.
         """
         from consolidation_memory.config import get_config
-        from consolidation_memory.database import get_all_knowledge_topics
+        from consolidation_memory.database import get_knowledge_topic
 
+        self._ensure_open()
         cfg = get_config()
-        resolved_scope = self.resolve_scope()
+        resolved_scope = self.resolve_scope(scope)
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
-        all_topics = get_all_knowledge_topics()
-        scoped_topics = get_all_knowledge_topics(scope=scope_filter)
-        if any(topic.get("filename") == filename for topic in all_topics) and not any(
-            topic.get("filename") == filename for topic in scoped_topics
-        ):
+        if get_knowledge_topic(filename, scope=scope_filter) is None:
             return TopicDetailResult(status="not_found", filename=filename)
 
         filepath = (cfg.KNOWLEDGE_DIR / filename).resolve()
@@ -1763,7 +1836,12 @@ class MemoryClient:
         content = filepath.read_text(encoding="utf-8")
         return TopicDetailResult(status="ok", filename=filename, content=content)
 
-    def timeline(self, topic: str) -> TimelineResult:
+    def timeline(
+        self,
+        topic: str,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> TimelineResult:
         """Show how understanding of a topic has changed over time.
 
         Retrieves all records (including expired) matching the topic,
@@ -1780,9 +1858,10 @@ class MemoryClient:
         from consolidation_memory.backends import encode_query
         import numpy as np
 
+        self._ensure_open()
         self._vector_store.reload_if_stale()
 
-        resolved_scope = self.resolve_scope()
+        resolved_scope = self.resolve_scope(scope)
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
         # Get all records including expired
@@ -1911,6 +1990,7 @@ class MemoryClient:
             get_all_knowledge_topics,
         )
 
+        self._ensure_open()
         topic_id = None
         if topic:
             topics = get_all_knowledge_topics()
@@ -1948,6 +2028,7 @@ class MemoryClient:
             get_contradictions as db_get_contradictions,
         )
 
+        self._ensure_open()
         last_n = min(max(1, last_n), 20)
         runs = get_recent_consolidation_runs(limit=last_n)
 
@@ -2037,6 +2118,7 @@ class MemoryClient:
         )
         from consolidation_memory.config import get_config
 
+        self._ensure_open()
         cfg = get_config()
 
         prunable = get_prunable_episodes(days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS)
@@ -2083,7 +2165,11 @@ class MemoryClient:
         )
 
     def protect(
-        self, episode_id: str | None = None, tag: str | None = None,
+        self,
+        episode_id: str | None = None,
+        tag: str | None = None,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
     ) -> ProtectResult:
         """Mark episodes as immune to pruning.
 
@@ -2096,26 +2182,45 @@ class MemoryClient:
         """
         from consolidation_memory.database import protect_episode, protect_by_tag
 
+        self._ensure_open()
         if not episode_id and not tag:
             return ProtectResult(
                 status="error", message="Provide either episode_id or tag."
             )
 
+        resolved_scope = self.resolve_scope(scope)
+        denied_message = _write_denied_message(resolved_scope)
+        if denied_message is not None:
+            return ProtectResult(status="write_denied", message=denied_message)
+
+        mutation_filter = _resolved_scope_to_mutation_filter(resolved_scope)
         total = 0
+        episode_missing = False
         if episode_id:
-            found = protect_episode(episode_id)
+            found = protect_episode(episode_id, scope=mutation_filter)
             if not found:
-                return ProtectResult(status="not_found", message=f"Episode {episode_id} not found.")
-            total += 1
+                episode_missing = True
+            else:
+                total += 1
 
         if tag:
-            count = protect_by_tag(tag)
+            count = protect_by_tag(tag, scope=mutation_filter)
             total += count
+
+        if total == 0 and episode_missing and tag is None:
+            return ProtectResult(status="not_found", message=f"Episode {episode_id} not found.")
+
+        message = f"Protected {total} episode(s)."
+        if episode_missing and tag is not None:
+            message = (
+                f"Protected {total} episode(s). "
+                f"Episode {episode_id} was not found or is outside the writable scope."
+            )
 
         return ProtectResult(
             status="protected",
             protected_count=total,
-            message=f"Protected {total} episode(s).",
+            message=message,
         )
 
     def consolidate(self) -> ConsolidationReport:
@@ -2124,6 +2229,7 @@ class MemoryClient:
         Returns:
             Dict with consolidation results or ``{"status": "already_running"}``.
         """
+        self._ensure_open()
         if not self._consolidation_lock.acquire(blocking=False):
             return {"status": "already_running"}
         try:
@@ -2138,6 +2244,7 @@ class MemoryClient:
         Returns:
             CompactResult with status, tombstones removed, and new index size.
         """
+        self._ensure_open()
         removed = self._vector_store.compact()
         if removed == 0:
             return CompactResult(

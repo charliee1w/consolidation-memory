@@ -163,11 +163,16 @@ def execute_tool_call(
 
     if name == "memory_forget":
         client = _require_client(client, name)
-        return dataclasses.asdict(client.forget(episode_id=arguments["episode_id"]))
+        return dataclasses.asdict(
+            client.forget(
+                episode_id=arguments["episode_id"],
+                scope=arguments.get("scope"),
+            )
+        )
 
     if name == "memory_export":
         client = _require_client(client, name)
-        return dataclasses.asdict(client.export())
+        return dataclasses.asdict(client.export(scope=arguments.get("scope")))
 
     if name == "memory_correct":
         client = _require_client(client, name)
@@ -175,6 +180,7 @@ def execute_tool_call(
             client.correct(
                 topic_filename=arguments["topic_filename"],
                 correction=arguments["correction"],
+                scope=arguments.get("scope"),
             )
         )
 
@@ -195,12 +201,18 @@ def execute_tool_call(
             client.protect(
                 episode_id=arguments.get("episode_id"),
                 tag=arguments.get("tag"),
+                scope=arguments.get("scope"),
             )
         )
 
     if name == "memory_timeline":
         client = _require_client(client, name)
-        return dataclasses.asdict(client.timeline(topic=arguments["topic"]))
+        return dataclasses.asdict(
+            client.timeline(
+                topic=arguments["topic"],
+                scope=arguments.get("scope"),
+            )
+        )
 
     if name == "memory_contradictions":
         client = _require_client(client, name)
@@ -208,7 +220,7 @@ def execute_tool_call(
 
     if name == "memory_browse":
         client = _require_client(client, name)
-        return dataclasses.asdict(client.browse())
+        return dataclasses.asdict(client.browse(scope=arguments.get("scope")))
 
     if name == "memory_read_topic":
         client = _require_client(client, name)
@@ -217,7 +229,12 @@ def execute_tool_call(
             raise ValueError("filename must be a string")
         if _UNSAFE_FILENAME_RE.search(filename):
             raise ValueError("Invalid filename: must not contain '/', '\\', or '..'")
-        return dataclasses.asdict(client.read_topic(filename=filename))
+        return dataclasses.asdict(
+            client.read_topic(
+                filename=filename,
+                scope=arguments.get("scope"),
+            )
+        )
 
     if name == "memory_decay_report":
         client = _require_client(client, name)

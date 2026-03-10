@@ -321,6 +321,7 @@ MEMORY_FORGET_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "description": "The UUID of the episode to forget.",
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": ["episode_id"],
         },
@@ -337,7 +338,9 @@ MEMORY_EXPORT_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "scope": SCOPE_ENVELOPE_SCHEMA,
+            },
             "required": [],
         },
     },
@@ -363,6 +366,7 @@ MEMORY_CORRECT_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "description": "Description of what needs to be corrected and the correct information.",
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": ["topic_filename", "correction"],
         },
@@ -574,6 +578,7 @@ MEMORY_PROTECT_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "description": "Protect all episodes with this tag.",
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": [],
         },
@@ -599,6 +604,7 @@ MEMORY_TIMELINE_SCHEMA: dict[str, Any] = {
                         "(e.g., 'frontend framework preference')."
                     ),
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": ["topic"],
         },
@@ -638,7 +644,9 @@ MEMORY_BROWSE_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "scope": SCOPE_ENVELOPE_SCHEMA,
+            },
             "required": [],
         },
     },
@@ -659,6 +667,7 @@ MEMORY_READ_TOPIC_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "description": "The filename of the knowledge topic (e.g., 'python_setup.md').",
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": ["filename"],
         },

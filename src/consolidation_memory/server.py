@@ -206,8 +206,9 @@ def _format_thread_stacks() -> str:
 async def _get_client_with_timeout():
     timeout_seconds = _client_init_timeout_seconds()
     try:
+        _ensure_runtime_started()
         started = time.monotonic()
-        client = await _run_blocking(_get_client, timeout=timeout_seconds)
+        client = await _runtime.get_client_with_timeout(timeout=timeout_seconds)
         elapsed = time.monotonic() - started
         if elapsed > timeout_seconds * 0.8:
             logger.warning(
@@ -216,7 +217,7 @@ async def _get_client_with_timeout():
                 timeout_seconds,
             )
         return client
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         if _DUMP_STACKS_ON_CLIENT_INIT_TIMEOUT:
             logger.error("Client init timeout thread dump:%s", _format_thread_stacks())
         raise TimeoutError(
@@ -658,23 +659,30 @@ async def memory_status() -> str:
 
 
 @_tracked_tool()
-async def memory_forget(episode_id: str) -> str:
+async def memory_forget(
+    episode_id: str,
+    scope: dict[str, object] | None = None,
+) -> str:
     """Mark an episode for removal from the memory system."""
-    return await _call_tool_json("memory_forget", {"episode_id": episode_id})
+    return await _call_tool_json("memory_forget", {"episode_id": episode_id, "scope": scope})
 
 
 @_tracked_tool()
-async def memory_export() -> str:
+async def memory_export(scope: dict[str, object] | None = None) -> str:
     """Export all episodes and knowledge to a JSON snapshot."""
-    return await _call_tool_json("memory_export", {})
+    return await _call_tool_json("memory_export", {"scope": scope})
 
 
 @_tracked_tool()
-async def memory_correct(topic_filename: str, correction: str) -> str:
+async def memory_correct(
+    topic_filename: str,
+    correction: str,
+    scope: dict[str, object] | None = None,
+) -> str:
     """Correct a knowledge document with new information."""
     return await _call_tool_json(
         "memory_correct",
-        {"topic_filename": topic_filename, "correction": correction},
+        {"topic_filename": topic_filename, "correction": correction, "scope": scope},
     )
 
 
@@ -713,18 +721,19 @@ async def memory_decay_report() -> str:
 async def memory_protect(
     episode_id: str | None = None,
     tag: str | None = None,
+    scope: dict[str, object] | None = None,
 ) -> str:
     """Mark episodes as immune to pruning."""
     return await _call_tool_json(
         "memory_protect",
-        {"episode_id": episode_id, "tag": tag},
+        {"episode_id": episode_id, "tag": tag, "scope": scope},
     )
 
 
 @_tracked_tool()
-async def memory_timeline(topic: str) -> str:
+async def memory_timeline(topic: str, scope: dict[str, object] | None = None) -> str:
     """Show how understanding of a topic has changed over time."""
-    return await _call_tool_json("memory_timeline", {"topic": topic})
+    return await _call_tool_json("memory_timeline", {"topic": topic, "scope": scope})
 
 
 @_tracked_tool()
@@ -734,15 +743,18 @@ async def memory_contradictions(topic: str | None = None) -> str:
 
 
 @_tracked_tool()
-async def memory_browse() -> str:
+async def memory_browse(scope: dict[str, object] | None = None) -> str:
     """Browse all knowledge topics with summaries and metadata."""
-    return await _call_tool_json("memory_browse", {})
+    return await _call_tool_json("memory_browse", {"scope": scope})
 
 
 @_tracked_tool()
-async def memory_read_topic(filename: str) -> str:
+async def memory_read_topic(
+    filename: str,
+    scope: dict[str, object] | None = None,
+) -> str:
     """Read the full markdown content of a knowledge topic."""
-    return await _call_tool_json("memory_read_topic", {"filename": filename})
+    return await _call_tool_json("memory_read_topic", {"filename": filename, "scope": scope})
 
 
 def run_server() -> None:

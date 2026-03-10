@@ -22,19 +22,8 @@ pytestmark = pytest.mark.skipif(not HAS_FASTAPI, reason="fastapi not installed")
 
 
 def _normalize_server_recall_call(mock_client: MagicMock) -> dict:
-    args, kwargs = mock_client.query_recall.call_args
-    return {
-        "query": args[0],
-        "n_results": args[1],
-        "include_knowledge": args[2],
-        "content_types": kwargs["content_types"],
-        "tags": kwargs["tags"],
-        "after": kwargs["after"],
-        "before": kwargs["before"],
-        "include_expired": kwargs["include_expired"],
-        "as_of": kwargs["as_of"],
-        "scope": kwargs["scope"],
-    }
+    _, kwargs = mock_client.query_recall.call_args
+    return dict(kwargs)
 
 
 class TestSurfaceRecallContract:

@@ -18,7 +18,6 @@ Or programmatically::
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import ipaddress
 import os
 import re
@@ -37,7 +36,8 @@ except ImportError:
 from contextlib import asynccontextmanager
 
 from consolidation_memory import __version__
-from consolidation_memory.client import MemoryClient
+from consolidation_memory.runtime import MemoryRuntime
+from consolidation_memory.tool_dispatch import execute_tool_call
 from consolidation_memory.types import DriftOutput
 
 # Valid content types accepted by the memory system.
@@ -199,18 +199,13 @@ class ConsolidationLogRequest(BaseModel):
     last_n: int = Field(default=5, ge=1, le=20)
 
 
-# ── App factory ──────────────────────────────────────────────────────────────
-
-_client: MemoryClient | None = None
-
-
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    runtime = MemoryRuntime()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        global _client
-        _client = MemoryClient()
+        runtime.startup()
         from consolidation_memory.config import get_active_project
         import logging
 
@@ -218,8 +213,7 @@ def create_app() -> FastAPI:
             "REST API active project: %s", get_active_project()
         )
         yield
-        _client.close()
-        _client = None
+        runtime.shutdown()
 
     app = FastAPI(
         title="Consolidation Memory",
@@ -228,7 +222,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     _install_auth_middleware(app)
-    _register_memory_routes(app)
+    _register_memory_routes(app, runtime)
     return app
 
 def _install_auth_middleware(app: FastAPI) -> None:
@@ -254,7 +248,7 @@ def _install_auth_middleware(app: FastAPI) -> None:
             )
         return await call_next(request)
 
-def _register_memory_routes(app: FastAPI) -> None:
+def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     # ── Endpoints ────────────────────────────────────────────────────────
     @app.get("/health")
     async def health():
@@ -263,125 +257,69 @@ def _register_memory_routes(app: FastAPI) -> None:
 
         return {"status": "ok", "version": __version__, "project": get_active_project()}
 
-    def _require_client() -> MemoryClient:
-        if _client is None:
-            raise HTTPException(status_code=503, detail="Memory system not initialized")
-        return _client
+    async def _execute(
+        name: str,
+        arguments: dict[str, object],
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, object]:
+        client = None
+        if name != "memory_detect_drift":
+            client = await runtime.get_client_with_timeout()
+        return await runtime.run_blocking(
+            execute_tool_call,
+            name,
+            arguments,
+            client=client,
+            timeout=timeout,
+        )
 
     @app.post("/memory/store")
     async def store(req: StoreRequest):
         """Store a memory episode."""
-        client = _require_client()
-        if req.scope is not None:
-            result = await asyncio.to_thread(
-                client.store_with_scope,
-                content=req.content,
-                content_type=req.content_type,
-                tags=req.tags,
-                surprise=req.surprise,
-                scope=req.scope,
-            )
-        else:
-            result = await asyncio.to_thread(
-                client.store,
-                content=req.content,
-                content_type=req.content_type,
-                tags=req.tags,
-                surprise=req.surprise,
-            )
-        return dataclasses.asdict(result)
+        return await _execute("memory_store", req.model_dump())
 
     @app.post("/memory/store/batch")
     async def store_batch(req: BatchStoreRequest):
         """Store multiple memory episodes in a single operation."""
-        client = _require_client()
-        episodes = [ep.model_dump() for ep in req.episodes]
-        if req.scope is not None:
-            result = await asyncio.to_thread(
-                client.store_batch_with_scope,
-                episodes=episodes,
-                scope=req.scope,
-            )
-        else:
-            result = await asyncio.to_thread(client.store_batch, episodes=episodes)
-        return dataclasses.asdict(result)
+        return await _execute(
+            "memory_store_batch",
+            {"episodes": [ep.model_dump() for ep in req.episodes], "scope": req.scope},
+        )
 
     @app.post("/memory/recall")
     async def recall(req: RecallRequest):
         """Retrieve relevant memories by semantic similarity."""
-        client = _require_client()
-        # cast() widens list[Literal[...]] to list[str] for mypy invariance.
-        ct = cast(list[str] | None, req.content_types)
-        result = await asyncio.to_thread(
-            client.query_recall,
-            query=req.query,
-            n_results=req.n_results,
-            include_knowledge=req.include_knowledge,
-            content_types=ct,
-            tags=req.tags,
-            after=req.after,
-            before=req.before,
-            include_expired=req.include_expired,
-            as_of=req.as_of,
-            scope=req.scope,
-        )
-        return dataclasses.asdict(result)
+        payload = req.model_dump()
+        payload["content_types"] = cast(list[str] | None, req.content_types)
+        return await _execute("memory_recall", payload)
 
     @app.post("/memory/search")
     async def search(req: SearchRequest):
         """Keyword/metadata search over episodes (no embedding needed)."""
-        client = _require_client()
-        ct = cast(list[str] | None, req.content_types)
-        result = await asyncio.to_thread(
-            client.query_search,
-            query=req.query,
-            content_types=ct,
-            tags=req.tags,
-            after=req.after,
-            before=req.before,
-            limit=req.limit,
-            scope=req.scope,
-        )
-        return dataclasses.asdict(result)
+        payload = req.model_dump()
+        payload["content_types"] = cast(list[str] | None, req.content_types)
+        return await _execute("memory_search", payload)
 
     @app.post("/memory/claims/browse")
     async def browse_claims(req: ClaimBrowseRequest):
         """Browse claims with optional type and temporal filtering."""
-        client = _require_client()
-        result = await asyncio.to_thread(
-            client.query_browse_claims,
-            claim_type=req.claim_type,
-            as_of=req.as_of,
-            limit=req.limit,
-            scope=req.scope,
-        )
-        return dataclasses.asdict(result)
+        return await _execute("memory_claim_browse", req.model_dump())
 
     @app.post("/memory/claims/search")
     async def search_claims(req: ClaimSearchRequest):
         """Search claims by text with optional type and temporal filtering."""
-        client = _require_client()
-        result = await asyncio.to_thread(
-            client.query_search_claims,
-            query=req.query,
-            claim_type=req.claim_type,
-            as_of=req.as_of,
-            limit=req.limit,
-            scope=req.scope,
-        )
-        return dataclasses.asdict(result)
+        return await _execute("memory_claim_search", req.model_dump())
 
     @app.post("/memory/detect-drift")
     async def detect_drift(req: DetectDriftRequest):
         """Detect code drift and challenge anchored claims."""
         try:
             timeout_seconds = _drift_timeout_seconds()
-            return await asyncio.wait_for(
-                asyncio.to_thread(
-                    _run_detect_drift,
-                    base_ref=req.base_ref,
-                    repo_path=req.repo_path,
-                ),
+            return await runtime.run_blocking(
+                _run_detect_drift,
+                base_ref=req.base_ref,
+                repo_path=req.repo_path,
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError as e:
@@ -399,21 +337,20 @@ def _register_memory_routes(app: FastAPI) -> None:
     @app.get("/memory/status")
     async def status():
         """Get memory system statistics."""
-        result = await asyncio.to_thread(_require_client().status)
-        return dataclasses.asdict(result)
+        return await _execute("memory_status", {})
 
     @app.delete("/memory/episodes/{episode_id}")
     async def forget(episode_id: str):
         """Soft-delete an episode."""
-        result = await asyncio.to_thread(_require_client().forget, episode_id)
-        if result.status == "not_found":
+        result = await _execute("memory_forget", {"episode_id": episode_id})
+        if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Episode not found")
-        return dataclasses.asdict(result)
+        return result
 
     @app.post("/memory/consolidate")
     async def consolidate():
         """Run consolidation manually."""
-        result = await asyncio.to_thread(_require_client().consolidate)
+        result = await _execute("memory_consolidate", {})
         if isinstance(result, dict) and result.get("status") == "already_running":
             raise HTTPException(status_code=409, detail="Consolidation already running")
         return result
@@ -421,33 +358,25 @@ def _register_memory_routes(app: FastAPI) -> None:
     @app.post("/memory/correct")
     async def correct(req: CorrectRequest):
         """Correct a knowledge document."""
-        client = _require_client()
-        result = await asyncio.to_thread(
-            client.correct,
-            topic_filename=req.topic_filename,
-            correction=req.correction,
-        )
-        if result.status == "not_found":
+        result = await _execute("memory_correct", req.model_dump())
+        if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Knowledge topic not found")
-        return dataclasses.asdict(result)
+        return result
 
     @app.post("/memory/export")
     async def export():
         """Export all episodes and knowledge to a JSON snapshot."""
-        result = await asyncio.to_thread(_require_client().export)
-        return dataclasses.asdict(result)
+        return await _execute("memory_export", {})
 
     @app.post("/memory/compact")
     async def compact():
         """Compact the FAISS index by removing tombstoned vectors."""
-        result = await asyncio.to_thread(_require_client().compact)
-        return dataclasses.asdict(result)
+        return await _execute("memory_compact", {})
 
     @app.get("/memory/browse")
     async def browse():
         """Browse all knowledge topics with summaries and metadata."""
-        result = await asyncio.to_thread(_require_client().browse)
-        return dataclasses.asdict(result)
+        return await _execute("memory_browse", {})
 
     @app.get("/memory/topics/{filename}")
     async def read_topic(filename: str):
@@ -457,48 +386,39 @@ def _register_memory_routes(app: FastAPI) -> None:
                 status_code=400,
                 detail="Invalid filename: must not contain '/', '\\', or '..'",
             )
-        result = await asyncio.to_thread(_require_client().read_topic, filename)
-        if result.status == "not_found":
+        result = await _execute("memory_read_topic", {"filename": filename})
+        if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Knowledge topic not found")
-        if result.status == "error":
-            raise HTTPException(status_code=400, detail=result.message)
-        return dataclasses.asdict(result)
+        if result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=str(result.get("message", "Unknown error")))
+        return result
 
     @app.post("/memory/timeline")
     async def timeline(req: TimelineRequest):
         """Show how understanding of a topic has changed over time."""
-        result = await asyncio.to_thread(_require_client().timeline, topic=req.topic)
-        return dataclasses.asdict(result)
+        return await _execute("memory_timeline", req.model_dump())
 
     @app.post("/memory/contradictions")
     async def contradictions(req: ContradictionsRequest):
         """List detected contradictions from the audit log."""
-        result = await asyncio.to_thread(_require_client().contradictions, topic=req.topic)
-        return dataclasses.asdict(result)
+        return await _execute("memory_contradictions", req.model_dump())
 
     @app.post("/memory/protect")
     async def protect(req: ProtectRequest):
         """Mark episodes as immune to pruning."""
-        client = _require_client()
-        result = await asyncio.to_thread(
-            client.protect,
-            episode_id=req.episode_id,
-            tag=req.tag,
-        )
-        if result.status == "not_found":
-            raise HTTPException(status_code=404, detail=result.message)
-        if result.status == "error":
-            raise HTTPException(status_code=400, detail=result.message)
-        return dataclasses.asdict(result)
+        result = await _execute("memory_protect", req.model_dump())
+        if result.get("status") == "not_found":
+            raise HTTPException(status_code=404, detail=str(result.get("message", "Not found")))
+        if result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=str(result.get("message", "Unknown error")))
+        return result
 
     @app.post("/memory/consolidation-log")
     async def consolidation_log(req: ConsolidationLogRequest):
         """Show recent consolidation activity as a human-readable changelog."""
-        result = await asyncio.to_thread(_require_client().consolidation_log, last_n=req.last_n)
-        return dataclasses.asdict(result)
+        return await _execute("memory_consolidation_log", req.model_dump())
 
     @app.get("/memory/decay-report")
     async def decay_report():
         """Show what would be forgotten if pruning ran right now."""
-        result = await asyncio.to_thread(_require_client().decay_report)
-        return dataclasses.asdict(result)
+        return await _execute("memory_decay_report", {})

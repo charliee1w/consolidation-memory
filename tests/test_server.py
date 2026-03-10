@@ -8,7 +8,22 @@ import inspect
 import json
 import threading
 import time
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
+
+
+@contextmanager
+def _patched_server_runtime():
+    import consolidation_memory.server as server
+    from consolidation_memory.runtime import MemoryRuntime
+
+    runtime = MemoryRuntime(max_workers=2)
+    original_runtime = server._runtime
+    with patch.object(server, "_runtime", runtime):
+        try:
+            yield server, runtime
+        finally:
+            runtime.shutdown()
 
 
 class TestMCPDetectDriftTool:
@@ -129,11 +144,11 @@ class TestMCPStoreTools:
 
         assert json.loads(output)["id"] == "scoped-id"
         mock_client.store_with_scope.assert_called_once_with(
-            "scoped write",
-            "exchange",
-            None,
-            0.5,
-            scoped_payload,
+            content="scoped write",
+            content_type="exchange",
+            tags=None,
+            surprise=0.5,
+            scope=scoped_payload,
         )
         mock_client.store.assert_not_called()
 
@@ -166,37 +181,26 @@ class TestMCPStoreTools:
 
         assert json.loads(output)["stored"] == 1
         mock_client.store_batch_with_scope.assert_called_once_with(
-            [{"content": "x"}],
-            scoped_payload,
+            episodes=[{"content": "x"}],
+            scope=scoped_payload,
         )
         mock_client.store_batch.assert_not_called()
 
 
 class TestMCPServerLifecycle:
     def test_get_client_initializes_lazily(self):
-        import consolidation_memory.server as server
-
-        original_client = server._client
-        try:
-            server._client = None
+        with _patched_server_runtime() as (server, runtime):
             mock_client = MagicMock()
             with patch("consolidation_memory.client.MemoryClient", return_value=mock_client):
                 resolved = server._get_client()
             assert resolved is mock_client
-            assert server._client is mock_client
-        finally:
-            server._client = original_client
+            assert runtime.client is mock_client
 
     def test_lifespan_does_not_eagerly_construct_client(self):
-        import consolidation_memory.server as server
-
-        original_client = server._client
-        try:
-            server._client = None
-
+        with _patched_server_runtime() as (server, runtime):
             async def _enter_and_exit_lifespan():
                 async with server.lifespan(server.mcp):
-                    assert server._client is None
+                    assert runtime.client is None
 
             with (
                 patch("consolidation_memory.server._WARMUP_ON_START", False),
@@ -204,17 +208,11 @@ class TestMCPServerLifecycle:
             ):
                 asyncio.run(_enter_and_exit_lifespan())
                 mock_ctor.assert_not_called()
-        finally:
-            server._client = original_client
 
     def test_lifespan_closes_connections_and_blocking_executor(self):
-        import consolidation_memory.server as server
-
-        original_client = server._client
-        original_executor = server._blocking_executor
-        try:
+        with _patched_server_runtime() as (server, runtime):
             mock_client = MagicMock()
-            server._client = mock_client
+            runtime._client = mock_client
 
             async def _enter_and_exit_lifespan():
                 async with server.lifespan(server.mcp):
@@ -222,16 +220,13 @@ class TestMCPServerLifecycle:
 
             with (
                 patch("consolidation_memory.server._WARMUP_ON_START", False),
-                patch("consolidation_memory.database.close_all_connections") as mock_close_all,
+                patch("consolidation_memory.runtime.close_all_connections") as mock_close_all,
             ):
                 asyncio.run(_enter_and_exit_lifespan())
 
             mock_client.close.assert_called_once()
             mock_close_all.assert_called_once()
-            assert server._blocking_executor is None
-        finally:
-            server._client = original_client
-            server._blocking_executor = original_executor
+            assert runtime.blocking_executor is None
 
     def test_get_client_with_timeout_raises_timeout_error(self):
         import consolidation_memory.server as server
@@ -251,18 +246,7 @@ class TestMCPServerLifecycle:
                 assert "MemoryClient initialization timed out" in str(exc)
 
     def test_get_client_reentrant_init_fails_fast_without_deadlock(self):
-        import consolidation_memory.server as server
-
-        original_client = server._client
-        original_initializing = server._client_initializing
-        original_owner_thread_id = server._client_init_owner_thread_id
-        original_init_error = server._client_init_error
-        try:
-            server._client = None
-            server._client_initializing = False
-            server._client_init_owner_thread_id = None
-            server._client_init_error = None
-
+        with _patched_server_runtime() as (server, runtime):
             mock_client = MagicMock()
 
             def _constructor():
@@ -279,30 +263,10 @@ class TestMCPServerLifecycle:
             ):
                 resolved = pool.submit(server._get_client).result(timeout=1.0)
                 assert resolved is mock_client
-                assert server._client is mock_client
-        finally:
-            server._client = original_client
-            server._client_initializing = original_initializing
-            server._client_init_owner_thread_id = original_owner_thread_id
-            server._client_init_error = original_init_error
+                assert runtime.client is mock_client
 
     def test_get_client_concurrent_calls_share_single_initialization(self):
-        import consolidation_memory.server as server
-
-        original_client = server._client
-        original_initializing = server._client_initializing
-        original_owner_thread_id = server._client_init_owner_thread_id
-        original_init_error = server._client_init_error
-        original_shutting_down = server._server_shutting_down
-        original_epoch = server._server_lifecycle_epoch
-        try:
-            server._client = None
-            server._client_initializing = False
-            server._client_init_owner_thread_id = None
-            server._client_init_error = None
-            server._server_shutting_down = False
-            server._server_lifecycle_epoch = 0
-
+        with _patched_server_runtime() as (server, runtime):
             mock_client = MagicMock()
             entered = threading.Event()
             release = threading.Event()
@@ -323,31 +287,11 @@ class TestMCPServerLifecycle:
                 release.set()
                 assert fut1.result(timeout=1.0) is mock_client
                 assert fut2.result(timeout=1.0) is mock_client
-        finally:
-            server._client = original_client
-            server._client_initializing = original_initializing
-            server._client_init_owner_thread_id = original_owner_thread_id
-            server._client_init_error = original_init_error
-            server._server_shutting_down = original_shutting_down
-            server._server_lifecycle_epoch = original_epoch
+            assert runtime.client is mock_client
 
     def test_get_client_aborts_when_lifecycle_changes_mid_init(self):
-        import consolidation_memory.server as server
-
-        original_client = server._client
-        original_initializing = server._client_initializing
-        original_owner_thread_id = server._client_init_owner_thread_id
-        original_init_error = server._client_init_error
-        original_shutting_down = server._server_shutting_down
-        original_epoch = server._server_lifecycle_epoch
-        try:
-            server._client = None
-            server._client_initializing = False
-            server._client_init_owner_thread_id = None
-            server._client_init_error = None
-            server._server_shutting_down = False
-            server._server_lifecycle_epoch = 7
-
+        with _patched_server_runtime() as (server, runtime):
+            runtime._lifecycle_epoch = 7
             mock_client = MagicMock()
             entered = threading.Event()
             release = threading.Event()
@@ -363,10 +307,10 @@ class TestMCPServerLifecycle:
             ):
                 future = pool.submit(server._get_client)
                 assert entered.wait(timeout=1.0)
-                with server._client_init_cond:
-                    server._server_shutting_down = True
-                    server._server_lifecycle_epoch += 1
-                    server._client_init_cond.notify_all()
+                with runtime.client_init_cond:
+                    runtime._shutting_down = True
+                    runtime._lifecycle_epoch += 1
+                    runtime.client_init_cond.notify_all()
                 release.set()
                 try:
                     future.result(timeout=1.0)
@@ -374,32 +318,18 @@ class TestMCPServerLifecycle:
                 except RuntimeError as exc:
                     assert "lifecycle changed" in str(exc)
 
-            assert server._client is None
+            assert runtime.client is None
             mock_client.close.assert_called_once()
-        finally:
-            server._client = original_client
-            server._client_initializing = original_initializing
-            server._client_init_owner_thread_id = original_owner_thread_id
-            server._client_init_error = original_init_error
-            server._server_shutting_down = original_shutting_down
-            server._server_lifecycle_epoch = original_epoch
 
     def test_warm_client_background_skips_init_when_shutdown_flag_set(self):
-        import consolidation_memory.server as server
-
-        original_shutting_down = server._server_shutting_down
-        original_delay = server._WARMUP_START_DELAY_SECONDS
-        try:
-            server._server_shutting_down = True
-            server._WARMUP_START_DELAY_SECONDS = 0.0
+        with _patched_server_runtime() as (server, runtime):
+            runtime._shutting_down = True
             with patch(
                 "consolidation_memory.server._get_client_with_timeout",
                 side_effect=AssertionError("warmup should not initialize during shutdown"),
             ):
-                asyncio.run(server._warm_client_background())
-        finally:
-            server._server_shutting_down = original_shutting_down
-            server._WARMUP_START_DELAY_SECONDS = original_delay
+                with patch("consolidation_memory.server._WARMUP_START_DELAY_SECONDS", 0.0):
+                    asyncio.run(server._warm_client_background())
 
 
 class TestMCPRecallTool:
@@ -422,9 +352,9 @@ class TestMCPRecallTool:
         data = json.loads(output)
         assert data["total_episodes"] == 0
         mock_client.query_recall.assert_called_once_with(
-            "python runtime",
-            10,
-            True,
+            query="python runtime",
+            n_results=10,
+            include_knowledge=True,
             content_types=None,
             tags=None,
             after=None,
@@ -449,19 +379,20 @@ class TestMCPRecallTool:
 
     def test_memory_recall_timeout_falls_back_to_episodes_only(self):
         from consolidation_memory.server import memory_recall
-        from consolidation_memory.types import RecallResult
+        from consolidation_memory.types import RecallResult, SearchResult
 
         def _query_recall(*args, **kwargs):
-            include_knowledge = bool(args[2])
+            include_knowledge = bool(kwargs["include_knowledge"])
             if include_knowledge:
                 time.sleep(0.05)
                 return RecallResult()
 
         mock_client = MagicMock()
         mock_client.query_recall.side_effect = _query_recall
-        mock_client.query_search.return_value = MagicMock(
+        mock_client.query_search.return_value = SearchResult(
             episodes=[{"id": "ep-1"}],
             total_matches=1,
+            query="python runtime",
         )
 
         with (

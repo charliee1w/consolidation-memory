@@ -5,7 +5,9 @@ client via stdio transport. All business logic lives in client.py.
 """
 
 import asyncio
+import concurrent.futures
 import dataclasses
+import functools
 import json
 import logging
 import os
@@ -13,6 +15,7 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
+from typing import Awaitable, Callable, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 
@@ -23,6 +26,8 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 logger = logging.getLogger("consolidation_memory")
+
+_T = TypeVar("_T")
 
 # ── Global client initialized lazily on first tool call ───────────────────
 _client = None
@@ -44,12 +49,29 @@ _CLIENT_INIT_TIMEOUT_SECONDS = float(
     # keep a conservative default to avoid first-call MCP timeouts.
     os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "45")
 )
+_MCP_BLOCKING_WORKERS = max(
+    1,
+    int(os.environ.get("CONSOLIDATION_MEMORY_MCP_BLOCKING_WORKERS", "16")),
+)
 _WARMUP_ON_START = os.environ.get(
     "CONSOLIDATION_MEMORY_WARMUP_ON_START",
     "1",
 ).strip().lower() not in {"0", "false", "no", "off"}
+_IDLE_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS", "0")
+)
+_IDLE_CHECK_INTERVAL_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_IDLE_CHECK_INTERVAL_SECONDS", "15")
+)
 
 _warmup_task: asyncio.Task | None = None
+_idle_task: asyncio.Task | None = None
+_active_tool_calls = 0
+_last_activity_monotonic = time.monotonic()
+_blocking_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_MCP_BLOCKING_WORKERS,
+    thread_name_prefix="consolidation_memory_mcp",
+)
 
 
 def _drift_timeout_seconds() -> float:
@@ -76,6 +98,72 @@ def _warmup_on_start() -> bool:
     return _WARMUP_ON_START
 
 
+def _idle_timeout_seconds() -> float:
+    configured = _IDLE_TIMEOUT_SECONDS
+    return configured if configured > 0 else 0.0
+
+
+def _idle_check_interval_seconds() -> float:
+    configured = _IDLE_CHECK_INTERVAL_SECONDS
+    return configured if configured > 0 else 15.0
+
+
+def _touch_activity() -> None:
+    global _last_activity_monotonic
+    _last_activity_monotonic = time.monotonic()
+
+
+def _begin_tool_call() -> None:
+    global _active_tool_calls
+    _active_tool_calls += 1
+    _touch_activity()
+
+
+def _end_tool_call() -> None:
+    global _active_tool_calls
+    _active_tool_calls = max(0, _active_tool_calls - 1)
+    _touch_activity()
+
+
+async def _run_blocking(
+    func: Callable[..., _T],
+    /,
+    *args: object,
+    timeout: float | None = None,
+    **kwargs: object,
+) -> _T:
+    """Run blocking work on a dedicated executor to avoid default-pool starvation."""
+    _touch_activity()
+    loop = asyncio.get_running_loop()
+    work = functools.partial(func, *args, **kwargs)
+    future = loop.run_in_executor(_blocking_executor, work)
+    if timeout is None:
+        return await future
+    return await asyncio.wait_for(future, timeout=timeout)
+
+
+async def _idle_shutdown_monitor() -> None:
+    """Exit long-idle MCP server processes to prevent stale-process buildup."""
+    timeout_seconds = _idle_timeout_seconds()
+    if timeout_seconds <= 0:
+        return
+
+    check_seconds = _idle_check_interval_seconds()
+    while True:
+        await asyncio.sleep(check_seconds)
+        if _active_tool_calls > 0:
+            continue
+        idle_for = time.monotonic() - _last_activity_monotonic
+        if idle_for < timeout_seconds:
+            continue
+        logger.info(
+            "MCP server idle for %.1fs (threshold %.1fs); shutting down process",
+            idle_for,
+            timeout_seconds,
+        )
+        os._exit(0)
+
+
 def _get_client():
     """Return the global client, creating it on first access."""
     global _client
@@ -100,8 +188,8 @@ async def _get_client_with_timeout():
     timeout_seconds = _client_init_timeout_seconds()
     try:
         started = time.monotonic()
-        client = await asyncio.wait_for(
-            asyncio.to_thread(_get_client),
+        client = await _run_blocking(
+            _get_client,
             timeout=timeout_seconds,
         )
         elapsed = time.monotonic() - started
@@ -123,7 +211,7 @@ async def _get_client_with_timeout():
 async def _warm_client_background():
     try:
         client = await _get_client_with_timeout()
-        await asyncio.to_thread(_warm_recall_caches, client)
+        await _run_blocking(_warm_recall_caches, client)
     except Exception as exc:
         logger.warning("Background client warmup failed: %s", exc)
 
@@ -153,7 +241,7 @@ def _warm_recall_caches(client=None) -> None:
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Log startup metadata and close any initialized client on shutdown."""
-    global _client, _warmup_task
+    global _client, _warmup_task, _idle_task
 
     from consolidation_memory import __version__
 
@@ -162,8 +250,18 @@ async def lifespan(server: FastMCP):
     logger.info("Active project: %s", get_active_project())
     if _warmup_on_start():
         _warmup_task = asyncio.create_task(_warm_client_background())
+    if _idle_timeout_seconds() > 0:
+        _idle_task = asyncio.create_task(_idle_shutdown_monitor())
 
     yield
+
+    if _idle_task is not None:
+        _idle_task.cancel()
+        try:
+            await _idle_task
+        except asyncio.CancelledError:
+            pass
+        _idle_task = None
 
     if _warmup_task is not None:
         _warmup_task.cancel()
@@ -185,9 +283,29 @@ mcp = FastMCP(
 )
 
 
+def _tracked_tool() -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
+    """Wrap MCP tools with lightweight activity accounting for idle shutdown."""
+
+    def _decorator(
+        func: Callable[..., Awaitable[str]],
+    ) -> Callable[..., Awaitable[str]]:
+        @mcp.tool()
+        @functools.wraps(func)
+        async def _wrapped(*args: object, **kwargs: object) -> str:
+            _begin_tool_call()
+            try:
+                return await func(*args, **kwargs)
+            finally:
+                _end_tool_call()
+
+        return _wrapped
+
+    return _decorator
+
+
 # ── Tools ────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_store(
     content: str,
     content_type: str = "exchange",
@@ -213,14 +331,14 @@ async def memory_store(
         client = await _get_client_with_timeout()
         if len(content) > 50_000:
             return json.dumps({"error": "Content exceeds maximum length of 50KB"})
-        result = await asyncio.to_thread(client.store, content, content_type, tags, surprise)
+        result = await _run_blocking(client.store, content, content_type, tags, surprise)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_store failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_recall(
     query: str,
     n_results: int = 10,
@@ -284,8 +402,9 @@ async def memory_recall(
             )
 
         try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(_run_recall, include_knowledge),
+            result = await _run_blocking(
+                _run_recall,
+                include_knowledge,
                 timeout=recall_timeout,
             )
         except asyncio.TimeoutError:
@@ -298,8 +417,8 @@ async def memory_recall(
                 recall_timeout,
             )
             try:
-                keyword_result = await asyncio.wait_for(
-                    asyncio.to_thread(_run_keyword_fallback),
+                keyword_result = await _run_blocking(
+                    _run_keyword_fallback,
                     timeout=fallback_timeout,
                 )
             except asyncio.TimeoutError:
@@ -348,7 +467,7 @@ async def memory_recall(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_store_batch(
     episodes: list[dict],
 ) -> str:
@@ -368,14 +487,14 @@ async def memory_store_batch(
         client = await _get_client_with_timeout()
         if len(episodes) > _MAX_BATCH_SIZE:
             return json.dumps({"error": f"Batch size {len(episodes)} exceeds maximum of {_MAX_BATCH_SIZE}"})
-        result = await asyncio.to_thread(client.store_batch, episodes)
+        result = await _run_blocking(client.store_batch, episodes)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_store_batch failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_search(
     query: str | None = None,
     content_types: list[str] | None = None,
@@ -402,7 +521,7 @@ async def memory_search(
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(
+        result = await _run_blocking(
             lambda: client.query_search(
                 query=query,
                 content_types=content_types,
@@ -419,7 +538,7 @@ async def memory_search(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_claim_browse(
     claim_type: str | None = None,
     as_of: str | None = None,
@@ -436,7 +555,7 @@ async def memory_claim_browse(
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(
+        result = await _run_blocking(
             client.query_browse_claims,
             claim_type=claim_type,
             as_of=as_of,
@@ -449,7 +568,7 @@ async def memory_claim_browse(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_claim_search(
     query: str,
     claim_type: str | None = None,
@@ -468,7 +587,7 @@ async def memory_claim_search(
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(
+        result = await _run_blocking(
             client.query_search_claims,
             query=query,
             claim_type=claim_type,
@@ -482,7 +601,7 @@ async def memory_claim_search(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_detect_drift(
     base_ref: str | None = None,
     repo_path: str | None = None,
@@ -496,12 +615,10 @@ async def memory_detect_drift(
     try:
         client = await _get_client_with_timeout()
         timeout_seconds = _drift_timeout_seconds()
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                client.query_detect_drift,
-                base_ref=base_ref,
-                repo_path=repo_path,
-            ),
+        result = await _run_blocking(
+            client.query_detect_drift,
+            base_ref=base_ref,
+            repo_path=repo_path,
             timeout=timeout_seconds,
         )
         return json.dumps(result, default=str)
@@ -518,7 +635,7 @@ async def memory_detect_drift(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_status() -> str:
     """Show memory system statistics.
 
@@ -526,14 +643,14 @@ async def memory_status() -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.status)
+        result = await _run_blocking(client.status)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_status failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_forget(episode_id: str) -> str:
     """Mark an episode for removal from the memory system.
 
@@ -545,14 +662,14 @@ async def memory_forget(episode_id: str) -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.forget, episode_id)
+        result = await _run_blocking(client.forget, episode_id)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_forget failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_export() -> str:
     """Export all episodes and knowledge to a JSON snapshot.
 
@@ -562,14 +679,14 @@ async def memory_export() -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.export)
+        result = await _run_blocking(client.export)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_export failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_correct(topic_filename: str, correction: str) -> str:
     """Correct a knowledge document with new information.
 
@@ -582,14 +699,14 @@ async def memory_correct(topic_filename: str, correction: str) -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.correct, topic_filename, correction)
+        result = await _run_blocking(client.correct, topic_filename, correction)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_correct failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_compact() -> str:
     """Compact the FAISS index by removing tombstoned vectors.
 
@@ -599,14 +716,14 @@ async def memory_compact() -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.compact)
+        result = await _run_blocking(client.compact)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_compact failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_consolidate() -> str:
     """Manually trigger a consolidation run.
 
@@ -618,7 +735,7 @@ async def memory_consolidate() -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.consolidate)
+        result = await _run_blocking(client.consolidate)
         if isinstance(result, dict) and result.get("status") == "already_running":
             payload = dict(result)
             payload.setdefault("message", "A consolidation run is already in progress")
@@ -629,7 +746,7 @@ async def memory_consolidate() -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_consolidation_log(last_n: int = 5) -> str:
     """Show recent consolidation activity as a human-readable changelog.
 
@@ -643,14 +760,14 @@ async def memory_consolidation_log(last_n: int = 5) -> str:
     try:
         client = await _get_client_with_timeout()
         last_n = max(1, min(last_n, 20))
-        result = await asyncio.to_thread(client.consolidation_log, last_n)
+        result = await _run_blocking(client.consolidation_log, last_n)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_consolidation_log failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_decay_report() -> str:
     """Show what would be forgotten if pruning ran right now.
 
@@ -660,14 +777,14 @@ async def memory_decay_report() -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.decay_report)
+        result = await _run_blocking(client.decay_report)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_decay_report failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_protect(
     episode_id: str | None = None,
     tag: str | None = None,
@@ -684,14 +801,14 @@ async def memory_protect(
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.protect, episode_id, tag)
+        result = await _run_blocking(client.protect, episode_id, tag)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_protect failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_timeline(topic: str) -> str:
     """Show how understanding of a topic has changed over time.
 
@@ -705,14 +822,14 @@ async def memory_timeline(topic: str) -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.timeline, topic)
+        result = await _run_blocking(client.timeline, topic)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_timeline failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_contradictions(topic: str | None = None) -> str:
     """List detected contradictions from the audit log.
 
@@ -725,14 +842,14 @@ async def memory_contradictions(topic: str | None = None) -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.contradictions, topic)
+        result = await _run_blocking(client.contradictions, topic)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_contradictions failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_browse() -> str:
     """Browse all knowledge topics with summaries and metadata.
 
@@ -742,14 +859,14 @@ async def memory_browse() -> str:
     """
     try:
         client = await _get_client_with_timeout()
-        result = await asyncio.to_thread(client.browse)
+        result = await _run_blocking(client.browse)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_browse failed")
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@_tracked_tool()
 async def memory_read_topic(filename: str) -> str:
     """Read the full markdown content of a knowledge topic.
 
@@ -765,7 +882,7 @@ async def memory_read_topic(filename: str) -> str:
         import re as _re
         if _re.search(r"[/\\]|\.\.", filename):
             return json.dumps({"error": "Invalid filename: must not contain '/', '\\', or '..'."})
-        result = await asyncio.to_thread(client.read_topic, filename)
+        result = await _run_blocking(client.read_topic, filename)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
         logger.exception("memory_read_topic failed")

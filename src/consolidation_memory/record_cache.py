@@ -6,16 +6,18 @@ Caches embedded record texts for vector search. Invalidated when records change
 Same race-condition prevention pattern as topic_cache: version counter guards
 against stale writes when invalidation happens during a cache-miss fetch.
 
-Two cache slots:
-- _cache_all: include_expired=True (superset of all active records)
-- _cache_unexpired: include_expired=False (filtered subset)
+Cache slots:
+- _cache_all: include_expired=True (unscoped superset)
+- _cache_unexpired: include_expired=False (unscoped filtered subset)
+- _scoped_cache: include_expired + scope-specific slices used by scoped recall
 
-When the unexpired slot is requested, we first check if the all-records cache
-is fresh and filter from it, avoiding a redundant embed call.
+When the unexpired unscoped slot is requested, we first check if the all-records
+slot is fresh and filter from it, avoiding a redundant embed call.
 """
 
 import logging
 import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 import numpy as np
@@ -38,6 +40,8 @@ _EMPTY_SLOT: dict = {
 
 _cache_all: dict = dict(_EMPTY_SLOT)
 _cache_unexpired: dict = dict(_EMPTY_SLOT)
+_SCOPED_CACHE_MAX = 16
+_scoped_cache: "OrderedDict[tuple[bool, tuple[tuple[str, str], ...]], dict]" = OrderedDict()
 
 
 def invalidate() -> None:
@@ -45,6 +49,17 @@ def invalidate() -> None:
     global _version
     with _lock:
         _version += 1
+        _scoped_cache.clear()
+
+
+def _scope_cache_key(scope: dict[str, str | None]) -> tuple[tuple[str, str], ...]:
+    """Normalize a scope filter dict into a deterministic hashable cache key."""
+    normalized = []
+    for key, value in sorted(scope.items(), key=lambda item: item[0]):
+        if value is None:
+            continue
+        normalized.append((str(key), str(value)))
+    return tuple(normalized)
 
 
 def _normalize_datetime(value: str | datetime | None) -> datetime | None:
@@ -85,19 +100,73 @@ def _filter_unexpired(records: list[dict], vecs: np.ndarray) -> tuple[list[dict]
     return filtered_records, filtered_vecs
 
 
-def get_record_vecs(include_expired: bool = False) -> tuple[list[dict], np.ndarray | None]:
+def get_record_vecs(
+    include_expired: bool = False,
+    scope: dict[str, str | None] | None = None,
+) -> tuple[list[dict], np.ndarray | None]:
     """Return (records, embedding_matrix) with caching.
 
     Cache is valid as long as its version matches the current version.
     Returns ([], None) if no records exist.
 
-    Two cache slots avoid redundant embedding:
+    Unscoped requests use two dedicated slots to avoid redundant embedding:
     - include_expired=True: caches all active records (superset)
     - include_expired=False: filters from the True cache if fresh, else embeds independently
 
+    Scoped requests use a small LRU keyed by (include_expired, scope filter).
+
     Args:
         include_expired: If True, include records with valid_until in the past.
+        scope: Optional canonical scope filter.
     """
+    if scope:
+        scoped_key = (include_expired, _scope_cache_key(scope))
+        with _lock:
+            scoped_slot = _scoped_cache.get(scoped_key)
+            if (
+                scoped_slot is not None
+                and scoped_slot["version"] == _version
+                and scoped_slot["vecs"] is not None
+            ):
+                _scoped_cache.move_to_end(scoped_key)
+                return scoped_slot["records"], scoped_slot["vecs"]
+            fetch_version = _version
+
+        records = get_all_active_records(include_expired=include_expired, scope=scope)
+        if not records:
+            return [], None
+
+        texts = [r["embedding_text"] for r in records]
+        try:
+            vecs = encode_documents(texts)
+        except Exception as e:
+            logger.warning("Failed to embed scoped record texts: %s", e, exc_info=True)
+            return records, None
+
+        with _lock:
+            if _version == fetch_version:
+                _scoped_cache[scoped_key] = {
+                    "version": fetch_version,
+                    "texts": texts,
+                    "vecs": vecs,
+                    "records": records,
+                }
+                _scoped_cache.move_to_end(scoped_key)
+                while len(_scoped_cache) > _SCOPED_CACHE_MAX:
+                    _scoped_cache.popitem(last=False)
+            else:
+                logger.debug(
+                    "Scoped record cache populate discarded: version changed %d -> %d during fetch",
+                    fetch_version,
+                    _version,
+                )
+                scoped_slot = _scoped_cache.get(scoped_key)
+                if scoped_slot is not None and scoped_slot["vecs"] is not None:
+                    _scoped_cache.move_to_end(scoped_key)
+                    return scoped_slot["records"], scoped_slot["vecs"]
+
+        return records, vecs
+
     slot = _cache_all if include_expired else _cache_unexpired
 
     with _lock:

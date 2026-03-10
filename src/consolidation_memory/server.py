@@ -122,9 +122,32 @@ async def _get_client_with_timeout():
 
 async def _warm_client_background():
     try:
-        await _get_client_with_timeout()
+        client = await _get_client_with_timeout()
+        await asyncio.to_thread(_warm_recall_caches, client)
     except Exception as exc:
         logger.warning("Background client warmup failed: %s", exc)
+
+
+def _warm_recall_caches(client=None) -> None:
+    """Prime recall caches so first user recall avoids bulk embedding work."""
+    from consolidation_memory import claim_cache, record_cache, topic_cache
+    from consolidation_memory.config import get_config
+
+    cfg = get_config()
+    topic_cache.get_topic_vecs()
+    record_cache.get_record_vecs(include_expired=False)
+    if client is not None:
+        try:
+            from consolidation_memory.client import _resolved_scope_to_query_filter
+
+            default_scope_filter = _resolved_scope_to_query_filter(client.resolve_scope())
+            record_cache.get_record_vecs(include_expired=False, scope=default_scope_filter)
+        except Exception as e:
+            logger.debug("Scoped warmup skipped: %s", e)
+    warmed_claims = claim_cache.warm_active_claim_vecs(
+        limit=max(cfg.RECORDS_MAX_RESULTS * 10, cfg.RECALL_MAX_N * 5)
+    )
+    logger.info("Warmup complete (claims cached=%d)", warmed_claims)
 
 
 @asynccontextmanager

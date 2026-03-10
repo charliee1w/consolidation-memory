@@ -33,9 +33,10 @@ def tmp_data_dir(tmp_path):
     reset_backends()
 
     # Reset module-level caches so state doesn't leak between tests
-    from consolidation_memory import topic_cache, record_cache
+    from consolidation_memory import claim_cache, topic_cache, record_cache
     topic_cache.invalidate()
     record_cache.invalidate()
+    claim_cache.invalidate()
 
     # Reset plugin manager singleton so registered plugins don't leak between tests
     from consolidation_memory.plugins import reset_plugin_manager

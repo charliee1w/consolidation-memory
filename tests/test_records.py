@@ -14,6 +14,7 @@ from consolidation_memory.database import (
     upsert_knowledge_topic,
 )
 from consolidation_memory.types import RecordType
+from tests.helpers import mock_encode
 
 
 # ── Database CRUD ────────────────────────────────────────────────────────────
@@ -360,3 +361,53 @@ class TestRecordCache:
         records, vecs = record_cache.get_record_vecs()
         assert records == []
         assert vecs is None
+
+    def test_scoped_cache_reuses_embeddings(self, tmp_data_dir):
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="scope-cache.md", title="Scope Cache", summary="S",
+            source_episodes=[],
+        )
+        insert_knowledge_records(tid, [
+            {"record_type": "fact", "content": {}, "embedding_text": "scope-a"},
+            {"record_type": "fact", "content": {}, "embedding_text": "scope-b"},
+        ])
+        from consolidation_memory import record_cache
+        record_cache.invalidate()
+        scope = {
+            "namespace_slug": "default",
+            "project_slug": "default",
+            "app_client_name": "legacy_client",
+            "app_client_type": "python_sdk",
+        }
+        with patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+            recs1, vecs1 = record_cache.get_record_vecs(include_expired=False, scope=scope)
+            recs2, vecs2 = record_cache.get_record_vecs(include_expired=False, scope=scope)
+        assert len(recs1) == 2
+        assert len(recs2) == 2
+        assert vecs1 is not None
+        assert vecs2 is not None
+        assert mock_embed.call_count == 1
+
+    def test_scoped_cache_invalidate_forces_reembed(self, tmp_data_dir):
+        ensure_schema()
+        tid = upsert_knowledge_topic(
+            filename="scope-cache-reset.md", title="Scope Cache Reset", summary="S",
+            source_episodes=[],
+        )
+        insert_knowledge_records(tid, [
+            {"record_type": "fact", "content": {}, "embedding_text": "scope-reset"},
+        ])
+        from consolidation_memory import record_cache
+        record_cache.invalidate()
+        scope = {
+            "namespace_slug": "default",
+            "project_slug": "default",
+            "app_client_name": "legacy_client",
+            "app_client_type": "python_sdk",
+        }
+        with patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+            record_cache.get_record_vecs(include_expired=False, scope=scope)
+            record_cache.invalidate()
+            record_cache.get_record_vecs(include_expired=False, scope=scope)
+        assert mock_embed.call_count == 2

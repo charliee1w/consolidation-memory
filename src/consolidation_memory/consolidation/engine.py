@@ -16,7 +16,7 @@ import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
-from consolidation_memory import record_cache, topic_cache
+from consolidation_memory import claim_cache, record_cache, topic_cache
 from consolidation_memory.claim_graph import claim_from_record
 from consolidation_memory.config import get_config
 from consolidation_memory.database import (
@@ -956,6 +956,7 @@ def _merge_into_existing(
     mark_consolidated(cluster_ep_ids, existing["filename"])
     topic_cache.invalidate()
     record_cache.invalidate()
+    claim_cache.invalidate()
     logger.info(
         "Merged into existing topic: %s (%d records)", existing["filename"], len(merged_records)
     )
@@ -1118,6 +1119,7 @@ def _process_cluster(
         mark_consolidated(cluster_ep_ids, filename)
         topic_cache.invalidate()
         record_cache.invalidate()
+        claim_cache.invalidate()
         logger.info("Created new topic: %s (%d records)", filename, len(records))
         get_plugin_manager().fire(
             "on_topic_created",
@@ -1146,6 +1148,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
 
     topic_cache.invalidate()
     record_cache.invalidate()
+    claim_cache.invalidate()
 
     # Reset episodes stuck at max attempts whose last retry was >24h ago,
     # so they get another chance after backend recovery.

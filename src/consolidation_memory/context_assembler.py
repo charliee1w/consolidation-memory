@@ -17,7 +17,6 @@ from consolidation_memory.database import (
     fts_available,
     fts_search,
     get_active_claims,
-    get_all_active_records,
     get_claims_as_of,
     get_connection,
     get_episodes_batch,
@@ -29,10 +28,10 @@ from consolidation_memory.database import (
     increment_topic_access,
 )
 from consolidation_memory import backends
+from consolidation_memory import claim_cache
 from consolidation_memory.query_semantics import (
     filter_claims_for_scope as _filter_claims_for_scope,
     matches_scope_filter as _matches_scope_filter,
-    parse_claim_payload as _parse_claim_payload,
 )
 from consolidation_memory.vector_store import VectorStore
 from consolidation_memory import topic_cache
@@ -62,6 +61,11 @@ def invalidate_topic_cache() -> None:
 def invalidate_record_cache() -> None:
     """Call after consolidation to force re-embedding on next recall."""
     record_cache.invalidate()
+
+
+def invalidate_claim_cache() -> None:
+    """Call after claim graph changes to force re-embedding on next recall."""
+    claim_cache.invalidate()
 
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
@@ -381,19 +385,20 @@ def _search_claims(
     if not claims:
         return [], warnings
 
-    claim_payloads: list[dict[str, object]] = []
-    claim_texts: list[str] = []
-    for claim in claims:
-        payload = _parse_claim_payload(claim.get("payload"))
-        claim_payloads.append(payload)
-        payload_text = " ".join(f"{k} {v}" for k, v in sorted(payload.items()))
-        claim_texts.append(f"{claim.get('canonical_text', '')} {payload_text}".strip())
+    claim_payloads, claim_texts = claim_cache.build_claim_texts(claims)
 
     try:
         if query_vec is None:
             query_vec = backends.encode_query(query)
-        claim_vecs = backends.encode_documents(claim_texts)
-        sims = (query_vec @ claim_vecs.T).flatten()
+        if as_of:
+            # Temporal snapshots vary by as_of; embed ad-hoc to avoid unbounded cache keys.
+            claim_vecs = backends.encode_documents(claim_texts)
+        else:
+            claim_vecs = claim_cache.get_claim_vecs(claims, claim_texts)
+        if claim_vecs is not None:
+            sims = (query_vec @ claim_vecs.T).flatten()
+        else:
+            sims = None
     except (ConnectionError, RuntimeError, ValueError) as e:
         logger.warning(
             "Semantic claim search failed, falling back to keyword: %s", e,
@@ -808,16 +813,13 @@ def _search_records(
     cfg = get_config()
     warnings: list[str] = []
 
-    if as_of or scope:
+    if as_of:
         # Temporal query: fetch records valid at that point in time directly
         # from the database — the cache only holds current state.
-        if as_of:
-            if scope:
-                records = get_records_as_of(as_of, scope=scope)
-            else:
-                records = get_records_as_of(as_of)
+        if scope:
+            records = get_records_as_of(as_of, scope=scope)
         else:
-            records = get_all_active_records(include_expired=include_expired, scope=scope)
+            records = get_records_as_of(as_of)
         if not records:
             return [], warnings
         texts = [r["embedding_text"] for r in records]
@@ -826,6 +828,13 @@ def _search_records(
         except (ConnectionError, RuntimeError, ValueError) as e:
             logger.warning("Failed to embed temporal records: %s", e, exc_info=True)
             record_vecs = None
+    elif scope:
+        records, record_vecs = record_cache.get_record_vecs(
+            include_expired=include_expired,
+            scope=scope,
+        )
+        if not records:
+            return [], warnings
     else:
         records, record_vecs = record_cache.get_record_vecs(include_expired=include_expired)
         if not records:

@@ -38,6 +38,7 @@ from contextlib import asynccontextmanager
 
 from consolidation_memory import __version__
 from consolidation_memory.client import MemoryClient
+from consolidation_memory.types import DriftOutput
 
 # Valid content types accepted by the memory system.
 _ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference"]
@@ -55,6 +56,21 @@ _AUTH_EXEMPT_PATHS = frozenset({"/health"})
 def _drift_timeout_seconds() -> float:
     configured = _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS
     return configured if configured > 0 else 180.0
+
+
+def _run_detect_drift(
+    *,
+    base_ref: str | None = None,
+    repo_path: str | None = None,
+) -> DriftOutput:
+    # Drift detection uses git + claim DB state only, and does not require
+    # embedding/vector initialization.
+    from consolidation_memory.drift import detect_code_drift
+
+    return detect_code_drift(
+        base_ref=base_ref,
+        repo_path=repo_path,
+    )
 
 
 def _truthy_env(name: str) -> bool:
@@ -358,12 +374,11 @@ def _register_memory_routes(app: FastAPI) -> None:
     @app.post("/memory/detect-drift")
     async def detect_drift(req: DetectDriftRequest):
         """Detect code drift and challenge anchored claims."""
-        client = _require_client()
         try:
             timeout_seconds = _drift_timeout_seconds()
             return await asyncio.wait_for(
                 asyncio.to_thread(
-                    client.query_detect_drift,
+                    _run_detect_drift,
                     base_ref=req.base_ref,
                     repo_path=req.repo_path,
                 ),

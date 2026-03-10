@@ -21,7 +21,7 @@ class TestMCPDetectDriftTool:
         assert sig.parameters["base_ref"].default is None
         assert sig.parameters["repo_path"].default is None
 
-    def test_memory_detect_drift_calls_client(self):
+    def test_memory_detect_drift_calls_drift_engine(self):
         from consolidation_memory.server import memory_detect_drift
 
         expected = {
@@ -35,16 +35,14 @@ class TestMCPDetectDriftTool:
                 "matched_anchors": [{"anchor_type": "path", "anchor_value": "src/app.py"}],
             }],
         }
-        mock_client = MagicMock()
-        mock_client.query_detect_drift.return_value = expected
 
-        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+        with patch("consolidation_memory.drift.detect_code_drift", return_value=expected) as mock_detect:
             output = asyncio.run(
                 memory_detect_drift(base_ref="origin/main", repo_path="C:/repo")
             )
 
         assert json.loads(output) == expected
-        mock_client.query_detect_drift.assert_called_once_with(
+        mock_detect.assert_called_once_with(
             base_ref="origin/main",
             repo_path="C:/repo",
         )
@@ -52,10 +50,10 @@ class TestMCPDetectDriftTool:
     def test_memory_detect_drift_returns_error_json(self):
         from consolidation_memory.server import memory_detect_drift
 
-        mock_client = MagicMock()
-        mock_client.query_detect_drift.side_effect = RuntimeError("git diff failed")
-
-        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+        with patch(
+            "consolidation_memory.drift.detect_code_drift",
+            side_effect=RuntimeError("git diff failed"),
+        ):
             output = asyncio.run(memory_detect_drift())
 
         data = json.loads(output)
@@ -70,11 +68,8 @@ class TestMCPDetectDriftTool:
             time.sleep(0.05)
             return {}
 
-        mock_client = MagicMock()
-        mock_client.query_detect_drift.side_effect = _slow_detect
-
         with (
-            patch("consolidation_memory.server._get_client", return_value=mock_client),
+            patch("consolidation_memory.drift.detect_code_drift", side_effect=_slow_detect),
             patch("consolidation_memory.server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
         ):
             output = asyncio.run(memory_detect_drift())
@@ -82,6 +77,27 @@ class TestMCPDetectDriftTool:
         data = json.loads(output)
         assert "error" in data
         assert "timed out after" in data["error"]
+
+    def test_memory_detect_drift_does_not_require_memory_client_init(self):
+        from consolidation_memory.server import memory_detect_drift
+
+        expected = {
+            "checked_anchors": [],
+            "impacted_claim_ids": [],
+            "challenged_claim_ids": [],
+            "impacts": [],
+        }
+
+        with (
+            patch(
+                "consolidation_memory.server._get_client_with_timeout",
+                side_effect=AssertionError("memory client init should not be used"),
+            ),
+            patch("consolidation_memory.drift.detect_code_drift", return_value=expected),
+        ):
+            output = asyncio.run(memory_detect_drift())
+
+        assert json.loads(output) == expected
 
 
 class TestMCPStoreTools:

@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, TypeVar
 
 from mcp.server.fastmcp import FastMCP
+from consolidation_memory.types import DriftOutput
 
 # Configure logging to stderr (stdout is the MCP JSON-RPC channel)
 logging.basicConfig(
@@ -733,12 +734,26 @@ async def memory_detect_drift(
         repo_path: Optional repository path (defaults to current working directory).
     """
     try:
-        client = await _get_client_with_timeout()
+        def _run_detect_drift() -> DriftOutput:
+            # Drift detection only needs git + claim DB state, not embedding/vector setup.
+            from consolidation_memory.drift import detect_code_drift
+
+            result = detect_code_drift(
+                base_ref=base_ref,
+                repo_path=repo_path,
+            )
+            logger.info(
+                "Detect drift base_ref=%r repo_path=%r impacted=%d challenged=%d",
+                base_ref,
+                repo_path,
+                len(result.get("impacted_claim_ids", [])),
+                len(result.get("challenged_claim_ids", [])),
+            )
+            return result
+
         timeout_seconds = _drift_timeout_seconds()
         result = await _run_blocking(
-            client.query_detect_drift,
-            base_ref=base_ref,
-            repo_path=repo_path,
+            _run_detect_drift,
             timeout=timeout_seconds,
         )
         return json.dumps(result, default=str)

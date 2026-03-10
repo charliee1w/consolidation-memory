@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
@@ -23,6 +24,10 @@ from consolidation_memory.types import (
 from consolidation_memory.utils import parse_datetime
 
 logger = logging.getLogger("consolidation_memory")
+
+_FORCE_CHALLENGED_BACKLOG_FLOOR = 10
+_STALE_CHALLENGED_CLAIM_TTL_HOURS = 24.0 * 7.0
+_STALE_CHALLENGED_CLAIM_TRIAGE_MAX = 200
 
 
 class RuntimeClient(Protocol):
@@ -48,12 +53,14 @@ class RuntimeClient(Protocol):
         last_run_monotonic: float,
         interval_seconds: float,
         utility_score: float,
+        raw_signals: Mapping[str, object] | None = None,
     ) -> tuple[bool, str]: ...
     def _should_trigger_scheduler_run(
         self,
         *,
         scheduler_state: dict[str, object],
         utility_score: float,
+        raw_signals: Mapping[str, object] | None = None,
         now_utc: datetime | None = None,
     ) -> tuple[bool, str]: ...
     def _submit_auto_consolidation(
@@ -293,12 +300,81 @@ def compute_consolidation_utility(
     }
 
 
+def _compute_force_thresholds(*, max_episodes_per_run: int) -> tuple[int, int]:
+    backlog_threshold = max(1, int(max_episodes_per_run))
+    challenged_threshold = max(
+        _FORCE_CHALLENGED_BACKLOG_FLOOR,
+        backlog_threshold // 3,
+    )
+    return backlog_threshold, challenged_threshold
+
+
+def _coerce_signal_int(
+    raw_signals: Mapping[str, object] | None,
+    key: str,
+) -> int:
+    if raw_signals is None:
+        return 0
+    value = raw_signals.get(key)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _force_trigger_reason(
+    *,
+    raw_signals: Mapping[str, object] | None,
+    max_episodes_per_run: int,
+) -> str | None:
+    if raw_signals is None:
+        return None
+    backlog_threshold, challenged_threshold = _compute_force_thresholds(
+        max_episodes_per_run=max_episodes_per_run,
+    )
+    pending_backlog = _coerce_signal_int(raw_signals, "unconsolidated_backlog")
+    challenged_backlog = _coerce_signal_int(raw_signals, "challenged_claim_backlog")
+
+    if pending_backlog >= backlog_threshold:
+        return "backlog_pressure"
+    if challenged_backlog >= challenged_threshold:
+        return "challenged_backlog_pressure"
+    return None
+
+
+def _triage_stale_challenged_claims(now_utc: datetime | None = None) -> dict[str, object]:
+    from consolidation_memory.database import auto_expire_stale_challenged_claims
+
+    as_of = (now_utc or datetime.now(timezone.utc)).isoformat()
+    report = auto_expire_stale_challenged_claims(
+        as_of=as_of,
+        max_age_hours=_STALE_CHALLENGED_CLAIM_TTL_HOURS,
+        max_claims=_STALE_CHALLENGED_CLAIM_TRIAGE_MAX,
+    )
+    expired_count = int(report.get("expired_count", 0))
+    if expired_count > 0:
+        logger.info(
+            "Auto-triaged %d stale challenged claims (ttl_hours=%.0f, cutoff=%s)",
+            expired_count,
+            _STALE_CHALLENGED_CLAIM_TTL_HOURS,
+            report.get("cutoff"),
+        )
+    return report
+
+
 def should_trigger_consolidation(
     *,
     now_monotonic: float,
     last_run_monotonic: float,
     interval_seconds: float,
     utility_score: float,
+    raw_signals: Mapping[str, object] | None = None,
 ) -> tuple[bool, str]:
     """Decide whether to trigger consolidation this cycle."""
     from consolidation_memory.config import get_config
@@ -307,6 +383,12 @@ def should_trigger_consolidation(
         return True, "interval"
 
     cfg = get_config()
+    pressure_reason = _force_trigger_reason(
+        raw_signals=raw_signals,
+        max_episodes_per_run=cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN,
+    )
+    if pressure_reason is not None:
+        return True, pressure_reason
     if utility_score >= cfg.CONSOLIDATION_UTILITY_THRESHOLD:
         return True, "utility"
     return False, "none"
@@ -316,6 +398,7 @@ def should_trigger_scheduler_run(
     *,
     scheduler_state: dict[str, object],
     utility_score: float,
+    raw_signals: Mapping[str, object] | None = None,
     now_utc: datetime | None = None,
 ) -> tuple[bool, str]:
     """Decide if scheduler state warrants launching a run."""
@@ -332,6 +415,12 @@ def should_trigger_scheduler_run(
             interval_due = True
     if interval_due:
         return True, "interval"
+    pressure_reason = _force_trigger_reason(
+        raw_signals=raw_signals,
+        max_episodes_per_run=cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN,
+    )
+    if pressure_reason is not None:
+        return True, pressure_reason
     if utility_score >= cfg.CONSOLIDATION_UTILITY_THRESHOLD:
         return True, "utility"
     return False, "none"
@@ -353,13 +442,17 @@ def maybe_auto_consolidate(client: RuntimeClient, *, trigger_source: str) -> boo
         return False
 
     try:
+        _triage_stale_challenged_claims()
         utility_state = client._compute_consolidation_utility()
         score_value = utility_state.get("score")
         utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
+        raw_signals = utility_state.get("raw_signals")
+        signal_map = raw_signals if isinstance(raw_signals, Mapping) else None
         scheduler_state = get_consolidation_scheduler_state()
         should_run, trigger_reason = client._should_trigger_scheduler_run(
             scheduler_state=scheduler_state,
             utility_score=utility_score,
+            raw_signals=signal_map,
         )
         if not should_run:
             return False
@@ -568,14 +661,18 @@ def consolidation_loop(
         if client._consolidation_pool is None:
             break
         current_monotonic = now_monotonic()
+        _triage_stale_challenged_claims()
         utility_state = client._compute_consolidation_utility(now_monotonic=current_monotonic)
         score_value = utility_state.get("score")
         utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
+        raw_signals = utility_state.get("raw_signals")
+        signal_map = raw_signals if isinstance(raw_signals, Mapping) else None
         should_run, trigger_reason = client._should_trigger_consolidation(
             now_monotonic=current_monotonic,
             last_run_monotonic=last_run_monotonic,
             interval_seconds=interval,
             utility_score=utility_score,
+            raw_signals=signal_map,
         )
         if not should_run:
             continue

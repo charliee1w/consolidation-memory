@@ -150,5 +150,8 @@ class TestStatusSchedulerState:
             assert "normalized_signals" in scheduler
             assert "weighted_components" in scheduler
             assert "raw_signals" in scheduler
+            assert "is_due" in scheduler
+            assert "run_decision" in scheduler
+            assert "force_thresholds" in scheduler
         finally:
             client.close()

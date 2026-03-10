@@ -3,6 +3,7 @@
 import json
 
 from consolidation_memory.database import (
+    auto_expire_stale_challenged_claims,
     ensure_schema,
     expire_claim,
     get_claims_as_of,
@@ -220,6 +221,66 @@ class TestClaimGraphMethods:
         assert status_by_id["claim-future-id"] == "active"
         assert status_by_id["claim-already-challenged-id"] == "challenged"
         assert [row["claim_id"] for row in challenged_events] == ["claim-active-id"]
+
+    def test_auto_expire_stale_challenged_claims(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-stale-challenged",
+            claim_type="fact",
+            canonical_text="stale challenged claim",
+            payload={"k": "stale"},
+            status="challenged",
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_event(
+            claim_id="claim-stale-challenged",
+            event_type="challenged",
+            details={"reason": "drift"},
+            created_at="2026-01-15T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-recent-challenged",
+            claim_type="fact",
+            canonical_text="recent challenged claim",
+            payload={"k": "recent"},
+            status="challenged",
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_event(
+            claim_id="claim-recent-challenged",
+            event_type="challenged",
+            details={"reason": "drift"},
+            created_at="2026-02-08T00:00:00+00:00",
+        )
+
+        report = auto_expire_stale_challenged_claims(
+            max_age_hours=24 * 7,
+            as_of="2026-02-10T00:00:00+00:00",
+            max_claims=50,
+        )
+
+        assert report["expired_count"] == 1
+        assert report["expired_claim_ids"] == ["claim-stale-challenged"]
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, status, valid_until FROM claims WHERE id IN (?, ?) ORDER BY id",
+                ("claim-recent-challenged", "claim-stale-challenged"),
+            ).fetchall()
+            events = conn.execute(
+                """SELECT claim_id, event_type
+                     FROM claim_events
+                    WHERE event_type = 'auto_expired_challenged'
+                    ORDER BY claim_id""",
+            ).fetchall()
+
+        status_by_id = {row["id"]: row["status"] for row in rows}
+        valid_until_by_id = {row["id"]: row["valid_until"] for row in rows}
+        assert status_by_id["claim-recent-challenged"] == "challenged"
+        assert status_by_id["claim-stale-challenged"] == "expired"
+        assert valid_until_by_id["claim-stale-challenged"] == "2026-02-10T00:00:00+00:00"
+        assert [(row["claim_id"], row["event_type"]) for row in events] == [
+            ("claim-stale-challenged", "auto_expired_challenged"),
+        ]
 
     def test_claim_edge_insert_read(self, tmp_data_dir):
         ensure_schema()

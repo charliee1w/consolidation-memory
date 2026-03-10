@@ -185,3 +185,55 @@ class TestClientUtilityScheduling:
                 ) == (True, "interval")
         finally:
             client.close()
+
+    def test_should_trigger_scheduler_run_backlog_pressure(self):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import override_config
+        from consolidation_memory.database import ensure_schema
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with override_config(
+                CONSOLIDATION_MAX_EPISODES_PER_RUN=100,
+                CONSOLIDATION_UTILITY_THRESHOLD=0.95,
+            ):
+                should_run, reason = client._should_trigger_scheduler_run(
+                    scheduler_state={"next_due_at": "2999-01-01T00:00:00+00:00"},
+                    utility_score=0.1,
+                    raw_signals={
+                        "unconsolidated_backlog": 100,
+                        "challenged_claim_backlog": 0,
+                    },
+                )
+
+            assert should_run is True
+            assert reason == "backlog_pressure"
+        finally:
+            client.close()
+
+    def test_should_trigger_scheduler_run_challenged_backlog_pressure(self):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import override_config
+        from consolidation_memory.database import ensure_schema
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with override_config(
+                CONSOLIDATION_MAX_EPISODES_PER_RUN=60,
+                CONSOLIDATION_UTILITY_THRESHOLD=0.95,
+            ):
+                should_run, reason = client._should_trigger_scheduler_run(
+                    scheduler_state={"next_due_at": "2999-01-01T00:00:00+00:00"},
+                    utility_score=0.1,
+                    raw_signals={
+                        "unconsolidated_backlog": 0,
+                        "challenged_claim_backlog": 25,
+                    },
+                )
+
+            assert should_run is True
+            assert reason == "challenged_backlog_pressure"
+        finally:
+            client.close()

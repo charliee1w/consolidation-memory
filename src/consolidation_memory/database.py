@@ -1724,6 +1724,109 @@ def count_active_challenged_claims(as_of: str | None = None) -> int:
     return int(row["c"]) if row else 0
 
 
+def auto_expire_stale_challenged_claims(
+    *,
+    max_age_hours: float,
+    max_claims: int = 200,
+    as_of: str | None = None,
+) -> dict[str, Any]:
+    """Expire stale challenged claims and record audit events.
+
+    Claims remain in `challenged` status until an explicit resolution. To prevent
+    unbounded challenged backlogs, this helper expires challenged claims whose
+    earliest challenge event is older than the configured age threshold.
+    """
+    age_hours = max(float(max_age_hours), 0.0)
+    if age_hours <= 0:
+        raise ValueError("max_age_hours must be > 0")
+
+    limit = max(int(max_claims), 1)
+    as_of_utc = _normalize_utc_timestamp(as_of or _now())
+    as_of_dt = parse_datetime(as_of_utc)
+    cutoff = (as_of_dt - timedelta(hours=age_hours)).isoformat()
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT c.id
+                 FROM claims c
+                WHERE c.status = 'challenged'
+                  AND julianday(c.valid_from) <= julianday(?)
+                  AND (c.valid_until IS NULL OR julianday(c.valid_until) > julianday(?))
+                  AND julianday(
+                        COALESCE(
+                            (
+                                SELECT MIN(ce.created_at)
+                                  FROM claim_events ce
+                                 WHERE ce.claim_id = c.id
+                                   AND ce.event_type = 'challenged'
+                            ),
+                            c.updated_at
+                        )
+                      ) <= julianday(?)
+                ORDER BY c.updated_at ASC, c.id ASC
+                LIMIT ?""",
+            (as_of_utc, as_of_utc, cutoff, limit),
+        ).fetchall()
+        stale_ids = [row["id"] for row in rows]
+        if not stale_ids:
+            return {
+                "as_of": as_of_utc,
+                "cutoff": cutoff,
+                "max_age_hours": age_hours,
+                "max_claims": limit,
+                "expired_count": 0,
+                "expired_claim_ids": [],
+            }
+
+        placeholders = ",".join("?" for _ in stale_ids)
+        conn.execute(
+            f"""UPDATE claims
+                    SET status = 'expired',
+                        valid_until = CASE
+                            WHEN valid_until IS NULL OR julianday(valid_until) > julianday(?) THEN ?
+                            ELSE valid_until
+                        END,
+                        updated_at = ?
+                  WHERE id IN ({placeholders})
+                    AND status = 'challenged'""",  # nosec B608
+            [as_of_utc, as_of_utc, as_of_utc, *stale_ids],
+        )
+
+        details_payload = json.dumps(
+            {
+                "policy": "auto_expire_stale_challenged",
+                "max_age_hours": age_hours,
+                "cutoff": cutoff,
+                "expired_at": as_of_utc,
+            },
+            default=str,
+        )
+        conn.executemany(
+            """INSERT INTO claim_events
+               (id, claim_id, event_type, details, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                (
+                    str(uuid.uuid4()),
+                    claim_id,
+                    "auto_expired_challenged",
+                    details_payload,
+                    as_of_utc,
+                )
+                for claim_id in stale_ids
+            ],
+        )
+
+    return {
+        "as_of": as_of_utc,
+        "cutoff": cutoff,
+        "max_age_hours": age_hours,
+        "max_claims": limit,
+        "expired_count": len(stale_ids),
+        "expired_claim_ids": stale_ids,
+    }
+
+
 def insert_claim_edge(
     from_claim_id: str,
     to_claim_id: str,

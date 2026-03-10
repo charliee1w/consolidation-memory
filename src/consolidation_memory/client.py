@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 
@@ -50,7 +51,7 @@ from consolidation_memory.query_service import (
     EpisodeSearchQuery,
     RecallQuery,
 )
-from consolidation_memory.utils import parse_json_list
+from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.types import (
     RUN_STATUS_FAILED,
     RUN_STATUS_RUNNING,
@@ -1202,6 +1203,41 @@ class MemoryClient:
 
         utility_state = self._compute_consolidation_utility()
         scheduler_state = get_consolidation_scheduler_state()
+        now_utc = datetime.now(timezone.utc)
+        next_due_at = scheduler_state.get("next_due_at")
+        is_due = True
+        seconds_until_due: float | None = None
+        if isinstance(next_due_at, str) and next_due_at.strip():
+            try:
+                due_dt = parse_datetime(next_due_at)
+                seconds_until_due = round((due_dt - now_utc).total_seconds(), 3)
+                is_due = seconds_until_due <= 0
+            except (ValueError, TypeError):
+                is_due = True
+                seconds_until_due = None
+
+        lease_owner = scheduler_state.get("lease_owner")
+        lease_expires_at = scheduler_state.get("lease_expires_at")
+        lease_stale = False
+        if isinstance(lease_owner, str) and lease_owner and isinstance(lease_expires_at, str):
+            try:
+                lease_stale = parse_datetime(lease_expires_at) < now_utc
+            except (ValueError, TypeError):
+                lease_stale = False
+
+        score_value = utility_state.get("score")
+        utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
+        raw_signals_obj = utility_state.get("raw_signals")
+        raw_signals = raw_signals_obj if isinstance(raw_signals_obj, dict) else None
+        should_run_now, trigger_reason = self._should_trigger_scheduler_run(
+            scheduler_state=scheduler_state,
+            utility_score=utility_score,
+            raw_signals=raw_signals,
+            now_utc=now_utc,
+        )
+
+        backlog_force_threshold = max(1, cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN)
+        challenged_force_threshold = max(10, cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN // 3)
         utility_scheduler = {
             "enabled": bool(cfg.CONSOLIDATION_AUTO_RUN),
             "threshold": cfg.CONSOLIDATION_UTILITY_THRESHOLD,
@@ -1213,8 +1249,23 @@ class MemoryClient:
             "next_due_at": scheduler_state.get("next_due_at"),
             "last_status": scheduler_state.get("last_status"),
             "last_trigger": scheduler_state.get("last_trigger"),
-            "lease_owner": scheduler_state.get("lease_owner"),
-            "lease_expires_at": scheduler_state.get("lease_expires_at"),
+            "last_error": scheduler_state.get("last_error"),
+            "last_run_started_at": scheduler_state.get("last_run_started_at"),
+            "last_run_completed_at": scheduler_state.get("last_run_completed_at"),
+            "updated_at": scheduler_state.get("updated_at"),
+            "lease_owner": lease_owner,
+            "lease_expires_at": lease_expires_at,
+            "lease_stale": lease_stale,
+            "is_due": is_due,
+            "seconds_until_due": seconds_until_due,
+            "run_decision": {
+                "should_run": should_run_now,
+                "reason": trigger_reason,
+            },
+            "force_thresholds": {
+                "unconsolidated_backlog": backlog_force_threshold,
+                "challenged_claim_backlog": challenged_force_threshold,
+            },
         }
         scaling = {
             "index_type": self._vector_store.index_type,
@@ -2089,12 +2140,14 @@ class MemoryClient:
         last_run_monotonic: float,
         interval_seconds: float,
         utility_score: float,
+        raw_signals: Mapping[str, object] | None = None,
     ) -> tuple[bool, str]:
         return _should_trigger_consolidation_runtime(
             now_monotonic=now_monotonic,
             last_run_monotonic=last_run_monotonic,
             interval_seconds=interval_seconds,
             utility_score=utility_score,
+            raw_signals=raw_signals,
         )
 
     def _should_trigger_scheduler_run(
@@ -2102,11 +2155,13 @@ class MemoryClient:
         *,
         scheduler_state: dict[str, object],
         utility_score: float,
+        raw_signals: Mapping[str, object] | None = None,
         now_utc: datetime | None = None,
     ) -> tuple[bool, str]:
         return _should_trigger_scheduler_run_runtime(
             scheduler_state=scheduler_state,
             utility_score=utility_score,
+            raw_signals=raw_signals,
             now_utc=now_utc,
         )
 

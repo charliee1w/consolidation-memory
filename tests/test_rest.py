@@ -361,17 +361,16 @@ class TestDriftEndpoint:
             }],
         }
 
-        with patch("consolidation_memory.client.MemoryClient.query_detect_drift", return_value=expected) as mock_detect:
+        with patch("consolidation_memory.rest._run_detect_drift", return_value=expected) as mock_detect:
             resp = api_client.post("/memory/detect-drift", json={"base_ref": "origin/main"})
 
         assert resp.status_code == 200
         assert resp.json() == expected
-        mock_detect.assert_called_once()
-        assert mock_detect.call_args.kwargs == {"base_ref": "origin/main", "repo_path": None}
+        mock_detect.assert_called_once_with(base_ref="origin/main", repo_path=None)
 
     def test_detect_drift_runtime_error_returns_400(self, api_client):
         with patch(
-            "consolidation_memory.client.MemoryClient.query_detect_drift",
+            "consolidation_memory.rest._run_detect_drift",
             side_effect=RuntimeError("git diff failed"),
         ):
             resp = api_client.post("/memory/detect-drift", json={})
@@ -386,7 +385,7 @@ class TestDriftEndpoint:
             return {}
 
         with (
-            patch("consolidation_memory.client.MemoryClient.query_detect_drift", side_effect=_slow_detect),
+            patch("consolidation_memory.rest._run_detect_drift", side_effect=_slow_detect),
             patch("consolidation_memory.rest._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
         ):
             resp = api_client.post("/memory/detect-drift", json={})

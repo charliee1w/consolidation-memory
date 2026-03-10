@@ -178,6 +178,108 @@ class TestDatabase:
         release_consolidation_lease("owner-a")
         assert try_acquire_consolidation_lease("owner-b", lease_seconds=60) is True
 
+    def test_reconcile_stale_consolidation_run_marks_failed(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_connection,
+            reconcile_stale_consolidation_state,
+            start_consolidation_run,
+        )
+
+        ensure_schema()
+        run_id = start_consolidation_run()
+        stale_started = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE consolidation_runs SET started_at = ? WHERE id = ?",
+                (stale_started, run_id),
+            )
+
+        report = reconcile_stale_consolidation_state(stale_timeout_seconds=300)
+        assert report["stale_runs_marked_failed"] == 1
+        assert run_id in report["stale_run_ids"]
+
+        with get_connection() as conn:
+            row = conn.execute(
+                """SELECT status, completed_at, error_message
+                   FROM consolidation_runs
+                   WHERE id = ?""",
+                (run_id,),
+            ).fetchone()
+        assert row is not None
+        assert row["status"] == "failed"
+        assert row["completed_at"] is not None
+        assert "Recovered stale running consolidation run" in row["error_message"]
+
+    def test_reconcile_stale_scheduler_state_marks_failed(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_consolidation_scheduler_state,
+            get_connection,
+            reconcile_stale_consolidation_state,
+        )
+
+        ensure_schema()
+        get_consolidation_scheduler_state()
+
+        now_utc = datetime.now(timezone.utc)
+        as_of = now_utc.isoformat()
+        stale_started = (now_utc - timedelta(hours=2)).isoformat()
+        stale_lease = (now_utc - timedelta(hours=1)).isoformat()
+
+        with get_connection() as conn:
+            conn.execute(
+                """UPDATE consolidation_scheduler
+                   SET last_status = 'running',
+                       last_run_started_at = ?,
+                       last_run_completed_at = NULL,
+                       last_error = NULL,
+                       next_due_at = '2999-01-01T00:00:00+00:00',
+                       lease_owner = 'dead-worker',
+                       lease_expires_at = ?,
+                       updated_at = ?
+                   WHERE id = 'global'""",
+                (stale_started, stale_lease, stale_started),
+            )
+
+        report = reconcile_stale_consolidation_state(
+            stale_timeout_seconds=300,
+            as_of=as_of,
+        )
+        assert report["scheduler_state_recovered"] is True
+
+        state = get_consolidation_scheduler_state()
+        assert state["last_status"] == "failed"
+        assert state["lease_owner"] is None
+        assert state["lease_expires_at"] is None
+        assert state["next_due_at"] == as_of
+        assert state["last_run_completed_at"] == as_of
+        assert "Recovered stale running scheduler state" in state["last_error"]
+
+    def test_reconcile_keeps_fresh_running_run(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_connection,
+            reconcile_stale_consolidation_state,
+            start_consolidation_run,
+        )
+
+        ensure_schema()
+        run_id = start_consolidation_run()
+
+        report = reconcile_stale_consolidation_state(stale_timeout_seconds=3600)
+        assert report["stale_runs_marked_failed"] == 0
+        assert report["stale_run_ids"] == []
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT status, completed_at FROM consolidation_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+        assert row is not None
+        assert row["status"] == "running"
+        assert row["completed_at"] is None
+
     def test_search_episodes_respects_scope_filters(self):
         from consolidation_memory.database import (
             ensure_schema,

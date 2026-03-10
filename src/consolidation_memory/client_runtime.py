@@ -26,6 +26,9 @@ from consolidation_memory.utils import parse_datetime
 logger = logging.getLogger("consolidation_memory")
 
 _FORCE_CHALLENGED_BACKLOG_FLOOR = 10
+_FORCE_BACKLOG_FLOOR = 25
+_FORCE_BACKLOG_RATIO = 0.5
+_FORCE_CHALLENGED_BACKLOG_RATIO = 0.25
 _STALE_CHALLENGED_CLAIM_TTL_HOURS = 24.0 * 7.0
 _STALE_CHALLENGED_CLAIM_TRIAGE_MAX = 200
 
@@ -301,11 +304,16 @@ def compute_consolidation_utility(
 
 
 def _compute_force_thresholds(*, max_episodes_per_run: int) -> tuple[int, int]:
-    backlog_threshold = max(1, int(max_episodes_per_run))
-    challenged_threshold = max(
-        _FORCE_CHALLENGED_BACKLOG_FLOOR,
-        backlog_threshold // 3,
-    )
+    max_episodes = max(1, int(max_episodes_per_run))
+
+    backlog_threshold = int(max_episodes * _FORCE_BACKLOG_RATIO)
+    backlog_threshold = max(_FORCE_BACKLOG_FLOOR, backlog_threshold)
+    backlog_threshold = min(max_episodes, backlog_threshold)
+
+    challenged_threshold = int(max_episodes * _FORCE_CHALLENGED_BACKLOG_RATIO)
+    challenged_threshold = max(_FORCE_CHALLENGED_BACKLOG_FLOOR, challenged_threshold)
+    challenged_threshold = min(backlog_threshold, challenged_threshold)
+
     return backlog_threshold, challenged_threshold
 
 

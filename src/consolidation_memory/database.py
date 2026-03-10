@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence, cast
 from consolidation_memory.config import get_config as _get_config
 from consolidation_memory.types import (
     RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
     RUN_STATUS_RUNNING,
     RunStatus,
     StatsDict,
@@ -2208,6 +2209,133 @@ def mark_claims_challenged_by_anchors(
 _SCHEDULER_ROW_ID = "global"
 
 
+def _default_stale_consolidation_timeout_seconds(max_duration_seconds: float) -> float:
+    """Return stale-run timeout with a grace window above configured max duration."""
+    safe_max_duration = max(float(max_duration_seconds), 1.0)
+    # Give the worker a 5-minute grace period while still recovering quickly
+    # after process crashes. Keep a sane lower bound for very small durations.
+    return max(600.0, safe_max_duration + 300.0)
+
+
+def reconcile_stale_consolidation_state(
+    *,
+    stale_timeout_seconds: float | None = None,
+    as_of: str | datetime | None = None,
+) -> dict[str, Any]:
+    """Recover stale running consolidation state after interrupted execution.
+
+    Marks long-running orphaned consolidation runs as failed and clears stale
+    scheduler leases/status so automatic scheduling can continue.
+    """
+    cfg = _get_config()
+    timeout_seconds = (
+        _default_stale_consolidation_timeout_seconds(cfg.CONSOLIDATION_MAX_DURATION)
+        if stale_timeout_seconds is None
+        else max(float(stale_timeout_seconds), 1.0)
+    )
+
+    if isinstance(as_of, str):
+        as_of_dt = parse_datetime(as_of)
+    elif isinstance(as_of, datetime):
+        as_of_dt = as_of if as_of.tzinfo is not None else as_of.replace(tzinfo=timezone.utc)
+    else:
+        as_of_dt = datetime.now(timezone.utc)
+    as_of_dt = as_of_dt.astimezone(timezone.utc)
+
+    as_of_iso = as_of_dt.isoformat()
+    cutoff_iso = (as_of_dt - timedelta(seconds=timeout_seconds)).isoformat()
+    stale_run_message = (
+        "Recovered stale running consolidation run after exceeding timeout "
+        f"({int(timeout_seconds)}s)."
+    )
+    stale_scheduler_message = (
+        "Recovered stale running scheduler state after exceeding timeout "
+        f"({int(timeout_seconds)}s)."
+    )
+
+    stale_run_ids: list[str] = []
+    scheduler_recovered = False
+
+    with get_connection() as conn:
+        _ensure_consolidation_scheduler_row(conn)
+
+        stale_rows = conn.execute(
+            """SELECT id
+               FROM consolidation_runs
+               WHERE status = ?
+                 AND completed_at IS NULL
+                 AND julianday(started_at) <= julianday(?)""",
+            (RUN_STATUS_RUNNING, cutoff_iso),
+        ).fetchall()
+        stale_run_ids = [str(row["id"]) for row in stale_rows]
+
+        if stale_run_ids:
+            placeholders = ",".join("?" for _ in stale_run_ids)
+            params: list[Any] = [
+                RUN_STATUS_FAILED,
+                as_of_iso,
+                stale_run_message,
+                *stale_run_ids,
+            ]
+            conn.execute(
+                f"""UPDATE consolidation_runs
+                    SET status = ?,
+                        completed_at = ?,
+                        error_message = COALESCE(error_message, ?)
+                    WHERE id IN ({placeholders})""",
+                tuple(params),
+            )
+
+        scheduler_cursor = conn.execute(
+            """UPDATE consolidation_scheduler
+               SET last_run_completed_at = COALESCE(last_run_completed_at, ?),
+                   last_status = ?,
+                   last_error = COALESCE(last_error, ?),
+                   next_due_at = ?,
+                   lease_owner = NULL,
+                   lease_expires_at = NULL,
+                   updated_at = ?
+               WHERE id = ?
+                 AND last_status = ?
+                 AND last_run_started_at IS NOT NULL
+                 AND julianday(last_run_started_at) <= julianday(?)
+                 AND (
+                   lease_owner IS NULL
+                   OR lease_expires_at IS NULL
+                   OR julianday(lease_expires_at) <= julianday(?)
+                 )""",
+            (
+                as_of_iso,
+                RUN_STATUS_FAILED,
+                stale_scheduler_message,
+                as_of_iso,
+                as_of_iso,
+                _SCHEDULER_ROW_ID,
+                RUN_STATUS_RUNNING,
+                cutoff_iso,
+                as_of_iso,
+            ),
+        )
+        scheduler_recovered = bool(scheduler_cursor.rowcount and scheduler_cursor.rowcount > 0)
+
+    if stale_run_ids or scheduler_recovered:
+        logger.warning(
+            "Recovered stale consolidation state (stale_runs=%d, scheduler_recovered=%s, timeout_seconds=%.0f)",
+            len(stale_run_ids),
+            scheduler_recovered,
+            timeout_seconds,
+        )
+
+    return {
+        "stale_timeout_seconds": timeout_seconds,
+        "stale_runs_marked_failed": len(stale_run_ids),
+        "stale_run_ids": stale_run_ids,
+        "scheduler_state_recovered": scheduler_recovered,
+        "cutoff": cutoff_iso,
+        "as_of": as_of_iso,
+    }
+
+
 def _ensure_consolidation_scheduler_row(conn: sqlite3.Connection) -> sqlite3.Row:
     """Ensure the singleton scheduler row exists and return it."""
     row = conn.execute(
@@ -2235,6 +2363,7 @@ def _ensure_consolidation_scheduler_row(conn: sqlite3.Connection) -> sqlite3.Row
 
 def get_consolidation_scheduler_state() -> dict[str, Any]:
     """Return persisted scheduler state for automatic consolidation."""
+    reconcile_stale_consolidation_state()
     with get_connection() as conn:
         row = _ensure_consolidation_scheduler_row(conn)
     return dict(row)
@@ -2410,6 +2539,7 @@ def complete_consolidation_run(
 
 
 def get_last_consolidation_run() -> dict[str, Any] | None:
+    reconcile_stale_consolidation_state()
     with get_connection() as conn:
         row = conn.execute(
             """SELECT * FROM consolidation_runs
@@ -2420,6 +2550,7 @@ def get_last_consolidation_run() -> dict[str, Any] | None:
 
 def get_recent_consolidation_runs(limit: int = 5) -> list[dict[str, Any]]:
     """Return recent consolidation runs as activity summaries."""
+    reconcile_stale_consolidation_state()
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT id, started_at, completed_at, status,

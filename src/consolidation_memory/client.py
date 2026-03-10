@@ -32,6 +32,7 @@ from consolidation_memory.client_runtime import (
     compute_consolidation_utility as _compute_consolidation_utility_runtime,
     compute_health as _compute_health_runtime,
     consolidation_loop as _consolidation_loop_runtime,
+    _compute_force_thresholds as _compute_force_thresholds_runtime,
     finalize_auto_consolidation as _finalize_auto_consolidation_runtime,
     maybe_auto_consolidate as _maybe_auto_consolidate_runtime,
     probe_backend as _probe_backend_runtime,
@@ -1236,8 +1237,9 @@ class MemoryClient:
             now_utc=now_utc,
         )
 
-        backlog_force_threshold = max(1, cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN)
-        challenged_force_threshold = max(10, cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN // 3)
+        backlog_force_threshold, challenged_force_threshold = _compute_force_thresholds_runtime(
+            max_episodes_per_run=cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN
+        )
         utility_scheduler = {
             "enabled": bool(cfg.CONSOLIDATION_AUTO_RUN),
             "threshold": cfg.CONSOLIDATION_UTILITY_THRESHOLD,

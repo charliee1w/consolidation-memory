@@ -235,6 +235,31 @@ class TestConsolidationLogContradictions:
         assert result.entries[0]["status"] == "running"
         assert result.entries[0]["summary"] == "In progress"
 
+    def test_stale_running_status_is_recovered_to_failed(self, tmp_data_dir):
+        """A stale running run should be auto-recovered and no longer show in-progress."""
+        from datetime import datetime, timedelta, timezone
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_connection,
+            start_consolidation_run,
+        )
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        run_id = start_consolidation_run()
+        stale_started = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE consolidation_runs SET started_at = ? WHERE id = ?",
+                (stale_started, run_id),
+            )
+
+        client = MemoryClient()
+        result = client.consolidation_log()
+        entry = result.entries[0]
+        assert entry["status"] == "failed"
+        assert "FAILED" in entry["summary"]
+
 
 class TestConsolidationLogSchema:
     """Test the OpenAI schema and dispatch."""

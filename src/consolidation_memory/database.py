@@ -2588,20 +2588,16 @@ def reconcile_stale_consolidation_state(
         stale_run_ids = [str(row["id"]) for row in stale_rows]
 
         if stale_run_ids:
-            placeholders = ",".join("?" for _ in stale_run_ids)
-            params: list[Any] = [
-                RUN_STATUS_FAILED,
-                as_of_iso,
-                stale_run_message,
-                *stale_run_ids,
-            ]
-            conn.execute(
-                f"""UPDATE consolidation_runs
+            conn.executemany(
+                """UPDATE consolidation_runs
                     SET status = ?,
                         completed_at = ?,
                         error_message = COALESCE(error_message, ?)
-                    WHERE id IN ({placeholders})""",
-                tuple(params),
+                    WHERE id = ?""",
+                [
+                    (RUN_STATUS_FAILED, as_of_iso, stale_run_message, stale_run_id)
+                    for stale_run_id in stale_run_ids
+                ],
             )
 
         scheduler_cursor = conn.execute(

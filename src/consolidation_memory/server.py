@@ -79,6 +79,9 @@ _warmup_task: asyncio.Task | None = None
 _idle_task: asyncio.Task | None = None
 _active_tool_calls = 0
 _last_activity_monotonic = time.monotonic()
+_runtime_started = False
+_startup_error: Exception | None = None
+_runtime_start_lock = threading.Lock()
 
 
 def _drift_timeout_seconds() -> float:
@@ -125,6 +128,34 @@ def _touch_activity() -> None:
     _last_activity_monotonic = time.monotonic()
 
 
+def _format_startup_error(exc: Exception) -> str:
+    return (
+        "MCP runtime startup failed: "
+        f"{exc}. Fix the underlying environment/config issue and retry the tool call."
+    )
+
+
+def _ensure_runtime_started() -> None:
+    """Start the shared runtime on demand without killing the MCP transport on failure."""
+    global _runtime_started, _startup_error
+
+    if _runtime_started and _startup_error is None:
+        return
+
+    with _runtime_start_lock:
+        if _runtime_started and _startup_error is None:
+            return
+        try:
+            _runtime.startup()
+        except Exception as exc:
+            _runtime_started = False
+            _startup_error = exc
+            raise RuntimeError(_format_startup_error(exc)) from exc
+
+        _runtime_started = True
+        _startup_error = None
+
+
 def _begin_tool_call() -> None:
     global _active_tool_calls
     _active_tool_calls += 1
@@ -151,6 +182,7 @@ async def _run_blocking(
 
 def _get_client():
     """Return the runtime-owned client, creating it lazily once."""
+    _ensure_runtime_started()
     return _runtime.get_client()
 
 
@@ -318,17 +350,23 @@ def _run_detect_drift(
 async def lifespan(server: FastMCP):
     """Start and stop the runtime-owned MCP server resources."""
     del server
-    global _warmup_task, _idle_task
+    global _warmup_task, _idle_task, _runtime_started, _startup_error
 
     from consolidation_memory import __version__
     from consolidation_memory.config import get_active_project
 
     logger.info("Starting consolidation_memory MCP server v%s...", __version__)
-    _runtime.startup()
     logger.info("Active project: %s", get_active_project())
+    try:
+        _ensure_runtime_started()
+    except RuntimeError as exc:
+        logger.exception(
+            "MCP runtime startup failed during server boot; continuing in degraded mode"
+        )
+        logger.error("%s", exc)
 
     _preload_numeric_backends()
-    if _warmup_on_start():
+    if _warmup_on_start() and _startup_error is None:
         _warmup_task = asyncio.create_task(_warm_client_background())
     if _idle_timeout_seconds() > 0:
         _idle_task = asyncio.create_task(_idle_shutdown_monitor())
@@ -352,6 +390,8 @@ async def lifespan(server: FastMCP):
         _warmup_task = None
 
     _runtime.shutdown()
+    _runtime_started = False
+    _startup_error = None
     logger.info("Shutting down consolidation_memory MCP server.")
 
 

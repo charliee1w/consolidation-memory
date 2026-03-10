@@ -18,7 +18,6 @@ def _patched_server_runtime():
     from consolidation_memory.runtime import MemoryRuntime
 
     runtime = MemoryRuntime(max_workers=2)
-    original_runtime = server._runtime
     with patch.object(server, "_runtime", runtime):
         try:
             yield server, runtime
@@ -227,6 +226,24 @@ class TestMCPServerLifecycle:
             mock_client.close.assert_called_once()
             mock_close_all.assert_called_once()
             assert runtime.blocking_executor is None
+
+    def test_lifespan_survives_startup_failure_and_tools_return_error_json(self):
+        from consolidation_memory.server import memory_status
+
+        with _patched_server_runtime() as (server, runtime):
+            async def _enter_and_call():
+                async with server.lifespan(server.mcp):
+                    return json.loads(await memory_status())
+
+            with (
+                patch("consolidation_memory.server._WARMUP_ON_START", False),
+                patch.object(runtime, "startup", side_effect=RuntimeError("schema boom")),
+            ):
+                result = asyncio.run(_enter_and_call())
+
+        assert "error" in result
+        assert "MCP runtime startup failed" in result["error"]
+        assert "schema boom" in result["error"]
 
     def test_get_client_with_timeout_raises_timeout_error(self):
         import consolidation_memory.server as server

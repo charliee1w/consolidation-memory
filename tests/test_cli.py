@@ -209,6 +209,23 @@ class TestMainDispatch:
             mock_cmd.assert_called_once_with("AGENTS.md")
 
 
+class TestMCPConfigRecommendation:
+    def test_recommended_mcp_server_config_uses_current_interpreter(self):
+        from consolidation_memory.cli import _recommended_mcp_server_config
+
+        with patch("sys.executable", "C:/Python313/python.exe"):
+            config = _recommended_mcp_server_config("default")
+
+        assert config == {
+            "command": "C:/Python313/python.exe",
+            "args": ["-m", "consolidation_memory", "--project", "default", "serve"],
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "0",
+            },
+        }
+
+
 class TestDetectDriftCommand:
     def test_cmd_detect_drift_prints_json(self, capsys):
         from consolidation_memory.cli import cmd_detect_drift

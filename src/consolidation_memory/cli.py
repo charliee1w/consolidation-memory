@@ -24,6 +24,19 @@ from consolidation_memory import __version__
 from consolidation_memory.utils import parse_json_list
 
 
+def _recommended_mcp_server_config(project: str) -> dict[str, object]:
+    """Return the most stable MCP launch configuration for the current interpreter."""
+    command = sys.executable or "python"
+    return {
+        "command": command,
+        "args": ["-m", "consolidation_memory", "--project", project, "serve"],
+        "env": {
+            "PYTHONUNBUFFERED": "1",
+            "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "0",
+        },
+    }
+
+
 def cmd_serve(args):
     """Start the MCP or REST server."""
     if getattr(args, "rest", False):
@@ -174,10 +187,7 @@ similarity_threshold = 0.95
     print("\n--- Add to your MCP client config ---")
     print(json.dumps({
         "mcpServers": {
-            "consolidation_memory": {
-                "command": "consolidation-memory",
-                "args": ["--project", active_project, "serve"],
-            }
+            "consolidation_memory": _recommended_mcp_server_config(active_project)
         }
     }, indent=2))
 

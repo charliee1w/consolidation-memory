@@ -71,12 +71,19 @@ dashboard        Launch Textual dashboard
 {
   "mcpServers": {
     "consolidation_memory": {
-      "command": "consolidation-memory",
-      "args": ["--project", "default", "serve"]
+      "command": "/absolute/path/to/python",
+      "args": ["-m", "consolidation_memory", "--project", "default", "serve"],
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "0"
+      }
     }
   }
 }
 ```
+
+Prefer an exact Python interpreter over the `consolidation-memory` console script. It avoids PATH/env drift and is more reliable on Windows when MCP hosts restart the server.
+For long-lived MCP hosts, keep `CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS=0` unless you explicitly want the server to auto-exit when idle.
 
 MCP tools exposed by `server.py`:
 

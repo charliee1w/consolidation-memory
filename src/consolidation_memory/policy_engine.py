@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
-from consolidation_memory.types import PolicyScope, ResolvedScopeEnvelope
+from consolidation_memory.types import (
+    PolicyReadVisibility,
+    PolicyResolutionSource,
+    PolicyScope,
+    PolicyWriteMode,
+    ResolvedScopeEnvelope,
+)
 
-_WRITE_MODE_VALUES = frozenset({"allow", "deny"})
-_READ_VISIBILITY_VALUES = frozenset({"private", "project", "namespace"})
-_READ_VISIBILITY_RANK = {"private": 0, "project": 1, "namespace": 2}
+_WRITE_MODE_VALUES: frozenset[PolicyWriteMode] = frozenset({"allow", "deny"})
+_READ_VISIBILITY_VALUES: frozenset[PolicyReadVisibility] = frozenset(
+    {"private", "project", "namespace"}
+)
+_READ_VISIBILITY_RANK: dict[PolicyReadVisibility, int] = {
+    "private": 0,
+    "project": 1,
+    "namespace": 2,
+}
 
 
 @dataclass(frozen=True)
@@ -17,7 +29,7 @@ class EffectivePolicyResolution:
     """Effective policy computed from scope policy + persisted ACL entries."""
 
     policy: PolicyScope
-    source: str
+    source: PolicyResolutionSource
     matched_entries: int
     conflicts: tuple[str, ...] = ()
 
@@ -27,23 +39,30 @@ def principal_tokens_for_scope(scope: ResolvedScopeEnvelope) -> list[tuple[str, 
     principals: list[tuple[str, str]] = [("any", "*")]
 
     principals.append(("namespace_slug", scope.namespace.slug))
-    principals.append(("project_slug", scope.project.slug))
+    project_slug = scope.project.slug or "default"
+    principals.append(("project_slug", project_slug))
     principals.append(("app_client", f"{scope.app_client.app_type}:{scope.app_client.name}"))
 
-    if scope.app_client.external_key:
-        principals.append(("app_client_external_key", scope.app_client.external_key))
-    if scope.app_client.provider:
-        principals.append(("app_client_provider", scope.app_client.provider))
+    app_client_external_key = scope.app_client.external_key
+    if app_client_external_key:
+        principals.append(("app_client_external_key", app_client_external_key))
+    app_client_provider = scope.app_client.provider
+    if app_client_provider:
+        principals.append(("app_client_provider", app_client_provider))
 
     if scope.agent is not None:
-        if scope.agent.external_key:
-            principals.append(("agent_external_key", scope.agent.external_key))
-        elif scope.agent.name:
-            principals.append(("agent_name", scope.agent.name))
+        agent_external_key = scope.agent.external_key
+        if agent_external_key:
+            principals.append(("agent_external_key", agent_external_key))
+        else:
+            agent_name = scope.agent.name
+            if agent_name:
+                principals.append(("agent_name", agent_name))
 
     if scope.session is not None:
-        if scope.session.external_key:
-            principals.append(("session_external_key", scope.session.external_key))
+        session_external_key = scope.session.external_key
+        if session_external_key:
+            principals.append(("session_external_key", session_external_key))
         principals.append(("session_kind", scope.session.session_kind))
 
     return principals
@@ -61,20 +80,20 @@ def resolve_effective_policy(
             matched_entries=0,
         )
 
-    write_modes: list[str] = []
-    read_visibilities: list[str] = []
+    write_modes: list[PolicyWriteMode] = []
+    read_visibilities: list[PolicyReadVisibility] = []
 
     for row in acl_rows:
         raw_write_mode = row.get("write_mode")
         if isinstance(raw_write_mode, str) and raw_write_mode in _WRITE_MODE_VALUES:
-            write_modes.append(raw_write_mode)
+            write_modes.append(cast(PolicyWriteMode, raw_write_mode))
 
         raw_read_visibility = row.get("read_visibility")
         if (
             isinstance(raw_read_visibility, str)
             and raw_read_visibility in _READ_VISIBILITY_VALUES
         ):
-            read_visibilities.append(raw_read_visibility)
+            read_visibilities.append(cast(PolicyReadVisibility, raw_read_visibility))
 
     conflicts: list[str] = []
     effective_write_mode = base_policy.write_mode
@@ -110,4 +129,3 @@ __all__ = [
     "principal_tokens_for_scope",
     "resolve_effective_policy",
 ]
-

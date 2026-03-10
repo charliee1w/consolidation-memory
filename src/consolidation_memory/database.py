@@ -38,7 +38,7 @@ _fts5_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 13
+CURRENT_SCHEMA_VERSION = 14
 
 _DEFAULT_NAMESPACE_SLUG = "default"
 _DEFAULT_NAMESPACE_SHARING_MODE = "private"
@@ -209,6 +209,9 @@ MIGRATIONS: dict[int, list[str]] = {
     # Migration 13 is applied specially in _apply_migration() so we can add
     # scope columns idempotently (only when a column does not already exist).
     13: [],
+    # Migration 14 is applied specially in _apply_migration() for first-class
+    # persisted policy/ACL entities.
+    14: [],
 }
 
 
@@ -291,6 +294,261 @@ def _apply_scope_filters(
             continue
         conditions.append(f"{prefix}{key} = ?")
         params.append(value)
+
+
+_POLICY_SELECTOR_KEYS: tuple[str, ...] = (
+    "namespace_slug",
+    "project_slug",
+    "app_client_name",
+    "app_client_type",
+    "app_client_provider",
+    "app_client_external_key",
+    "agent_name",
+    "agent_external_key",
+    "session_external_key",
+    "session_kind",
+)
+
+
+def _normalize_principal_token(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("principal value must be a string")
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("principal value must be non-empty")
+    return cleaned
+
+
+def upsert_policy_principal(
+    principal_type: str,
+    principal_key: str,
+    *,
+    principal_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> str:
+    """Create or reuse a persisted policy principal and return its ID."""
+    normalized_type = _normalize_principal_token(principal_type)
+    normalized_key = _normalize_principal_token(principal_key)
+
+    def _upsert(active_conn: sqlite3.Connection) -> str:
+        existing = active_conn.execute(
+            """SELECT id
+               FROM policy_principals
+               WHERE principal_type = ? AND principal_key = ?""",
+            (normalized_type, normalized_key),
+        ).fetchone()
+        if existing is not None:
+            return str(existing["id"])
+
+        resolved_id = principal_id or str(uuid.uuid4())
+        active_conn.execute(
+            """INSERT INTO policy_principals
+               (id, principal_type, principal_key, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (resolved_id, normalized_type, normalized_key, _now()),
+        )
+        return resolved_id
+
+    if conn is not None:
+        return _upsert(conn)
+    with get_connection() as managed_conn:
+        return _upsert(managed_conn)
+
+
+def upsert_access_policy(
+    *,
+    namespace_slug: str | None = None,
+    project_slug: str | None = None,
+    app_client_name: str | None = None,
+    app_client_type: str | None = None,
+    app_client_provider: str | None = None,
+    app_client_external_key: str | None = None,
+    agent_name: str | None = None,
+    agent_external_key: str | None = None,
+    session_external_key: str | None = None,
+    session_kind: str | None = None,
+    enabled: bool = True,
+    policy_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> str:
+    """Insert/update an access policy row and return its ID."""
+    now = _now()
+    resolved_id = policy_id or str(uuid.uuid4())
+    values = {
+        "namespace_slug": _normalize_scope_token(namespace_slug),
+        "project_slug": _normalize_scope_token(project_slug),
+        "app_client_name": _normalize_scope_token(app_client_name),
+        "app_client_type": _normalize_scope_token(app_client_type),
+        "app_client_provider": _normalize_scope_token(app_client_provider),
+        "app_client_external_key": _normalize_scope_token(app_client_external_key),
+        "agent_name": _normalize_scope_token(agent_name),
+        "agent_external_key": _normalize_scope_token(agent_external_key),
+        "session_external_key": _normalize_scope_token(session_external_key),
+        "session_kind": _normalize_scope_token(session_kind),
+        "enabled": 1 if enabled else 0,
+    }
+
+    def _upsert(active_conn: sqlite3.Connection) -> str:
+        active_conn.execute(
+            """INSERT INTO access_policies
+               (id, namespace_slug, project_slug, app_client_name, app_client_type,
+                app_client_provider, app_client_external_key, agent_name, agent_external_key,
+                session_external_key, session_kind, enabled, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   namespace_slug = excluded.namespace_slug,
+                   project_slug = excluded.project_slug,
+                   app_client_name = excluded.app_client_name,
+                   app_client_type = excluded.app_client_type,
+                   app_client_provider = excluded.app_client_provider,
+                   app_client_external_key = excluded.app_client_external_key,
+                   agent_name = excluded.agent_name,
+                   agent_external_key = excluded.agent_external_key,
+                   session_external_key = excluded.session_external_key,
+                   session_kind = excluded.session_kind,
+                   enabled = excluded.enabled,
+                   updated_at = excluded.updated_at""",
+            (
+                resolved_id,
+                values["namespace_slug"],
+                values["project_slug"],
+                values["app_client_name"],
+                values["app_client_type"],
+                values["app_client_provider"],
+                values["app_client_external_key"],
+                values["agent_name"],
+                values["agent_external_key"],
+                values["session_external_key"],
+                values["session_kind"],
+                values["enabled"],
+                now,
+                now,
+            ),
+        )
+        return resolved_id
+
+    if conn is not None:
+        return _upsert(conn)
+    with get_connection() as managed_conn:
+        return _upsert(managed_conn)
+
+
+def upsert_policy_acl_entry(
+    *,
+    policy_id: str,
+    principal_id: str,
+    write_mode: str | None = None,
+    read_visibility: str | None = None,
+    acl_entry_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> str:
+    """Insert/update a policy ACL entry and return its ID."""
+    normalized_write_mode = _normalize_scope_token(write_mode)
+    normalized_read_visibility = _normalize_scope_token(read_visibility)
+    if normalized_write_mode not in {None, "allow", "deny"}:
+        raise ValueError("write_mode must be one of: allow, deny")
+    if normalized_read_visibility not in {None, "private", "project", "namespace"}:
+        raise ValueError("read_visibility must be one of: private, project, namespace")
+    if normalized_write_mode is None and normalized_read_visibility is None:
+        raise ValueError("ACL entry requires write_mode and/or read_visibility")
+
+    now = _now()
+    resolved_id = acl_entry_id or str(uuid.uuid4())
+
+    def _upsert(active_conn: sqlite3.Connection) -> str:
+        existing = active_conn.execute(
+            """SELECT id
+               FROM policy_acl_entries
+               WHERE policy_id = ?
+                 AND principal_id = ?
+                 AND ((write_mode IS NULL AND ? IS NULL) OR write_mode = ?)
+                 AND ((read_visibility IS NULL AND ? IS NULL) OR read_visibility = ?)""",
+            (
+                policy_id,
+                principal_id,
+                normalized_write_mode,
+                normalized_write_mode,
+                normalized_read_visibility,
+                normalized_read_visibility,
+            ),
+        ).fetchone()
+        if existing is not None:
+            active_conn.execute(
+                "UPDATE policy_acl_entries SET updated_at = ? WHERE id = ?",
+                (now, str(existing["id"])),
+            )
+            return str(existing["id"])
+
+        active_conn.execute(
+            """INSERT INTO policy_acl_entries
+               (id, policy_id, principal_id, write_mode, read_visibility, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                resolved_id,
+                policy_id,
+                principal_id,
+                normalized_write_mode,
+                normalized_read_visibility,
+                now,
+                now,
+            ),
+        )
+        return resolved_id
+
+    if conn is not None:
+        return _upsert(conn)
+    with get_connection() as managed_conn:
+        return _upsert(managed_conn)
+
+
+def get_matching_policy_acl_entries(
+    scope: Mapping[str, Any] | None,
+    principals: Sequence[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Return ACL entries matching a scope envelope and principal tokens."""
+    if not principals:
+        return []
+
+    scope_row = _coerce_scope_row(scope)
+    scope_conditions = [
+        f"(p.{key} IS NULL OR p.{key} = ?)"
+        for key in _POLICY_SELECTOR_KEYS
+    ]
+    scope_params: list[Any] = [scope_row.get(key) for key in _POLICY_SELECTOR_KEYS]
+
+    principal_conditions = []
+    principal_params: list[Any] = []
+    for principal_type, principal_key in principals:
+        principal_conditions.append("(pp.principal_type = ? AND pp.principal_key = ?)")
+        principal_params.append(_normalize_principal_token(principal_type))
+        principal_params.append(_normalize_principal_token(principal_key))
+
+    where = " AND ".join([
+        "p.enabled = 1",
+        *scope_conditions,
+        f"({' OR '.join(principal_conditions)})",
+    ])
+
+    query = f"""SELECT
+            pae.id AS acl_entry_id,
+            pae.policy_id,
+            pae.write_mode,
+            pae.read_visibility,
+            pp.id AS principal_id,
+            pp.principal_type,
+            pp.principal_key
+        FROM policy_acl_entries pae
+        JOIN access_policies p ON p.id = pae.policy_id
+        JOIN policy_principals pp ON pp.id = pae.principal_id
+        WHERE {where}
+        ORDER BY p.updated_at DESC, pae.updated_at DESC, pae.id ASC"""  # nosec B608
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            query,
+            [*scope_params, *principal_params],
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _ensure_parent(path: Path) -> None:
@@ -517,6 +775,8 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
             _apply_fts5_migration(conn)
         if version == 13:
             _apply_scope_migration(conn)
+        if version == 14:
+            _apply_policy_acl_migration(conn)
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
     except Exception:
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -648,6 +908,64 @@ def _apply_scope_migration(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_topics_scope_app ON knowledge_topics(namespace_slug, project_slug, app_client_name, app_client_type)"
+    )
+
+
+def _apply_policy_acl_migration(conn: sqlite3.Connection) -> None:
+    """Apply schema v14: persisted policy/ACL entities."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS policy_principals (
+            id              TEXT PRIMARY KEY,
+            principal_type  TEXT NOT NULL,
+            principal_key   TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            UNIQUE(principal_type, principal_key)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS access_policies (
+            id                      TEXT PRIMARY KEY,
+            namespace_slug          TEXT,
+            project_slug            TEXT,
+            app_client_name         TEXT,
+            app_client_type         TEXT,
+            app_client_provider     TEXT,
+            app_client_external_key TEXT,
+            agent_name              TEXT,
+            agent_external_key      TEXT,
+            session_external_key    TEXT,
+            session_kind            TEXT,
+            enabled                 INTEGER NOT NULL DEFAULT 1,
+            created_at              TEXT NOT NULL,
+            updated_at              TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS policy_acl_entries (
+            id              TEXT PRIMARY KEY,
+            policy_id       TEXT NOT NULL,
+            principal_id    TEXT NOT NULL,
+            write_mode      TEXT CHECK(write_mode IN ('allow', 'deny')),
+            read_visibility TEXT CHECK(read_visibility IN ('private', 'project', 'namespace')),
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL,
+            FOREIGN KEY (policy_id) REFERENCES access_policies(id) ON DELETE CASCADE,
+            FOREIGN KEY (principal_id) REFERENCES policy_principals(id) ON DELETE CASCADE,
+            CHECK(write_mode IS NOT NULL OR read_visibility IS NOT NULL),
+            UNIQUE(policy_id, principal_id, write_mode, read_visibility)
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_policy_principals_type_key ON policy_principals(principal_type, principal_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_access_policies_scope ON access_policies(namespace_slug, project_slug, app_client_name, app_client_type)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_policy_acl_entries_policy ON policy_acl_entries(policy_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_policy_acl_entries_principal ON policy_acl_entries(principal_id)"
     )
 
 

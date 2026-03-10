@@ -50,6 +50,7 @@ AppClientType = Literal[
 SessionKind = Literal["conversation", "thread", "workflow", "job"]
 PolicyReadVisibility = Literal["private", "namespace", "project"]
 PolicyWriteMode = Literal["allow", "deny"]
+PolicyResolutionSource = Literal["scope_policy", "persisted_acl"]
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,8 @@ class ResolvedScopeEnvelope:
     agent: AgentScope | None = None
     session: SessionScope | None = None
     policy: PolicyScope = field(default_factory=PolicyScope)
+    policy_source: PolicyResolutionSource = "scope_policy"
+    policy_acl_matches: int = 0
 
 
 @dataclass(frozen=True)

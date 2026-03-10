@@ -110,6 +110,39 @@ class TestClientScopeModel:
             resolved = client.resolve_scope()
             assert resolved.policy.read_visibility == "private"
             assert resolved.policy.write_mode == "allow"
+            assert resolved.policy_source == "scope_policy"
+            assert resolved.policy_acl_matches == 0
+        finally:
+            client.close()
+
+    def test_resolve_scope_uses_persisted_acl_when_present(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            upsert_access_policy,
+            upsert_policy_acl_entry,
+            upsert_policy_principal,
+        )
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        principal_id = upsert_policy_principal("app_client", "python_sdk:legacy_client")
+        policy_id = upsert_access_policy(namespace_slug="default", project_slug="default")
+        upsert_policy_acl_entry(
+            policy_id=policy_id,
+            principal_id=principal_id,
+            write_mode="deny",
+            read_visibility="private",
+        )
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            resolved = client.resolve_scope(
+                {"policy": {"write_mode": "allow", "read_visibility": "namespace"}}
+            )
+            assert resolved.policy_source == "persisted_acl"
+            assert resolved.policy_acl_matches >= 1
+            assert resolved.policy.write_mode == "deny"
+            assert resolved.policy.read_visibility == "private"
         finally:
             client.close()
 

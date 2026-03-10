@@ -18,13 +18,13 @@ Identify what is already production-grade in this repository and what is still m
 4. Release-gate discipline exists.
 - Novelty metrics and gate enforcement are wired into CI/publish workflows.
 
-5. Scope metadata is persisted.
-- Schema v13 includes namespace/project/app/agent/session columns on key memory tables.
+5. Scope and policy metadata are persisted.
+- Schema v14 includes namespace/project/app/agent/session scope columns plus first-class policy/ACL tables (`access_policies`, `policy_principals`, `policy_acl_entries`).
 
 ## Current Gaps (Not Fully Implemented)
 
-1. Access control model is minimal.
-- Scope filtering exists, but explicit policy/ACL entities are not yet first-class.
+1. Access control administration surface is minimal.
+- Persisted ACL enforcement exists, but public policy management APIs/UI are not yet first-class.
 
 2. Adapter ecosystem is incomplete.
 - Core surfaces are covered, but native integrations for major external agent frameworks are still roadmap work.
@@ -37,8 +37,8 @@ Identify what is already production-grade in this repository and what is still m
 
 ## Architectural Bottlenecks
 
-1. Scope semantics rely on row-level columns + filters.
-- Works today, but policy evolution may require first-class identity/policy tables.
+1. Governance lifecycle is still internal-first.
+- Policy tables exist and are enforced, but lifecycle workflows (admin APIs, audit UX, policy rollout controls) are still limited.
 
 2. `MemoryClient` still carries broad responsibility.
 - Query service has improved separation, but some orchestration logic remains centralized.
@@ -52,14 +52,14 @@ Identify what is already production-grade in this repository and what is still m
 - Need ship-ready examples/adapters for target ecosystems.
 
 2. Governance messaging.
-- Need clear boundary between implemented shared-scope behavior and planned policy model.
+- Need clear boundary between implemented ACL enforcement and remaining admin/control-plane work.
 
 3. Evaluation breadth.
 - Novelty harness is strong for trust primitives, but broader usage benchmarks should expand over time.
 
 ## Priority Recommendations
 
-1. Introduce explicit policy primitives (read/write visibility rules) compatible with current scope envelope.
+1. Ship policy management surfaces (API + docs) on top of the new persisted ACL model.
 2. Continue extracting shared semantics into canonical service modules.
 3. Deliver at least one end-to-end external adapter integration as a reference implementation.
 4. Keep release-gate evidence current and linked from public docs.

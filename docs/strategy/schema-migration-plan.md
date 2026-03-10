@@ -6,8 +6,9 @@ Define migration strategy from the current schema baseline to future universal-g
 
 ## Current Baseline
 
-- Current schema version: `13`.
+- Current schema version: `14`.
 - Scope metadata persisted on episodes/topics/records.
+- Policy primitives persisted: `access_policies`, `policy_principals`, `policy_acl_entries`.
 - Trust tables already present: claims, sources, edges, events, anchors, contradiction log.
 
 ## Migration Principles
@@ -23,9 +24,10 @@ Define migration strategy from the current schema baseline to future universal-g
 
 ## Planned Migration Tracks
 
-### Track A: Policy primitives
+### Track A: Policy primitives (Shipped in v14)
 
-Add first-class policy tables (for example policy definitions and assignments) linked to existing scope metadata.
+First-class policy tables are now implemented and enforced in canonical client/service paths.
+Remaining work is policy administration surface and governance UX, not core storage/enforcement.
 
 ### Track B: Identity normalization
 

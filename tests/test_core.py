@@ -82,6 +82,54 @@ class TestDatabase:
                 }
                 assert expected.issubset(cols)
 
+    def test_policy_acl_tables_exist_after_schema_upgrade(self):
+        from consolidation_memory.database import ensure_schema, get_connection
+
+        ensure_schema()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        table_names = {str(row["name"]) for row in rows}
+        assert {"access_policies", "policy_principals", "policy_acl_entries"}.issubset(
+            table_names
+        )
+
+    def test_policy_acl_migration_from_v13_is_additive_and_preserves_data(self):
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+            get_episode,
+            insert_episode,
+        )
+
+        ensure_schema()
+        episode_id = insert_episode(content="pre-v14 migration episode")
+
+        with get_connection() as conn:
+            conn.execute("DROP TABLE IF EXISTS policy_acl_entries")
+            conn.execute("DROP TABLE IF EXISTS access_policies")
+            conn.execute("DROP TABLE IF EXISTS policy_principals")
+            conn.execute("DELETE FROM schema_version WHERE version >= 14")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (13, datetime.now(timezone.utc).isoformat()),
+            )
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            table_names = {str(row["name"]) for row in rows}
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+
+        assert {"access_policies", "policy_principals", "policy_acl_entries"}.issubset(
+            table_names
+        )
+        assert row is not None and row["v"] == CURRENT_SCHEMA_VERSION
+        episode = get_episode(episode_id)
+        assert episode is not None
+        assert episode["content"] == "pre-v14 migration episode"
+
     def test_get_connection_depth_restored_on_commit_failure(self):
         import consolidation_memory.database as database
 

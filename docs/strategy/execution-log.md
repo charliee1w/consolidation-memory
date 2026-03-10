@@ -2,18 +2,23 @@
 
 This log records meaningful strategy-level milestones and decisions.
 
-## 2026-03-10: Policy primitives enforced in scoped write paths
+## 2026-03-10: Persisted ACL policy enforcement shipped (schema v14)
 
-- Added `scope.policy` support (`read_visibility`, `write_mode`) to canonical scope schema and coercion.
-- Enforced scoped write deny mode in `MemoryClient` store paths (`write_mode=deny` returns `write_denied` without embedding/database writes).
-- Added adapter parity updates:
-  - MCP `memory_store` and `memory_store_batch` now accept optional `scope`.
-  - OpenAI tool schema now includes `scope.policy`.
-  - Cross-surface tests cover Python, MCP, REST, and OpenAI-dispatch write-deny behavior.
-- Contract change:
-  - `StoreResult.status` and `BatchStoreResult.status` now include `write_denied`.
+- Added first-class persisted policy/ACL entities:
+  - `access_policies`
+  - `policy_principals`
+  - `policy_acl_entries`
+- Implemented canonical policy resolution in `MemoryClient.resolve_scope()`:
+  - `scope.policy` remains backward-compatible fallback.
+  - persisted ACL is authoritative when matching rows exist.
+  - conflict rules are explicit: write deny-overrides-allow; read uses most restrictive visibility.
+- Enforced policy in canonical client/service paths:
+  - writes: `store`, `store_batch`, scoped variants.
+  - reads/queries: `recall`, `search`, claim browse/search.
+  - topic/record retrieval paths now enforce persisted policy as applicable (`browse`, `read_topic`, `timeline`).
+- Added cross-surface parity coverage (Python, MCP, REST, OpenAI dispatch) for persisted write-deny and read-visibility enforcement.
 - Remaining:
-  - Persisted policy/ACL entities are still planned (policy is currently envelope-level semantics, not standalone DB objects).
+  - no public policy administration APIs yet (policies currently managed via DB helpers/internal calls).
 
 ## 2026-03-08: Documentation reset for durability
 

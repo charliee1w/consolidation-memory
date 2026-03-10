@@ -52,6 +52,10 @@ from consolidation_memory.query_service import (
     EpisodeSearchQuery,
     RecallQuery,
 )
+from consolidation_memory.policy_engine import (
+    principal_tokens_for_scope,
+    resolve_effective_policy,
+)
 from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.types import (
     RUN_STATUS_FAILED,
@@ -302,8 +306,9 @@ class MemoryClient:
     ) -> ResolvedScopeEnvelope:
         """Resolve canonical scope input using backward-compatible defaults.
 
-        This method defines service-layer shape for universal scope handling
-        before persistent shared-scope tables are introduced.
+        Scope envelope policy remains supported for compatibility. When
+        persisted ACL rows match this scope/principal, they are authoritative
+        for read/write policy semantics.
         """
         from consolidation_memory.config import get_active_project
 
@@ -368,19 +373,53 @@ class MemoryClient:
             )
 
         parsed_policy = parsed_scope.policy or PolicyScope()
-        policy = PolicyScope(
+        envelope_policy = PolicyScope(
             read_visibility=parsed_policy.read_visibility,
             write_mode=parsed_policy.write_mode,
         )
 
-        return ResolvedScopeEnvelope(
+        resolved_scope = ResolvedScopeEnvelope(
             namespace=namespace,
             app_client=app_client,
             project=project,
             agent=agent,
             session=session,
-            policy=policy,
+            policy=envelope_policy,
         )
+
+        try:
+            from consolidation_memory.database import get_matching_policy_acl_entries
+
+            scope_row = _resolved_scope_to_db_row(resolved_scope)
+            principals = principal_tokens_for_scope(resolved_scope)
+            acl_rows = get_matching_policy_acl_entries(scope_row, principals)
+            effective = resolve_effective_policy(envelope_policy, acl_rows)
+            if effective.source == "persisted_acl" and effective.conflicts:
+                logger.info(
+                    "Resolved persisted ACL conflicts for namespace=%s project=%s: %s",
+                    namespace.slug,
+                    project.slug,
+                    ", ".join(effective.conflicts),
+                )
+            return ResolvedScopeEnvelope(
+                namespace=namespace,
+                app_client=app_client,
+                project=project,
+                agent=agent,
+                session=session,
+                policy=effective.policy,
+                policy_source=effective.source,
+                policy_acl_matches=effective.matched_entries,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Persisted policy lookup failed for namespace=%s project=%s; "
+                "falling back to scope policy: %s",
+                namespace.slug,
+                project.slug,
+                exc,
+            )
+            return resolved_scope
 
     def build_operation_context(
         self,
@@ -1035,13 +1074,16 @@ class MemoryClient:
         """Canonical claim-browse entrypoint for all adapters."""
         operation_context = self.build_operation_context(scope)
         scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
+        apply_scope_filter = (
+            scope is not None or operation_context.scope.policy_source == "persisted_acl"
+        )
         result = self._query_service.browse_claims(
             ClaimBrowseQuery(
                 claim_type=claim_type,
                 as_of=as_of,
                 limit=limit,
             ),
-            scope_filter=scope_filter if scope is not None else None,
+            scope_filter=scope_filter if apply_scope_filter else None,
         )
         logger.info(
             "Browse claims claim_type=%r as_of=%r returned %d results",
@@ -1076,6 +1118,9 @@ class MemoryClient:
         """Canonical claim-search entrypoint for all adapters."""
         operation_context = self.build_operation_context(scope)
         scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
+        apply_scope_filter = (
+            scope is not None or operation_context.scope.policy_source == "persisted_acl"
+        )
         result = self._query_service.search_claims(
             ClaimSearchQuery(
                 query=query,
@@ -1083,7 +1128,7 @@ class MemoryClient:
                 as_of=as_of,
                 limit=limit,
             ),
-            scope_filter=scope_filter if scope is not None else None,
+            scope_filter=scope_filter if apply_scope_filter else None,
         )
         logger.info(
             "Search claims query=%r claim_type=%r as_of=%r returned %d matches",
@@ -1616,8 +1661,14 @@ class MemoryClient:
         from consolidation_memory.config import get_config
 
         cfg = get_config()
-        topics = get_all_knowledge_topics()
-        records = get_all_active_records(include_expired=False)
+        resolved_scope = self.resolve_scope()
+        scope_filter = (
+            _resolved_scope_to_query_filter(resolved_scope)
+            if resolved_scope.policy_source == "persisted_acl"
+            else None
+        )
+        topics = get_all_knowledge_topics(scope=scope_filter)
+        records = get_all_active_records(include_expired=False, scope=scope_filter)
 
         # Group record counts by topic_id
         records_by_topic: dict[str, dict[str, int]] = {}
@@ -1658,8 +1709,16 @@ class MemoryClient:
             TopicDetailResult with the markdown content.
         """
         from consolidation_memory.config import get_config
+        from consolidation_memory.database import get_all_knowledge_topics
 
         cfg = get_config()
+        resolved_scope = self.resolve_scope()
+        if resolved_scope.policy_source == "persisted_acl":
+            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
+            scoped_topics = get_all_knowledge_topics(scope=scope_filter)
+            if not any(topic.get("filename") == filename for topic in scoped_topics):
+                return TopicDetailResult(status="not_found", filename=filename)
+
         filepath = (cfg.KNOWLEDGE_DIR / filename).resolve()
 
         # Path traversal guard
@@ -1694,8 +1753,15 @@ class MemoryClient:
 
         self._vector_store.reload_if_stale()
 
+        resolved_scope = self.resolve_scope()
+        scope_filter = (
+            _resolved_scope_to_query_filter(resolved_scope)
+            if resolved_scope.policy_source == "persisted_acl"
+            else None
+        )
+
         # Get all records including expired
-        all_records = get_all_active_records(include_expired=True)
+        all_records = get_all_active_records(include_expired=True, scope=scope_filter)
         if not all_records:
             return TimelineResult(
                 query=topic, message="No knowledge records found."

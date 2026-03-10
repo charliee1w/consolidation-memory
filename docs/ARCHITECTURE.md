@@ -67,13 +67,16 @@ flowchart TD
 
 ## Persistence Model
 
-`database.py` uses `CURRENT_SCHEMA_VERSION = 13`.
+`database.py` uses `CURRENT_SCHEMA_VERSION = 14`.
 
 Primary tables:
 
 - `episodes`
 - `knowledge_topics`
 - `knowledge_records`
+- `access_policies`
+- `policy_principals`
+- `policy_acl_entries`
 - `claims`
 - `claim_sources`
 - `claim_edges`
@@ -91,6 +94,10 @@ Key points:
 
 - Records and topics support temporal fields (`valid_from`, `valid_until` on records; event timeline for claims).
 - Scope columns are persisted on episodes/topics/records for namespace/project/app/agent/session partitioning.
+- Policy/ACL entities are first-class persisted rows:
+  - `access_policies` define scope selectors (nullable fields behave as wildcards).
+  - `policy_principals` define reusable principal identities.
+  - `policy_acl_entries` bind principals to policy scopes with `write_mode` and/or `read_visibility`.
 - FTS tables support keyword recall fallback and hybrid scoring.
 
 ## Retrieval Semantics
@@ -165,6 +172,13 @@ Scheduler state is persisted in `consolidation_scheduler` to support determinist
 Default behavior remains compatible with legacy single-project usage.
 
 When scope is provided, writes include canonical scope metadata and reads apply scope filters. Shared namespace modes can intentionally widen visibility while keeping private defaults available.
+
+Policy precedence and conflict semantics:
+
+- `scope.policy` remains supported for backward compatibility.
+- Persisted ACL entries are authoritative when present for the resolved scope/principal.
+- Write conflicts use deny-overrides-allow (`deny` wins).
+- Read visibility conflicts resolve to the most restrictive level (`private` < `project` < `namespace`).
 
 ## How To Verify This Document
 

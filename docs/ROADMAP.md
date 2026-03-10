@@ -19,7 +19,7 @@ Already implemented:
 ## Near-Term Priorities
 
 1. Scope hardening and policy semantics.
-- Move from scope metadata + filtering to stricter policy enforcement primitives.
+- Persisted ACL enforcement shipped in schema v14; next focus is policy administration UX/API and governance tooling.
 
 2. Adapter maturity.
 - Strengthen cross-surface contracts so MCP/REST/OpenAI/Python remain behaviorally aligned under new features.

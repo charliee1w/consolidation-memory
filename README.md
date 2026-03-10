@@ -192,6 +192,10 @@ Optional `scope.policy` controls:
 - `read_visibility`: `private` (default), `project`, `namespace`
 - `write_mode`: `allow` (default), `deny`
 
+Persisted ACL entities are also supported (`access_policies`, `policy_principals`, `policy_acl_entries`).
+When persisted ACL rows match the resolved scope/principal, they are authoritative over `scope.policy`.
+Conflict rules: write `deny` overrides `allow`; read visibility resolves to the most restrictive level.
+
 ## Storage Layout
 
 Data is under `platformdirs.user_data_dir("consolidation_memory")/projects/<project>/`.

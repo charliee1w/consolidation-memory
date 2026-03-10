@@ -13,7 +13,7 @@ Define current architecture boundaries and target structure for universal shared
 
 ### Storage
 
-- SQLite for relational state (`memory.db`, schema v13).
+- SQLite for relational state (`memory.db`, schema v14).
 - FAISS for semantic retrieval vectors.
 - Markdown topic files for human-readable consolidated knowledge.
 
@@ -30,7 +30,7 @@ Define current architecture boundaries and target structure for universal shared
 ## Target Architecture (Incremental)
 
 1. Scope and policy plane.
-- Move from pure scope filtering toward explicit policy enforcement primitives.
+- Continue evolving from scope filtering + persisted ACL enforcement toward richer governance policy management APIs.
 
 2. Canonical service layer.
 - Keep all retrieval and trust semantics in service modules consumed by every adapter.
@@ -58,7 +58,7 @@ Define current architecture boundaries and target structure for universal shared
 
 | Area | Current | Target |
 | --- | --- | --- |
-| Scope | Metadata + filters | Metadata + policy semantics |
+| Scope | Metadata + persisted ACL semantics | Metadata + richer governance policy semantics |
 | Query semantics | Mostly centralized | Fully centralized and adapter-agnostic |
 | Adapters | Core surfaces only | Core + external ecosystem adapters |
 | Governance | Operational basics | Rich policy + observability model |

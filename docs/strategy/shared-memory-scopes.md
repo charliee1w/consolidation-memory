@@ -17,13 +17,19 @@ The canonical scope envelope includes:
 
 `MemoryClient.resolve_scope()` fills defaults when fields are omitted.
 
-## Persisted Shape (Schema v13)
+## Persisted Shape (Schema v14)
 
 Scope columns are persisted on:
 
 - `episodes`
 - `knowledge_topics`
 - `knowledge_records`
+
+Policy/ACL entities are persisted on:
+
+- `access_policies` (scope-targeted policy containers)
+- `policy_principals` (principal identity rows)
+- `policy_acl_entries` (principal-to-policy bindings with read/write controls)
 
 Column groups:
 
@@ -47,16 +53,16 @@ This keeps legacy single-project usage working.
 - Writes persist resolved scope columns.
 - Reads apply scope filters built from resolved scope.
 - Namespace sharing modes `shared`, `team`, and `managed` intentionally broaden app-client isolation behavior.
-- Policy controls are additive:
-  - `policy.write_mode=deny` blocks scoped write operations.
-  - `policy.read_visibility=project` allows cross-app reads within a project.
-  - `policy.read_visibility=namespace` allows namespace-wide reads across projects.
+- Policy controls are resolved in this order:
+  - `scope.policy` remains a compatibility fallback.
+  - persisted ACL rows are authoritative when present for the resolved scope/principal.
+- Conflict resolution:
+  - write: deny-overrides-allow (`deny` wins)
+  - read visibility: most restrictive visibility wins (`private` over `project` over `namespace`)
 
 ## Privacy Boundary Today
 
-Current privacy boundary is enforced by scope-filter + policy semantics in service/client logic.
-
-Future work should introduce explicit policy/ACL semantics for stronger governance.
+Current privacy boundary is enforced by canonical service/client logic using scope filters plus persisted ACL policy resolution.
 
 ## Verification
 

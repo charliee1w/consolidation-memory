@@ -186,7 +186,7 @@ def detect_code_drift(
     repo_path: str | PathLike[str] | None = None,
 ) -> DriftOutput:
     """Detect code drift and challenge impacted claims."""
-    from consolidation_memory.database import insert_claim_event, mark_claims_challenged_by_anchors
+    from consolidation_memory.database import insert_claim_event, mark_claims_challenged_by_ids
 
     repo_dir = _resolve_repo_dir(repo_path)
     changed_files = get_changed_files(base_ref=base_ref, repo_path=repo_dir)
@@ -205,18 +205,7 @@ def detect_code_drift(
             "impacts": [],
         }
 
-    lookup_anchors: list[dict[str, str]] = []
-    seen_lookup_pairs: set[tuple[str, str]] = set()
-    for anchor in checked_anchors:
-        path_value = anchor["anchor_value"]
-        for candidate in _build_path_anchor_candidates(path_value, repo_dir):
-            pair = ("path", candidate)
-            if pair in seen_lookup_pairs:
-                continue
-            seen_lookup_pairs.add(pair)
-            lookup_anchors.append({"anchor_type": pair[0], "anchor_value": pair[1]})
-
-    challenged_claim_ids = sorted(mark_claims_challenged_by_anchors(lookup_anchors))
+    challenged_claim_ids = mark_claims_challenged_by_ids(impacted_claim_ids)
     challenged_ids_set = set(challenged_claim_ids)
 
     impacts: list[DriftClaimImpact] = []

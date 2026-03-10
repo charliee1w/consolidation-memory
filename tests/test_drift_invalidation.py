@@ -142,3 +142,56 @@ class TestDriftDetection:
         first_details = json.loads(event_rows[0]["details"])
         assert first_details["base_ref"] == "origin/main"
         assert first_details["changed_files"] == ["src/app.py"]
+
+    def test_detect_code_drift_challenges_by_impacted_ids(self, monkeypatch, tmp_data_dir):
+        from consolidation_memory import drift
+
+        checked_anchors = [
+            {"anchor_type": "path", "anchor_value": "src/app.py"},
+            {"anchor_type": "path", "anchor_value": "src/lib.py"},
+        ]
+        claim_rows = {
+            "claim-a": {"id": "claim-a", "status": "active"},
+            "claim-b": {"id": "claim-b", "status": "challenged"},
+        }
+        matched = {
+            "claim-a": {("path", "src/app.py")},
+            "claim-b": {("path", "src/lib.py")},
+        }
+
+        monkeypatch.setattr(
+            drift,
+            "get_changed_files",
+            lambda base_ref=None, repo_path=None: ["src/app.py", "src/lib.py"],
+        )
+        monkeypatch.setattr(
+            drift,
+            "map_changed_files_to_claims",
+            lambda changed_files, repo_path=None: (checked_anchors, claim_rows, matched),
+        )
+        monkeypatch.setattr(
+            drift,
+            "_build_path_anchor_candidates",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected candidate expansion")),
+        )
+
+        called: dict[str, list[str]] = {}
+
+        def fake_mark_claims_challenged_by_ids(claim_ids, challenged_at=None):
+            del challenged_at
+            called["claim_ids"] = list(claim_ids)
+            return ["claim-a"]
+
+        monkeypatch.setattr(
+            "consolidation_memory.database.mark_claims_challenged_by_ids",
+            fake_mark_claims_challenged_by_ids,
+        )
+        monkeypatch.setattr(
+            "consolidation_memory.database.insert_claim_event",
+            lambda **kwargs: "event-id",
+        )
+
+        result = drift.detect_code_drift(base_ref="origin/main", repo_path=tmp_data_dir)
+
+        assert called["claim_ids"] == ["claim-a", "claim-b"]
+        assert result["challenged_claim_ids"] == ["claim-a"]

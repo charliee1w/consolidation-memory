@@ -390,6 +390,7 @@ def _search_claims(
     try:
         if query_vec is None:
             query_vec = backends.encode_query(query)
+        claim_vecs: np.ndarray | None
         if as_of:
             # Temporal snapshots vary by as_of; embed ad-hoc to avoid unbounded cache keys.
             claim_vecs = backends.encode_documents(claim_texts)

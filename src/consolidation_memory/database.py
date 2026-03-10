@@ -1926,35 +1926,99 @@ def get_claims_by_anchor_values(
     rows: list[dict[str, Any]] = []
     remaining = max_results
     # Keep chunks well under SQLite's default parameter limit.
-    for start in range(0, len(deduped_values), 250):
-        if remaining is not None and remaining <= 0:
-            break
-        chunk = deduped_values[start:start + 250]
-        placeholders = ",".join("?" for _ in chunk)
-        where = " AND ".join([*common_conditions, f"ea.anchor_value IN ({placeholders})"])
-        query_params: list[Any] = [*params_prefix, *chunk]
-        sql = f"""SELECT DISTINCT
-                    c.id, c.claim_type, c.canonical_text, c.payload, c.status,
-                    c.confidence, c.valid_from, c.valid_until, c.created_at, c.updated_at,
-                    ea.anchor_value
-                FROM claims c
-                JOIN claim_sources cs ON cs.claim_id = c.id
-                JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
-                WHERE {where}
-                ORDER BY c.updated_at DESC, c.id ASC"""  # nosec B608
-        if remaining is not None:
-            sql += " LIMIT ?"
-            query_params.append(remaining)
+    with get_connection() as conn:
+        for start in range(0, len(deduped_values), 250):
+            if remaining is not None and remaining <= 0:
+                break
+            chunk = deduped_values[start:start + 250]
+            placeholders = ",".join("?" for _ in chunk)
+            where = " AND ".join([*common_conditions, f"ea.anchor_value IN ({placeholders})"])
+            query_params: list[Any] = [*params_prefix, *chunk]
+            sql = f"""SELECT DISTINCT
+                        c.id, c.claim_type, c.canonical_text, c.payload, c.status,
+                        c.confidence, c.valid_from, c.valid_until, c.created_at, c.updated_at,
+                        ea.anchor_value
+                    FROM claims c
+                    JOIN claim_sources cs ON cs.claim_id = c.id
+                    JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
+                    WHERE {where}
+                    ORDER BY c.updated_at DESC, c.id ASC"""  # nosec B608
+            if remaining is not None:
+                sql += " LIMIT ?"
+                query_params.append(remaining)
 
-        with get_connection() as conn:
             chunk_rows = conn.execute(sql, query_params).fetchall()
 
-        mapped_chunk = [dict(row) for row in chunk_rows]
-        rows.extend(mapped_chunk)
-        if remaining is not None:
-            remaining -= len(mapped_chunk)
+            mapped_chunk = [dict(row) for row in chunk_rows]
+            rows.extend(mapped_chunk)
+            if remaining is not None:
+                remaining -= len(mapped_chunk)
 
     return rows
+
+
+def mark_claims_challenged_by_ids(
+    claim_ids: Sequence[str],
+    challenged_at: str | None = None,
+) -> list[str]:
+    """Mark active claims as challenged for a known set of impacted claim IDs."""
+    deduped_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for claim_id in claim_ids:
+        token = str(claim_id or "").strip()
+        if not token or token in seen_ids:
+            continue
+        seen_ids.add(token)
+        deduped_ids.append(token)
+    if not deduped_ids:
+        return []
+
+    challenged_ts = _normalize_utc_timestamp(challenged_at or _now())
+    challenged_ids: list[str] = []
+    with get_connection() as conn:
+        for start in range(0, len(deduped_ids), 250):
+            chunk = deduped_ids[start:start + 250]
+            placeholders = ",".join("?" for _ in chunk)
+            active_rows = conn.execute(
+                f"""SELECT id
+                    FROM claims
+                    WHERE id IN ({placeholders})
+                      AND status = 'active'
+                      AND julianday(valid_from) <= julianday(?)
+                      AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))
+                    ORDER BY id ASC""",  # nosec B608
+                [*chunk, challenged_ts, challenged_ts],
+            ).fetchall()
+            active_ids = [row["id"] for row in active_rows]
+            if not active_ids:
+                continue
+
+            active_placeholders = ",".join("?" for _ in active_ids)
+            conn.execute(
+                f"""UPDATE claims
+                    SET status = 'challenged', updated_at = ?
+                    WHERE id IN ({active_placeholders})
+                      AND status = 'active'""",  # nosec B608
+                [challenged_ts, *active_ids],
+            )
+            conn.executemany(
+                """INSERT INTO claim_events
+                   (id, claim_id, event_type, details, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [
+                    (
+                        str(uuid.uuid4()),
+                        claim_id,
+                        "challenged",
+                        json.dumps({"challenged_at": challenged_ts}),
+                        challenged_ts,
+                    )
+                    for claim_id in active_ids
+                ],
+            )
+            challenged_ids.extend(active_ids)
+
+    return sorted(challenged_ids)
 
 
 def mark_claims_challenged_by_anchors(

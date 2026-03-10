@@ -13,6 +13,7 @@ from consolidation_memory.database import (
     insert_claim_sources,
     insert_episode,
     insert_episode_anchors,
+    mark_claims_challenged_by_ids,
     mark_claims_challenged_by_anchors,
     upsert_claim,
 )
@@ -172,6 +173,53 @@ class TestClaimGraphMethods:
             ).fetchone()
         assert row is not None
         assert row["status"] == "active"
+
+    def test_mark_claims_challenged_by_ids_updates_active_only(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-active-id",
+            claim_type="fact",
+            canonical_text="active claim",
+            payload={"k": "active"},
+            status="active",
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-future-id",
+            claim_type="fact",
+            canonical_text="future claim",
+            payload={"k": "future"},
+            status="active",
+            valid_from="2026-03-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-already-challenged-id",
+            claim_type="fact",
+            canonical_text="challenged claim",
+            payload={"k": "challenged"},
+            status="challenged",
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+
+        challenged_ids = mark_claims_challenged_by_ids(
+            ["claim-active-id", "claim-future-id", "claim-already-challenged-id"],
+            challenged_at="2026-02-01T00:00:00+00:00",
+        )
+
+        assert challenged_ids == ["claim-active-id"]
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, status FROM claims WHERE id IN (?, ?, ?) ORDER BY id",
+                ("claim-active-id", "claim-future-id", "claim-already-challenged-id"),
+            ).fetchall()
+            challenged_events = conn.execute(
+                "SELECT claim_id FROM claim_events WHERE event_type = 'challenged' ORDER BY claim_id",
+            ).fetchall()
+        status_by_id = {row["id"]: row["status"] for row in rows}
+        assert status_by_id["claim-active-id"] == "challenged"
+        assert status_by_id["claim-future-id"] == "active"
+        assert status_by_id["claim-already-challenged-id"] == "challenged"
+        assert [row["claim_id"] for row in challenged_events] == ["claim-active-id"]
 
     def test_claim_edge_insert_read(self, tmp_data_dir):
         ensure_schema()

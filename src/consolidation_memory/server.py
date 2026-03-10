@@ -87,10 +87,8 @@ _warmup_task: asyncio.Task | None = None
 _idle_task: asyncio.Task | None = None
 _active_tool_calls = 0
 _last_activity_monotonic = time.monotonic()
-_blocking_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=_MCP_BLOCKING_WORKERS,
-    thread_name_prefix="consolidation_memory_mcp",
-)
+_blocking_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_blocking_executor_lock = threading.Lock()
 
 
 def _drift_timeout_seconds() -> float:
@@ -151,6 +149,17 @@ def _touch_activity() -> None:
     _last_activity_monotonic = time.monotonic()
 
 
+def _get_blocking_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _blocking_executor
+    with _blocking_executor_lock:
+        if _blocking_executor is None:
+            _blocking_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=_MCP_BLOCKING_WORKERS,
+                thread_name_prefix="consolidation_memory_mcp",
+            )
+        return _blocking_executor
+
+
 def _begin_tool_call() -> None:
     global _active_tool_calls
     _active_tool_calls += 1
@@ -174,7 +183,7 @@ async def _run_blocking(
     _touch_activity()
     loop = asyncio.get_running_loop()
     work = functools.partial(func, *args, **kwargs)
-    future = loop.run_in_executor(_blocking_executor, work)
+    future = loop.run_in_executor(_get_blocking_executor(), work)
     if timeout is None:
         return await future
     return await asyncio.wait_for(future, timeout=timeout)
@@ -385,7 +394,7 @@ def _warm_recall_caches(client=None) -> None:
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Log startup metadata and close any initialized client on shutdown."""
-    global _client, _warmup_task, _idle_task
+    global _blocking_executor, _client, _warmup_task, _idle_task
     global _client_initializing, _client_init_owner_thread_id, _client_init_error
     global _server_shutting_down, _server_lifecycle_epoch
 
@@ -429,6 +438,13 @@ async def lifespan(server: FastMCP):
     if _client is not None:
         _client.close()
         _client = None
+    from consolidation_memory.database import close_all_connections
+    close_all_connections()
+    with _blocking_executor_lock:
+        executor = _blocking_executor
+        _blocking_executor = None
+    if executor is not None:
+        executor.shutdown(wait=True, cancel_futures=True)
     with _client_init_cond:
         _client_initializing = False
         _client_init_owner_thread_id = None

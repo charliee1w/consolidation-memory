@@ -163,38 +163,62 @@ class CanonicalQueryService:
         from consolidation_memory.database import get_active_claims, get_claims_as_of
 
         bounded_limit = max(1, min(query.limit, 200))
-        if query.as_of:
-            rows = get_claims_as_of(
-                as_of=query.as_of,
+        page_size = bounded_limit
+        if scope_filter:
+            page_size = min(max(bounded_limit * 5, 50), 1000)
+
+        def _fetch_rows(*, offset: int, limit: int) -> list[dict[str, object]]:
+            if query.as_of:
+                return get_claims_as_of(
+                    as_of=query.as_of,
+                    claim_type=query.claim_type,
+                    limit=limit,
+                    offset=offset,
+                )
+            return get_active_claims(
                 claim_type=query.claim_type,
-                limit=bounded_limit,
+                limit=limit,
+                offset=offset,
             )
+
+        def _rows_to_claims(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+            claims: list[dict[str, object]] = []
+            for row in rows:
+                claims.append({
+                    "id": row.get("id", ""),
+                    "claim_type": row.get("claim_type", ""),
+                    "canonical_text": row.get("canonical_text", ""),
+                    "payload": parse_claim_payload(row.get("payload")),
+                    "status": row.get("status", ""),
+                    "confidence": row.get("confidence", 0.0),
+                    "valid_from": row.get("valid_from"),
+                    "valid_until": row.get("valid_until"),
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                })
+            return claims
+
+        if not scope_filter:
+            rows = _fetch_rows(offset=0, limit=page_size)
+            scoped_claims = _rows_to_claims(rows)
         else:
-            rows = get_active_claims(
-                claim_type=query.claim_type,
-                limit=bounded_limit,
-            )
-
-        claims: list[dict[str, object]] = []
-        for row in rows:
-            claims.append({
-                "id": row.get("id", ""),
-                "claim_type": row.get("claim_type", ""),
-                "canonical_text": row.get("canonical_text", ""),
-                "payload": parse_claim_payload(row.get("payload")),
-                "status": row.get("status", ""),
-                "confidence": row.get("confidence", 0.0),
-                "valid_from": row.get("valid_from"),
-                "valid_until": row.get("valid_until"),
-                "created_at": row.get("created_at"),
-                "updated_at": row.get("updated_at"),
-            })
-
-        scoped_claims = filter_claims_for_scope(claims, scope_filter)
+            scoped_claims: list[dict[str, object]] = []
+            offset = 0
+            while len(scoped_claims) < bounded_limit:
+                rows = _fetch_rows(offset=offset, limit=page_size)
+                if not rows:
+                    break
+                remaining = bounded_limit - len(scoped_claims)
+                scoped_claims.extend(
+                    filter_claims_for_scope(_rows_to_claims(rows), scope_filter)[:remaining]
+                )
+                offset += len(rows)
+                if len(rows) < page_size:
+                    break
 
         return ClaimBrowseResult(
-            claims=scoped_claims,
-            total=len(scoped_claims),
+            claims=scoped_claims[:bounded_limit],
+            total=min(len(scoped_claims), bounded_limit),
             claim_type=query.claim_type,
             as_of=query.as_of,
         )

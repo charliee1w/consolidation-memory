@@ -41,6 +41,20 @@ class TestClientLifecycle:
         c1.close()
         c2.close()
 
+    def test_close_only_closes_shared_db_handles_after_last_instance(self):
+        from consolidation_memory.database import ensure_schema
+        ensure_schema()
+
+        from consolidation_memory.client import MemoryClient
+
+        with patch("consolidation_memory.database.close_all_connections") as mock_close:
+            c1 = MemoryClient(auto_consolidate=False)
+            c2 = MemoryClient(auto_consolidate=False)
+            c1.close()
+            assert mock_close.call_count == 0
+            c2.close()
+            assert mock_close.call_count == 1
+
 
 class TestClientScopeModel:
     def test_resolve_scope_defaults_to_legacy_single_project(self):
@@ -603,10 +617,16 @@ class TestClientRecall:
 
 class TestClientClaims:
     def test_browse_claims_supports_as_of(self):
-        from consolidation_memory.database import ensure_schema, upsert_claim
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_claim_sources,
+            insert_episode,
+            upsert_claim,
+        )
         from consolidation_memory.client import MemoryClient
 
         ensure_schema()
+        episode_id = insert_episode(content="claim provenance seed")
         upsert_claim(
             claim_id="claim-client-old",
             claim_type="fact",
@@ -615,6 +635,7 @@ class TestClientClaims:
             valid_from="2025-01-01T00:00:00+00:00",
             valid_until="2025-06-01T00:00:00+00:00",
         )
+        insert_claim_sources("claim-client-old", [{"source_episode_id": episode_id}])
         upsert_claim(
             claim_id="claim-client-new",
             claim_type="fact",
@@ -622,6 +643,7 @@ class TestClientClaims:
             payload={"subject": "python", "info": "3.12"},
             valid_from="2025-07-01T00:00:00+00:00",
         )
+        insert_claim_sources("claim-client-new", [{"source_episode_id": episode_id}])
 
         client = MemoryClient(auto_consolidate=False)
         try:
@@ -636,10 +658,16 @@ class TestClientClaims:
             client.close()
 
     def test_search_claims_matches_canonical_text(self):
-        from consolidation_memory.database import ensure_schema, upsert_claim
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_claim_sources,
+            insert_episode,
+            upsert_claim,
+        )
         from consolidation_memory.client import MemoryClient
 
         ensure_schema()
+        episode_id = insert_episode(content="claim search provenance")
         upsert_claim(
             claim_id="claim-client-search",
             claim_type="procedure",
@@ -647,6 +675,7 @@ class TestClientClaims:
             payload={"trigger": "run api", "steps": "uvicorn main:app --reload"},
             valid_from="2025-01-01T00:00:00+00:00",
         )
+        insert_claim_sources("claim-client-search", [{"source_episode_id": episode_id}])
 
         client = MemoryClient(auto_consolidate=False)
         try:
@@ -654,6 +683,61 @@ class TestClientClaims:
             assert result.total_matches >= 1
             assert any(c["id"] == "claim-client-search" for c in result.claims)
             assert "relevance" in result.claims[0]
+        finally:
+            client.close()
+
+    def test_default_claim_queries_enforce_private_scope(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_claim_sources,
+            insert_episode,
+            upsert_claim,
+        )
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        visible_episode_id = insert_episode(
+            content="visible provenance",
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "legacy_client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        hidden_episode_id = insert_episode(
+            content="hidden provenance",
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+        upsert_claim(
+            claim_id="claim-visible",
+            claim_type="fact",
+            canonical_text="claim visible to legacy client",
+            payload={"subject": "visible"},
+            valid_from="2025-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources("claim-visible", [{"source_episode_id": visible_episode_id}])
+        upsert_claim(
+            claim_id="claim-hidden",
+            claim_type="fact",
+            canonical_text="claim hidden from legacy client",
+            payload={"subject": "hidden"},
+            valid_from="2025-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources("claim-hidden", [{"source_episode_id": hidden_episode_id}])
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            browse_result = client.browse_claims(claim_type="fact")
+            assert {claim["id"] for claim in browse_result.claims} == {"claim-visible"}
+
+            search_result = client.search_claims(query="claim", claim_type="fact")
+            assert {claim["id"] for claim in search_result.claims} == {"claim-visible"}
         finally:
             client.close()
 
@@ -969,5 +1053,150 @@ class TestClientCorrect:
             assert len(all_records) == 2
             old = next(r for r in all_records if json.loads(r["content"]).get("info") == "3.12")
             assert old["valid_until"] is not None
+        finally:
+            client.close()
+
+    def test_correct_rejects_topics_outside_current_scope(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import ensure_schema, upsert_knowledge_topic
+
+        ensure_schema()
+        cfg = get_config()
+        filename = "foreign.md"
+        original = "---\ntitle: Foreign\nsummary: Hidden\n---\n\n## Facts\n- **Foreign**: hidden\n"
+        (cfg.KNOWLEDGE_DIR / filename).write_text(original, encoding="utf-8")
+        upsert_knowledge_topic(
+            filename=filename,
+            title="Foreign",
+            summary="Hidden",
+            source_episodes=[],
+            fact_count=1,
+            confidence=0.8,
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+
+        mock_llm = MagicMock()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch("consolidation_memory.backends.get_llm_backend", return_value=mock_llm):
+                result = client.correct(filename, "Should not be applied")
+
+            assert result.status == "not_found"
+            assert (cfg.KNOWLEDGE_DIR / filename).read_text(encoding="utf-8") == original
+            mock_llm.generate.assert_not_called()
+        finally:
+            client.close()
+
+    @patch("consolidation_memory.backends.encode_query")
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_topic_surfaces_apply_default_scope_filter(self, mock_embed_docs, mock_embed_query):
+        import numpy as np
+
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_knowledge_records,
+            upsert_knowledge_topic,
+        )
+
+        ensure_schema()
+        cfg = get_config()
+        shared_vec = _make_normalized_vec(seed=7)
+        mock_embed_query.return_value = shared_vec
+        mock_embed_docs.side_effect = lambda texts: np.vstack([shared_vec for _ in texts]).astype("float32")
+
+        visible_filename = "visible.md"
+        hidden_filename = "hidden.md"
+        (cfg.KNOWLEDGE_DIR / visible_filename).write_text(
+            "---\ntitle: Visible\nsummary: Visible summary\n---\n\n## Facts\n- **Python**: 3.12\n",
+            encoding="utf-8",
+        )
+        (cfg.KNOWLEDGE_DIR / hidden_filename).write_text(
+            "---\ntitle: Hidden\nsummary: Hidden summary\n---\n\n## Facts\n- **Python**: 9.99\n",
+            encoding="utf-8",
+        )
+
+        visible_topic_id = upsert_knowledge_topic(
+            filename=visible_filename,
+            title="Visible",
+            summary="Visible summary",
+            source_episodes=[],
+            fact_count=1,
+            confidence=0.8,
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "legacy_client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        hidden_topic_id = upsert_knowledge_topic(
+            filename=hidden_filename,
+            title="Hidden",
+            summary="Hidden summary",
+            source_episodes=[],
+            fact_count=1,
+            confidence=0.8,
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+        insert_knowledge_records(
+            visible_topic_id,
+            [{
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Python", "info": "3.12"},
+                "embedding_text": "Python 3.12 visible scope",
+                "confidence": 0.8,
+            }],
+            source_episodes=[],
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "legacy_client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        insert_knowledge_records(
+            hidden_topic_id,
+            [{
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Python", "info": "9.99"},
+                "embedding_text": "Python 9.99 hidden scope",
+                "confidence": 0.8,
+            }],
+            source_episodes=[],
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            browse_result = client.browse()
+            assert {topic["filename"] for topic in browse_result.topics} == {visible_filename}
+
+            visible_topic = client.read_topic(visible_filename)
+            assert visible_topic.status == "ok"
+
+            hidden_topic = client.read_topic(hidden_filename)
+            assert hidden_topic.status == "not_found"
+
+            timeline_result = client.timeline("Python")
+            assert timeline_result.total >= 1
+            assert {entry["topic_filename"] for entry in timeline_result.entries} == {visible_filename}
         finally:
             client.close()

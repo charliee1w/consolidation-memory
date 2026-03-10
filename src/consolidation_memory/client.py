@@ -215,6 +215,9 @@ class MemoryClient:
             (respects ``CONSOLIDATION_AUTO_RUN`` config).
     """
 
+    _instance_lock = threading.Lock()
+    _live_instances = 0
+
     def __init__(self, auto_consolidate: bool = True) -> None:
         from consolidation_memory.config import get_config
         from consolidation_memory.database import ensure_schema
@@ -253,6 +256,7 @@ class MemoryClient:
         self._scheduler_signal_lock = threading.Lock()
         self._recall_miss_events: deque[float] = deque(maxlen=256)
         self._recall_fallback_events: deque[float] = deque(maxlen=256)
+        self._closed = False
 
         if self._auto_consolidate_enabled and cfg.CONSOLIDATION_AUTO_RUN:
             self._start_consolidation_thread()
@@ -268,29 +272,52 @@ class MemoryClient:
         if cfg.PLUGINS_ENABLED:
             get_plugin_manager().load_plugins()
         get_plugin_manager().fire("on_startup", client=self)
+        with type(self)._instance_lock:
+            type(self)._live_instances += 1
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def close(self) -> None:
         """Stop background threads. Call when done."""
-        from consolidation_memory.plugins import get_plugin_manager
-        get_plugin_manager().fire("on_shutdown")
+        if self._closed:
+            return
 
-        self._consolidation_stop.set()
-        if self._consolidation_thread is not None:
-            self._consolidation_thread.join(timeout=30)
-            if self._consolidation_thread.is_alive():
-                logger.warning(
-                    "Consolidation thread did not stop within 30s; "
-                    "it will terminate when the process exits (daemon thread)."
-                )
-            self._consolidation_thread = None
-        if self._consolidation_pool is not None:
-            self._consolidation_pool.shutdown(wait=True, cancel_futures=True)
-            self._consolidation_pool = None
-        if self._llm_executor is not None:
-            self._llm_executor.shutdown(wait=True, cancel_futures=True)
-            self._llm_executor = None
+        should_close_connections = False
+
+        from consolidation_memory.plugins import get_plugin_manager
+        from consolidation_memory.database import close_all_connections
+
+        try:
+            try:
+                get_plugin_manager().fire("on_shutdown")
+            except Exception:
+                logger.warning("Plugin shutdown hook failed", exc_info=True)
+
+            self._consolidation_stop.set()
+            if self._consolidation_thread is not None:
+                self._consolidation_thread.join(timeout=30)
+                if self._consolidation_thread.is_alive():
+                    logger.warning(
+                        "Consolidation thread did not stop within 30s; "
+                        "it will terminate when the process exits (daemon thread)."
+                    )
+                self._consolidation_thread = None
+            if self._consolidation_pool is not None:
+                self._consolidation_pool.shutdown(wait=True, cancel_futures=True)
+                self._consolidation_pool = None
+            if self._llm_executor is not None:
+                self._llm_executor.shutdown(wait=True, cancel_futures=True)
+                self._llm_executor = None
+        finally:
+            with type(self)._instance_lock:
+                if not self._closed:
+                    self._closed = True
+                    if type(self)._live_instances > 0:
+                        type(self)._live_instances -= 1
+                    should_close_connections = type(self)._live_instances == 0
+
+            if should_close_connections:
+                close_all_connections()
 
     def __enter__(self) -> MemoryClient:
         return self
@@ -1074,16 +1101,13 @@ class MemoryClient:
         """Canonical claim-browse entrypoint for all adapters."""
         operation_context = self.build_operation_context(scope)
         scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
-        apply_scope_filter = (
-            scope is not None or operation_context.scope.policy_source == "persisted_acl"
-        )
         result = self._query_service.browse_claims(
             ClaimBrowseQuery(
                 claim_type=claim_type,
                 as_of=as_of,
                 limit=limit,
             ),
-            scope_filter=scope_filter if apply_scope_filter else None,
+            scope_filter=scope_filter,
         )
         logger.info(
             "Browse claims claim_type=%r as_of=%r returned %d results",
@@ -1118,9 +1142,6 @@ class MemoryClient:
         """Canonical claim-search entrypoint for all adapters."""
         operation_context = self.build_operation_context(scope)
         scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
-        apply_scope_filter = (
-            scope is not None or operation_context.scope.policy_source == "persisted_acl"
-        )
         result = self._query_service.search_claims(
             ClaimSearchQuery(
                 query=query,
@@ -1128,7 +1149,7 @@ class MemoryClient:
                 as_of=as_of,
                 limit=limit,
             ),
-            scope_filter=scope_filter if apply_scope_filter else None,
+            scope_filter=scope_filter,
         )
         logger.info(
             "Search claims query=%r claim_type=%r as_of=%r returned %d matches",
@@ -1493,6 +1514,9 @@ class MemoryClient:
         from consolidation_memory.backends import get_llm_backend
 
         cfg = get_config()
+        resolved_scope = self.resolve_scope()
+        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
+
         # Validate filename doesn't escape KNOWLEDGE_DIR (path traversal)
         filepath = (cfg.KNOWLEDGE_DIR / topic_filename).resolve()
         if not filepath.is_relative_to(cfg.KNOWLEDGE_DIR.resolve()):
@@ -1502,6 +1526,13 @@ class MemoryClient:
                 message="Invalid filename: path traversal detected.",
             )
         if not filepath.exists():
+            return CorrectResult(status="not_found", filename=topic_filename)
+
+        topics = get_all_knowledge_topics()
+        scoped_topics = get_all_knowledge_topics(scope=scope_filter)
+        if any(t.get("filename") == topic_filename for t in topics) and not any(
+            t.get("filename") == topic_filename for t in scoped_topics
+        ):
             return CorrectResult(status="not_found", filename=topic_filename)
 
         llm = get_llm_backend()
@@ -1557,8 +1588,7 @@ class MemoryClient:
         meta = parsed["meta"]
         body = parsed.get("body", "")
 
-        topics = get_all_knowledge_topics()
-        existing_topic = next((t for t in topics if t["filename"] == topic_filename), None)
+        existing_topic = next((t for t in scoped_topics if t["filename"] == topic_filename), None)
         source_eps = parse_json_list(existing_topic.get("source_episodes") if existing_topic else None)
         existing_confidence = float(existing_topic["confidence"]) if existing_topic else 0.8
         if existing_topic is not None:
@@ -1635,7 +1665,8 @@ class MemoryClient:
                 scope=topic_scope,
             )
 
-        from consolidation_memory import topic_cache as _tc, record_cache as _rc
+        from consolidation_memory import claim_cache as _cc, topic_cache as _tc, record_cache as _rc
+        _cc.invalidate()
         _tc.invalidate()
         _rc.invalidate()
 
@@ -1662,11 +1693,7 @@ class MemoryClient:
 
         cfg = get_config()
         resolved_scope = self.resolve_scope()
-        scope_filter = (
-            _resolved_scope_to_query_filter(resolved_scope)
-            if resolved_scope.policy_source == "persisted_acl"
-            else None
-        )
+        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
         topics = get_all_knowledge_topics(scope=scope_filter)
         records = get_all_active_records(include_expired=False, scope=scope_filter)
 
@@ -1713,11 +1740,13 @@ class MemoryClient:
 
         cfg = get_config()
         resolved_scope = self.resolve_scope()
-        if resolved_scope.policy_source == "persisted_acl":
-            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
-            scoped_topics = get_all_knowledge_topics(scope=scope_filter)
-            if not any(topic.get("filename") == filename for topic in scoped_topics):
-                return TopicDetailResult(status="not_found", filename=filename)
+        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
+        all_topics = get_all_knowledge_topics()
+        scoped_topics = get_all_knowledge_topics(scope=scope_filter)
+        if any(topic.get("filename") == filename for topic in all_topics) and not any(
+            topic.get("filename") == filename for topic in scoped_topics
+        ):
+            return TopicDetailResult(status="not_found", filename=filename)
 
         filepath = (cfg.KNOWLEDGE_DIR / filename).resolve()
 
@@ -1754,11 +1783,7 @@ class MemoryClient:
         self._vector_store.reload_if_stale()
 
         resolved_scope = self.resolve_scope()
-        scope_filter = (
-            _resolved_scope_to_query_filter(resolved_scope)
-            if resolved_scope.policy_source == "persisted_acl"
-            else None
-        )
+        scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
         # Get all records including expired
         all_records = get_all_active_records(include_expired=True, scope=scope_filter)

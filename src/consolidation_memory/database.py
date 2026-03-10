@@ -1899,9 +1899,12 @@ def upsert_claim(
 def get_active_claims(
     claim_type: str | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Return currently active claims, optionally filtered by type."""
     now = _now()
+    bounded_limit = max(1, int(limit))
+    bounded_offset = max(0, int(offset))
     conditions = [
         "status = ?",
         "julianday(valid_from) <= julianday(?)",
@@ -1914,11 +1917,11 @@ def get_active_claims(
         params.append(claim_type)
 
     where = " AND ".join(conditions)
-    params.append(limit)
+    params.extend([bounded_limit, bounded_offset])
     query = f"""SELECT * FROM claims
         WHERE {where}
         ORDER BY updated_at DESC, id ASC
-        LIMIT ?"""  # nosec B608
+        LIMIT ? OFFSET ?"""  # nosec B608
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -1932,9 +1935,12 @@ def get_claims_as_of(
     as_of: str,
     claim_type: str | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Return claims valid at a specific point in time."""
     as_of_utc = _normalize_utc_timestamp(as_of)
+    bounded_limit = max(1, int(limit))
+    bounded_offset = max(0, int(offset))
     conditions = [
         "julianday(valid_from) <= julianday(?)",
         "(valid_until IS NULL OR julianday(valid_until) > julianday(?))",
@@ -1946,7 +1952,7 @@ def get_claims_as_of(
         params.append(claim_type)
 
     where = " AND ".join(conditions)
-    params.append(limit)
+    params.extend([bounded_limit, bounded_offset])
     query = f"""SELECT c.*,
                    CASE
                        WHEN c.status = 'expired' THEN 'active'
@@ -1965,7 +1971,7 @@ def get_claims_as_of(
             FROM claims c
             WHERE {where}
             ORDER BY c.updated_at DESC, c.id ASC
-            LIMIT ?"""  # nosec B608
+            LIMIT ? OFFSET ?"""  # nosec B608
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -1987,19 +1993,20 @@ def get_claim_source_scope_rows(
     placeholders = ",".join("?" for _ in claim_ids)
     query = f"""SELECT
                 cs.claim_id,
-                COALESCE(e.namespace_slug, kr.namespace_slug) AS namespace_slug,
-                COALESCE(e.project_slug, kr.project_slug) AS project_slug,
-                COALESCE(e.app_client_name, kr.app_client_name) AS app_client_name,
-                COALESCE(e.app_client_type, kr.app_client_type) AS app_client_type,
-                COALESCE(e.app_client_provider, kr.app_client_provider) AS app_client_provider,
-                COALESCE(e.app_client_external_key, kr.app_client_external_key) AS app_client_external_key,
-                COALESCE(e.agent_name, kr.agent_name) AS agent_name,
-                COALESCE(e.agent_external_key, kr.agent_external_key) AS agent_external_key,
-                COALESCE(e.session_external_key, kr.session_external_key) AS session_external_key,
-                COALESCE(e.session_kind, kr.session_kind) AS session_kind
+                COALESCE(e.namespace_slug, kr.namespace_slug, kt.namespace_slug) AS namespace_slug,
+                COALESCE(e.project_slug, kr.project_slug, kt.project_slug) AS project_slug,
+                COALESCE(e.app_client_name, kr.app_client_name, kt.app_client_name) AS app_client_name,
+                COALESCE(e.app_client_type, kr.app_client_type, kt.app_client_type) AS app_client_type,
+                COALESCE(e.app_client_provider, kr.app_client_provider, kt.app_client_provider) AS app_client_provider,
+                COALESCE(e.app_client_external_key, kr.app_client_external_key, kt.app_client_external_key) AS app_client_external_key,
+                COALESCE(e.agent_name, kr.agent_name, kt.agent_name) AS agent_name,
+                COALESCE(e.agent_external_key, kr.agent_external_key, kt.agent_external_key) AS agent_external_key,
+                COALESCE(e.session_external_key, kr.session_external_key, kt.session_external_key) AS session_external_key,
+                COALESCE(e.session_kind, kr.session_kind, kt.session_kind) AS session_kind
             FROM claim_sources cs
             LEFT JOIN episodes e ON cs.source_episode_id = e.id
             LEFT JOIN knowledge_records kr ON cs.source_record_id = kr.id
+            LEFT JOIN knowledge_topics kt ON cs.source_topic_id = kt.id
             WHERE cs.claim_id IN ({placeholders})"""  # nosec B608
     with get_connection() as conn:
         rows = conn.execute(

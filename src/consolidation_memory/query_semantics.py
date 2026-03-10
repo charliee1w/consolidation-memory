@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 
+_LEGACY_DEFAULT_APP_NAME = "legacy_client"
+_LEGACY_DEFAULT_APP_TYPE = "python_sdk"
+
 
 def parse_claim_payload(payload_raw: object) -> dict[str, object]:
     """Parse a claim payload from DB storage into a dict."""
@@ -55,6 +58,17 @@ def filter_claims_for_scope(
     for claim_id in claim_ids:
         rows = source_rows.get(claim_id, [])
         if not rows:
+            if (
+                scope_filter.get("app_client_name") == _LEGACY_DEFAULT_APP_NAME
+                and scope_filter.get("app_client_type") == _LEGACY_DEFAULT_APP_TYPE
+                and not scope_filter.get("app_client_provider")
+                and not scope_filter.get("app_client_external_key")
+                and not scope_filter.get("agent_name")
+                and not scope_filter.get("agent_external_key")
+                and not scope_filter.get("session_external_key")
+                and not scope_filter.get("session_kind")
+            ):
+                allowed_ids.add(claim_id)
             continue
         if all(matches_scope_filter(row, scope_filter) for row in rows):
             allowed_ids.add(claim_id)

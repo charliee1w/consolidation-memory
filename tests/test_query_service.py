@@ -133,6 +133,59 @@ class TestCanonicalQueryServiceClaims:
         assert result.claims[0]["relevance"] > 0
         mock_browse.assert_called_once()
 
+    def test_browse_claims_pages_until_scoped_limit_is_satisfied(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        first_page = [{
+            "id": f"claim-out-{i}",
+            "claim_type": "fact",
+            "canonical_text": f"out of scope {i}",
+            "payload": "{}",
+            "status": "active",
+            "confidence": 0.5,
+            "valid_from": "2025-01-01T00:00:00+00:00",
+            "valid_until": None,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": f"2025-01-01T00:00:{i:02d}+00:00",
+        } for i in range(50)]
+        second_page = [{
+            "id": "claim-in-scope",
+            "claim_type": "fact",
+            "canonical_text": "in scope claim",
+            "payload": "{}",
+            "status": "active",
+            "confidence": 0.9,
+            "valid_from": "2025-01-01T00:00:00+00:00",
+            "valid_until": None,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": "2025-01-02T00:00:00+00:00",
+        }]
+
+        def _filter_side_effect(claims, scope_filter):
+            del scope_filter
+            if claims and claims[0]["id"].startswith("claim-out-"):
+                return []
+            return claims
+
+        with (
+            patch(
+                "consolidation_memory.database.get_active_claims",
+                side_effect=[first_page, second_page],
+            ) as mock_get_active_claims,
+            patch(
+                "consolidation_memory.query_service.filter_claims_for_scope",
+                side_effect=_filter_side_effect,
+            ),
+        ):
+            result = service.browse_claims(
+                ClaimBrowseQuery(claim_type="fact", as_of=None, limit=1),
+                scope_filter={"project_slug": "repo-a"},
+            )
+
+        assert result.total == 1
+        assert [claim["id"] for claim in result.claims] == ["claim-in-scope"]
+        assert mock_get_active_claims.call_args_list[0].kwargs["offset"] == 0
+        assert mock_get_active_claims.call_args_list[1].kwargs["offset"] == 50
+
 
 class TestCanonicalQueryServiceDrift:
     def test_detect_drift_delegates_to_drift_engine(self):

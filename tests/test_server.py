@@ -207,6 +207,32 @@ class TestMCPServerLifecycle:
         finally:
             server._client = original_client
 
+    def test_lifespan_closes_connections_and_blocking_executor(self):
+        import consolidation_memory.server as server
+
+        original_client = server._client
+        original_executor = server._blocking_executor
+        try:
+            mock_client = MagicMock()
+            server._client = mock_client
+
+            async def _enter_and_exit_lifespan():
+                async with server.lifespan(server.mcp):
+                    await server._run_blocking(lambda: 1)
+
+            with (
+                patch("consolidation_memory.server._WARMUP_ON_START", False),
+                patch("consolidation_memory.database.close_all_connections") as mock_close_all,
+            ):
+                asyncio.run(_enter_and_exit_lifespan())
+
+            mock_client.close.assert_called_once()
+            mock_close_all.assert_called_once()
+            assert server._blocking_executor is None
+        finally:
+            server._client = original_client
+            server._blocking_executor = original_executor
+
     def test_get_client_with_timeout_raises_timeout_error(self):
         import consolidation_memory.server as server
 

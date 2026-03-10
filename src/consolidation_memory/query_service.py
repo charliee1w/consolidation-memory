@@ -198,11 +198,12 @@ class CanonicalQueryService:
                 })
             return claims
 
+        scoped_claims: list[dict[str, object]]
         if not scope_filter:
             rows = _fetch_rows(offset=0, limit=page_size)
             scoped_claims = _rows_to_claims(rows)
         else:
-            scoped_claims: list[dict[str, object]] = []
+            scoped_claims = []
             offset = 0
             while len(scoped_claims) < bounded_limit:
                 rows = _fetch_rows(offset=offset, limit=page_size)

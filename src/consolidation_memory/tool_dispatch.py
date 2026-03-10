@@ -68,7 +68,7 @@ def execute_tool_call(
         content = _validate_content(arguments["content"])
         scope = arguments.get("scope")
         if scope is not None and hasattr(client, "store_with_scope"):
-            result = client.store_with_scope(
+            store_result = client.store_with_scope(
                 content=content,
                 content_type=arguments.get("content_type", "exchange"),
                 tags=arguments.get("tags"),
@@ -76,27 +76,27 @@ def execute_tool_call(
                 scope=scope,
             )
         else:
-            result = client.store(
+            store_result = client.store(
                 content=content,
                 content_type=arguments.get("content_type", "exchange"),
                 tags=arguments.get("tags"),
                 surprise=arguments.get("surprise", 0.5),
             )
-        return dataclasses.asdict(result)
+        return dataclasses.asdict(store_result)
 
     if name == "memory_store_batch":
         client = _require_client(client, name)
         episodes = _validate_batch_episodes(arguments["episodes"])
         scope = arguments.get("scope")
         if scope is not None and hasattr(client, "store_batch_with_scope"):
-            result = client.store_batch_with_scope(episodes=episodes, scope=scope)
+            batch_result = client.store_batch_with_scope(episodes=episodes, scope=scope)
         else:
-            result = client.store_batch(episodes=episodes)
-        return dataclasses.asdict(result)
+            batch_result = client.store_batch(episodes=episodes)
+        return dataclasses.asdict(batch_result)
 
     if name == "memory_recall":
         client = _require_client(client, name)
-        result = client.query_recall(
+        recall_result = client.query_recall(
             query=arguments["query"],
             n_results=max(1, min(arguments.get("n_results", 10), 50)),
             include_knowledge=arguments.get("include_knowledge", True),
@@ -108,11 +108,11 @@ def execute_tool_call(
             as_of=arguments.get("as_of"),
             scope=arguments.get("scope"),
         )
-        return dataclasses.asdict(result)
+        return dataclasses.asdict(recall_result)
 
     if name == "memory_search":
         client = _require_client(client, name)
-        result = client.query_search(
+        search_result = client.query_search(
             query=arguments.get("query"),
             content_types=arguments.get("content_types"),
             tags=arguments.get("tags"),
@@ -121,28 +121,28 @@ def execute_tool_call(
             limit=max(1, min(arguments.get("limit", 20), 50)),
             scope=arguments.get("scope"),
         )
-        return dataclasses.asdict(result)
+        return dataclasses.asdict(search_result)
 
     if name == "memory_claim_browse":
         client = _require_client(client, name)
-        result = client.query_browse_claims(
+        claim_browse_result = client.query_browse_claims(
             claim_type=arguments.get("claim_type"),
             as_of=arguments.get("as_of"),
             limit=max(1, min(arguments.get("limit", 50), 200)),
             scope=arguments.get("scope"),
         )
-        return dataclasses.asdict(result)
+        return dataclasses.asdict(claim_browse_result)
 
     if name == "memory_claim_search":
         client = _require_client(client, name)
-        result = client.query_search_claims(
+        claim_search_result = client.query_search_claims(
             query=arguments["query"],
             claim_type=arguments.get("claim_type"),
             as_of=arguments.get("as_of"),
             limit=max(1, min(arguments.get("limit", 50), 200)),
             scope=arguments.get("scope"),
         )
-        return dataclasses.asdict(result)
+        return dataclasses.asdict(claim_search_result)
 
     if name == "memory_detect_drift":
         if client is not None and hasattr(client, "query_detect_drift"):
@@ -184,10 +184,10 @@ def execute_tool_call(
 
     if name == "memory_consolidate":
         client = _require_client(client, name)
-        result = client.consolidate()
-        if isinstance(result, dict):
-            return dict(result)
-        return dataclasses.asdict(result)
+        consolidation_result = client.consolidate()
+        if isinstance(consolidation_result, dict):
+            return dict(consolidation_result)
+        return dataclasses.asdict(consolidation_result)
 
     if name == "memory_protect":
         client = _require_client(client, name)

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from consolidation_memory.client import MemoryClient
 
-from consolidation_memory.types import ContentType, coerce_scope_envelope
+from consolidation_memory.types import ContentType, ScopeEnvelope, coerce_scope_envelope
 
 _MAX_CONTENT_LENGTH = 50_000
 _MAX_BATCH_SIZE = 100
@@ -132,11 +133,23 @@ def _validate_bounded_int(
     return value
 
 
-def _validate_scope(value: object) -> object | None:
+def _validate_scope(value: object) -> ScopeEnvelope | dict[str, object] | None:
     if value is None:
         return None
-    coerce_scope_envelope(value)
-    return value
+    if isinstance(value, ScopeEnvelope):
+        coerce_scope_envelope(value)
+        return value
+    if not isinstance(value, Mapping):
+        raise ValueError("scope must be an object")
+
+    normalized: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError("scope keys must be strings")
+        normalized[key] = item
+
+    coerce_scope_envelope(normalized)
+    return normalized
 
 
 def _validate_filename(value: object, *, field_name: str = "filename") -> str:

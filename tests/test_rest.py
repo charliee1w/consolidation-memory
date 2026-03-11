@@ -5,7 +5,7 @@ Requires: pip install consolidation-memory[rest,dev]
 """
 
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -123,6 +123,86 @@ class TestRecallEndpoint:
         assert resp.status_code == 200
         assert resp.json()["total_episodes"] == 0
         assert mock_query_recall.call_count == 1
+
+    def test_recall_timeout_falls_back_to_episodes_only(self):
+        from consolidation_memory.rest import create_app
+        from consolidation_memory.types import RecallResult, SearchResult
+
+        def _slow_recall(*args, **kwargs):
+            del args, kwargs
+            time.sleep(0.05)
+            return RecallResult()
+
+        mock_runtime_client = MagicMock()
+        mock_runtime_client.query_recall.side_effect = _slow_recall
+        mock_runtime_client.query_search.return_value = SearchResult(
+            episodes=[{"id": "ep-1"}],
+            total_matches=1,
+            query="python runtime",
+        )
+
+        with (
+            patch("consolidation_memory.runtime.MemoryRuntime.get_client_with_timeout", return_value=mock_runtime_client),
+            patch("consolidation_memory.rest._MEMORY_RECALL_TIMEOUT_SECONDS", 0.01),
+            patch("consolidation_memory.rest._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", 0.2),
+        ):
+            app = create_app()
+            with TestClient(app) as api_client:
+                resp = api_client.post(
+                    "/memory/recall",
+                    json={"query": "python runtime", "include_knowledge": True},
+                )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["episodes"] == [{"id": "ep-1"}]
+        assert data["knowledge"] == []
+        assert any("episodes-only fallback" in warning for warning in data["warnings"])
+        mock_runtime_client.query_search.assert_called_once_with(
+            query="python runtime",
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            limit=10,
+            scope=None,
+        )
+
+    def test_recall_timeout_returns_408_when_fallback_also_times_out(self):
+        from consolidation_memory.rest import create_app
+
+        def _slow_query(*args, **kwargs):
+            del args, kwargs
+            time.sleep(0.05)
+            return {}
+
+        mock_runtime_client = MagicMock()
+        mock_runtime_client.query_recall.side_effect = _slow_query
+        mock_runtime_client.query_search.side_effect = _slow_query
+
+        with (
+            patch("consolidation_memory.runtime.MemoryRuntime.get_client_with_timeout", return_value=mock_runtime_client),
+            patch("consolidation_memory.rest._MEMORY_RECALL_TIMEOUT_SECONDS", 0.01),
+            patch("consolidation_memory.rest._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", 0.01),
+        ):
+            app = create_app()
+            with TestClient(app) as api_client:
+                resp = api_client.post(
+                    "/memory/recall",
+                    json={"query": "python runtime", "include_knowledge": False},
+                )
+
+        assert resp.status_code == 408
+        assert "memory_recall timed out after" in resp.json()["detail"]
+
+    def test_invalid_nested_scope_returns_422(self, api_client):
+        resp = api_client.post(
+            "/memory/recall",
+            json={"query": "scope", "scope": {"project": 5}},
+        )
+
+        assert resp.status_code == 422
+        assert "scope.project must be an object when provided" in resp.json()["detail"]
 
 
 class TestStatusEndpoint:

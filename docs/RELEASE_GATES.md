@@ -37,6 +37,7 @@ If any gate fails, overall release gate status is false.
 ## Local Verification
 
 ```bash
+python scripts/release.py --bump patch --dry-run
 python -m benchmarks.novelty_eval --mode full --output benchmarks/results/novelty_eval_release_full.json
 python scripts/verify_release_gates.py \
   --novelty-result benchmarks/results/novelty_eval_release_full.json \
@@ -44,12 +45,19 @@ python scripts/verify_release_gates.py \
   --output benchmarks/results/release_gate_report.json
 ```
 
+`scripts/release.py` now fail-closes on the same publish-grade quality checks used by
+tag publish: clean `main`, tests, builder smoke, `ResourceWarning` gate, lint,
+type checks, security scan, full novelty gate enforcement, and artifact build +
+`twine check`.
+
 ## CI Enforcement
 
 - PR CI (`test.yml`) runs quick novelty checks.
+- PR CI also validates wheel/sdist buildability and runs a dedicated optional-surface
+  job with `rest`, `openai`, and `dashboard` extras installed.
 - Tag publish (`publish.yml`) requires the tagged commit to be on `origin/main`,
-  runs release quality gates (tests/lint/mypy/smoke), then runs full novelty
-  evaluation + gate enforcement before build/publish.
+  runs release quality gates (tests/resource warnings/lint/mypy/security/smoke),
+  then runs full novelty evaluation + gate enforcement before build/publish.
 - Nightly (`novelty-full-nightly.yml`) refreshes full novelty + gate artifacts.
 
 ## Policy Notes

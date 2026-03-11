@@ -5,6 +5,7 @@ Thread-local connection caching avoids per-operation open/close overhead.
 Includes schema versioning with automatic migration.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -13,7 +14,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence, cast
 
 from consolidation_memory.config import get_config as _get_config
@@ -38,12 +39,13 @@ _fts5_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 14
+CURRENT_SCHEMA_VERSION = 16
 
 _DEFAULT_NAMESPACE_SLUG = "default"
 _DEFAULT_NAMESPACE_SHARING_MODE = "private"
 _DEFAULT_APP_CLIENT_NAME = "legacy_client"
 _DEFAULT_APP_CLIENT_TYPE = "python_sdk"
+_TOPIC_STORAGE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -212,6 +214,12 @@ MIGRATIONS: dict[int, list[str]] = {
     # Migration 14 is applied specially in _apply_migration() for first-class
     # persisted policy/ACL entities.
     14: [],
+    # Migration 15 is applied specially in _apply_migration() to decouple the
+    # user-facing topic filename from the unique on-disk storage filename.
+    15: [],
+    # Migration 16 is applied specially in _apply_migration() to hide episodes
+    # until their vectors are durably persisted.
+    16: [],
 }
 
 
@@ -265,6 +273,59 @@ def _coerce_scope_row(scope: Mapping[str, Any] | None = None) -> dict[str, str |
     }
 
 
+def _topic_storage_filename(
+    logical_filename: str,
+    scope: Mapping[str, Any] | None = None,
+) -> str:
+    """Build a deterministic storage filename for a topic within one exact scope."""
+    scope_row = _coerce_scope_row(scope)
+    pure_name = PurePosixPath(str(logical_filename or "")).name
+    suffix = "".join(PurePosixPath(pure_name).suffixes)
+    stem = pure_name[: -len(suffix)] if suffix else pure_name
+    cleaned_stem = _TOPIC_STORAGE_SAFE_RE.sub("_", stem).strip("._") or "topic"
+    normalized_suffix = suffix or ".md"
+
+    identity_tokens = [
+        f"{key}={scope_row.get(key) or ''}"
+        for key in _EXACT_SCOPE_MATCH_KEYS
+    ]
+    identity_payload = "|".join([*identity_tokens, f"filename={logical_filename}"])
+    digest = hashlib.sha256(identity_payload.encode("utf-8")).hexdigest()[:12]
+    return f"{cleaned_stem}__{digest}{normalized_suffix}"
+
+
+def topic_storage_filename(topic: Mapping[str, Any]) -> str:
+    """Return the unique on-disk filename for a knowledge topic row."""
+    storage = topic.get("storage_filename")
+    if isinstance(storage, str) and storage.strip():
+        return storage.strip()
+    filename = topic.get("filename")
+    if isinstance(filename, str):
+        return filename
+    raise ValueError("Knowledge topic row is missing filename metadata")
+
+
+def _apply_exact_scope_filters(
+    conditions: list[str],
+    params: list[Any],
+    scope: Mapping[str, Any] | None = None,
+    *,
+    table_alias: str = "",
+) -> None:
+    """Apply exact-scope matching, including explicit NULL checks."""
+    if scope is None:
+        return
+
+    prefix = f"{table_alias}." if table_alias else ""
+    for key in _EXACT_SCOPE_MATCH_KEYS:
+        value = _normalize_scope_token(scope.get(key))
+        if value is None:
+            conditions.append(f"{prefix}{key} IS NULL")
+        else:
+            conditions.append(f"{prefix}{key} = ?")
+            params.append(value)
+
+
 def _apply_scope_filters(
     conditions: list[str],
     params: list[Any],
@@ -298,6 +359,20 @@ def _apply_scope_filters(
 
 _POLICY_SELECTOR_KEYS: tuple[str, ...] = (
     "namespace_slug",
+    "project_slug",
+    "app_client_name",
+    "app_client_type",
+    "app_client_provider",
+    "app_client_external_key",
+    "agent_name",
+    "agent_external_key",
+    "session_external_key",
+    "session_kind",
+)
+
+_EXACT_SCOPE_MATCH_KEYS: tuple[str, ...] = (
+    "namespace_slug",
+    "namespace_sharing_mode",
     "project_slug",
     "app_client_name",
     "app_client_type",
@@ -671,6 +746,7 @@ def ensure_schema() -> None:
                 content_type    TEXT NOT NULL DEFAULT 'exchange',
                 tags            TEXT NOT NULL DEFAULT '[]',
                 surprise_score  REAL NOT NULL DEFAULT 0.5,
+                indexed         INTEGER NOT NULL DEFAULT 1,
                 access_count    INTEGER NOT NULL DEFAULT 0,
                 source_session  TEXT,
                 consolidated    INTEGER NOT NULL DEFAULT 0,
@@ -678,6 +754,9 @@ def ensure_schema() -> None:
                 consolidated_to TEXT,
                 deleted         INTEGER NOT NULL DEFAULT 0
             )""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_episodes_indexed ON episodes(indexed)"
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_episodes_consolidated ON episodes(consolidated)"
         )
@@ -692,7 +771,8 @@ def ensure_schema() -> None:
         )
         conn.execute("""CREATE TABLE IF NOT EXISTS knowledge_topics (
                 id              TEXT PRIMARY KEY,
-                filename        TEXT NOT NULL UNIQUE,
+                filename        TEXT NOT NULL,
+                storage_filename TEXT NOT NULL UNIQUE,
                 title           TEXT NOT NULL,
                 summary         TEXT NOT NULL,
                 created_at      TEXT NOT NULL,
@@ -704,6 +784,9 @@ def ensure_schema() -> None:
             )""")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_knowledge_filename ON knowledge_topics(filename)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_storage_filename ON knowledge_topics(storage_filename)"
         )
         conn.execute("""CREATE TABLE IF NOT EXISTS consolidation_runs (
                 id                  TEXT PRIMARY KEY,
@@ -768,6 +851,12 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
         return
     if not isinstance(version, int) or version < 0:
         raise ValueError(f"Invalid migration version: {version}")
+    if version == 15:
+        _apply_topic_storage_migration(conn)
+        return
+    if version == 16:
+        _apply_episode_index_visibility_migration(conn)
+        return
     savepoint = f"migration_v{version}"
     conn.execute(f"SAVEPOINT {savepoint}")
     try:
@@ -972,6 +1061,103 @@ def _apply_policy_acl_migration(conn: sqlite3.Connection) -> None:
     )
 
 
+def _apply_topic_storage_migration(conn: sqlite3.Connection) -> None:
+    """Apply schema v15: topic display filenames decoupled from storage filenames."""
+    columns = _get_table_columns(conn, "knowledge_topics")
+    if "storage_filename" in columns:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_storage_filename "
+            "ON knowledge_topics(storage_filename)"
+        )
+        return
+
+    foreign_keys_enabled = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    if foreign_keys_enabled:
+        conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute(
+            """CREATE TABLE knowledge_topics_v15 (
+                id               TEXT PRIMARY KEY,
+                filename         TEXT NOT NULL,
+                storage_filename TEXT NOT NULL UNIQUE,
+                title            TEXT NOT NULL,
+                summary          TEXT NOT NULL,
+                created_at       TEXT NOT NULL,
+                updated_at       TEXT NOT NULL,
+                source_episodes  TEXT NOT NULL DEFAULT '[]',
+                fact_count       INTEGER NOT NULL DEFAULT 0,
+                access_count     INTEGER NOT NULL DEFAULT 0,
+                confidence       REAL NOT NULL DEFAULT 0.8,
+                namespace_slug          TEXT NOT NULL DEFAULT 'default',
+                namespace_sharing_mode  TEXT NOT NULL DEFAULT 'private',
+                app_client_name         TEXT NOT NULL DEFAULT 'legacy_client',
+                app_client_type         TEXT NOT NULL DEFAULT 'python_sdk',
+                app_client_provider     TEXT,
+                app_client_external_key TEXT,
+                agent_name              TEXT,
+                agent_external_key      TEXT,
+                session_external_key    TEXT,
+                session_kind            TEXT,
+                project_slug            TEXT NOT NULL DEFAULT 'default',
+                project_display_name    TEXT,
+                project_root_uri        TEXT,
+                project_repo_remote     TEXT,
+                project_default_branch  TEXT
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO knowledge_topics_v15 (
+                id, filename, storage_filename, title, summary, created_at, updated_at,
+                source_episodes, fact_count, access_count, confidence,
+                namespace_slug, namespace_sharing_mode,
+                app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                agent_name, agent_external_key, session_external_key, session_kind,
+                project_slug, project_display_name, project_root_uri,
+                project_repo_remote, project_default_branch
+            )
+            SELECT
+                id, filename, filename, title, summary, created_at, updated_at,
+                source_episodes, fact_count, access_count, confidence,
+                namespace_slug, namespace_sharing_mode,
+                app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                agent_name, agent_external_key, session_external_key, session_kind,
+                project_slug, project_display_name, project_root_uri,
+                project_repo_remote, project_default_branch
+            FROM knowledge_topics"""
+        )
+        conn.execute("DROP TABLE knowledge_topics")
+        conn.execute("ALTER TABLE knowledge_topics_v15 RENAME TO knowledge_topics")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_filename ON knowledge_topics(filename)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_storage_filename "
+            "ON knowledge_topics(storage_filename)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_topics_scope_ns_project "
+            "ON knowledge_topics(namespace_slug, project_slug)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_topics_scope_app "
+            "ON knowledge_topics(namespace_slug, project_slug, app_client_name, app_client_type)"
+        )
+    finally:
+        if foreign_keys_enabled:
+            conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _apply_episode_index_visibility_migration(conn: sqlite3.Connection) -> None:
+    """Apply schema v16: stage episode visibility on vector durability."""
+    _add_column_if_missing(
+        conn,
+        table_name="episodes",
+        column_name="indexed",
+        column_sql="indexed INTEGER NOT NULL DEFAULT 1",
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_indexed ON episodes(indexed)")
+
+
 # ── Episode CRUD ─────────────────────────────────────────────────────────────
 
 def insert_episode(
@@ -982,25 +1168,57 @@ def insert_episode(
     source_session: str | None = None,
     scope: Mapping[str, Any] | None = None,
     episode_id: str | None = None,
+    *,
+    created_at: str | None = None,
+    updated_at: str | None = None,
+    access_count: int | None = None,
+    consolidated: int | None = None,
+    consolidated_at: str | None = None,
+    consolidated_to: str | None = None,
+    deleted: int | None = None,
+    consolidation_attempts: int | None = None,
+    last_consolidation_attempt: str | None = None,
+    protected: int | None = None,
+    indexed: int | bool | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> str:
     if episode_id is None:
         episode_id = str(uuid.uuid4())
-    now = _now()
+    created_ts = created_at or _now()
+    updated_ts = updated_at or created_ts
     scope_row = _coerce_scope_row(scope)
-    with get_connection() as conn:
-        conn.execute(
+    def _insert(active_conn: sqlite3.Connection) -> None:
+        active_conn.execute(
             """INSERT INTO episodes
                (id, created_at, updated_at, content, content_type, tags,
-                surprise_score, source_session,
+                surprise_score, indexed, access_count, source_session,
+                consolidated, consolidated_at, consolidated_to, deleted,
+                consolidation_attempts, last_consolidation_attempt, protected,
                 namespace_slug, namespace_sharing_mode,
                 app_client_name, app_client_type, app_client_provider, app_client_external_key,
                 agent_name, agent_external_key,
                 session_external_key, session_kind,
                 project_slug, project_display_name, project_root_uri,
                 project_repo_remote, project_default_branch)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (episode_id, now, now, content, content_type,
-             json.dumps(tags or []), surprise_score, source_session,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                episode_id,
+                created_ts,
+                updated_ts,
+                content,
+                content_type,
+                json.dumps(tags or []),
+                surprise_score,
+                1 if indexed is None else int(bool(indexed)),
+                0 if access_count is None else int(access_count),
+                source_session,
+                0 if consolidated is None else int(consolidated),
+                consolidated_at,
+                consolidated_to,
+                0 if deleted is None else int(deleted),
+                0 if consolidation_attempts is None else int(consolidation_attempts),
+                last_consolidation_attempt,
+                0 if protected is None else int(protected),
              scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
              scope_row["app_client_name"], scope_row["app_client_type"],
              scope_row["app_client_provider"], scope_row["app_client_external_key"],
@@ -1008,18 +1226,28 @@ def insert_episode(
              scope_row["session_external_key"], scope_row["session_kind"],
              scope_row["project_slug"], scope_row["project_display_name"],
              scope_row["project_root_uri"], scope_row["project_repo_remote"],
-             scope_row["project_default_branch"]),
+             scope_row["project_default_branch"],
+            ),
         )
         # FTS insert within the same transaction for atomicity
         fts_insert(episode_id, content)
+    if conn is None:
+        with get_connection() as managed_conn:
+            _insert(managed_conn)
+    else:
+        _insert(conn)
     return episode_id
 
 
 def get_episode(
     episode_id: str,
     scope: Mapping[str, Any] | None = None,
+    *,
+    include_unindexed: bool = False,
 ) -> dict[str, Any] | None:
     conditions = ["id = ?", "deleted = 0"]
+    if not include_unindexed:
+        conditions.append("indexed = 1")
     params: list[Any] = [episode_id]
     _apply_scope_filters(conditions, params, scope)
     where_clause = " AND ".join(conditions)
@@ -1031,24 +1259,85 @@ def get_episode(
     return dict(row) if row else None
 
 
-def get_episodes_batch(episode_ids: list[str]) -> dict[str, dict[str, Any]]:
+def get_episodes_batch(
+    episode_ids: list[str],
+    *,
+    include_unindexed: bool = False,
+) -> dict[str, dict[str, Any]]:
     """Fetch multiple episodes in a single query. Returns {id: episode_dict}."""
     if not episode_ids:
         return {}
+    conditions = ["id IN ({placeholders})", "deleted = 0"]
+    if not include_unindexed:
+        conditions.append("indexed = 1")
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in episode_ids)
+        where_clause = " AND ".join(condition.format(placeholders=placeholders) for condition in conditions)
         rows = conn.execute(
-            f"SELECT * FROM episodes WHERE id IN ({placeholders}) AND deleted = 0",  # nosec B608
+            f"SELECT * FROM episodes WHERE {where_clause}",  # nosec B608
             episode_ids,
         ).fetchall()
     return {row["id"]: dict(row) for row in rows}
+
+
+def get_unindexed_episodes(limit: int = 200) -> list[dict[str, Any]]:
+    """Return non-deleted episodes whose vectors are not yet marked durable."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM episodes
+               WHERE deleted = 0 AND indexed = 0
+               ORDER BY created_at ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def mark_episode_indexed(
+    episode_ids: Sequence[str],
+    *,
+    indexed: bool = True,
+) -> int:
+    """Mark episodes visible once their vectors are durably persisted."""
+    if not episode_ids:
+        return 0
+    placeholders = ",".join("?" for _ in episode_ids)
+    with get_connection() as conn:
+        cursor = conn.execute(
+            f"""UPDATE episodes
+                SET indexed = ?, updated_at = ?
+                WHERE id IN ({placeholders})""",  # nosec B608
+            [1 if indexed else 0, _now(), *episode_ids],
+        )
+    return int(cursor.rowcount or 0)
+
+
+def get_existing_episode_ids(
+    episode_ids: Sequence[str],
+    *,
+    include_deleted: bool = False,
+) -> set[str]:
+    """Return the subset of provided episode IDs that currently exist in SQLite."""
+    if not episode_ids:
+        return set()
+    placeholders = ",".join("?" for _ in episode_ids)
+    conditions = [f"id IN ({placeholders})"]  # nosec B608
+    if not include_deleted:
+        conditions.append("deleted = 0")
+    where_clause = " AND ".join(conditions)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM episodes WHERE {where_clause}",  # nosec B608
+            list(episode_ids),
+        ).fetchall()
+    return {str(row["id"]) for row in rows}
 
 
 def get_unconsolidated_episodes(limit: int = 200, max_attempts: int = 5) -> list[dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT * FROM episodes
-               WHERE consolidated = 0 AND deleted = 0 AND consolidation_attempts < ?
+               WHERE consolidated = 0 AND deleted = 0 AND indexed = 1 AND consolidation_attempts < ?
                ORDER BY created_at DESC LIMIT ?""",
             (max_attempts, limit),
         ).fetchall()
@@ -1101,7 +1390,7 @@ def soft_delete_episode(
     episode_id: str,
     scope: Mapping[str, Any] | None = None,
 ) -> bool:
-    conditions = ["id = ?", "deleted = 0"]
+    conditions = ["id = ?", "deleted = 0", "indexed = 1"]
     params: list[Any] = [episode_id]
     _apply_scope_filters(conditions, params, scope)
     where_clause = " AND ".join(conditions)
@@ -1259,7 +1548,7 @@ def get_prunable_episodes(days: int = 30) -> list[dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT * FROM episodes
-               WHERE consolidated = 1 AND consolidated_at < ? AND deleted = 0
+               WHERE consolidated = 1 AND consolidated_at < ? AND deleted = 0 AND indexed = 1
                  AND protected = 0""",
             (cutoff,),
         ).fetchall()
@@ -1297,6 +1586,7 @@ def protect_by_tag(
     conditions = [
         "tags LIKE ? ESCAPE '\\'",
         "deleted = 0",
+        "indexed = 1",
         "protected = 0",
     ]
     params: list[Any] = [pattern]
@@ -1339,23 +1629,47 @@ def upsert_knowledge_topic(
     fact_count: int = 0,
     confidence: float = 0.8,
     scope: Mapping[str, Any] | None = None,
+    topic_id: str | None = None,
+    *,
+    created_at: str | None = None,
+    updated_at: str | None = None,
+    access_count: int | None = None,
 ) -> str:
     now = _now()
+    updated_ts = updated_at or now
     scope_row = _coerce_scope_row(scope)
+    storage_filename = _topic_storage_filename(filename, scope_row)
     with get_connection() as conn:
-        existing = conn.execute(
-            "SELECT id, source_episodes FROM knowledge_topics WHERE filename = ?",
-            (filename,),
-        ).fetchone()
+        existing = None
+        if topic_id is not None:
+            existing = conn.execute(
+                "SELECT id, source_episodes, access_count, storage_filename "
+                "FROM knowledge_topics WHERE id = ?",
+                (topic_id,),
+            ).fetchone()
+        if existing is None:
+            conditions = ["(filename = ? OR storage_filename = ?)"]
+            params: list[Any] = [filename, filename]
+            _apply_exact_scope_filters(conditions, params, scope_row)
+            existing = conn.execute(
+                f"""SELECT id, source_episodes, access_count, storage_filename
+                    FROM knowledge_topics
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY updated_at DESC, id ASC
+                    LIMIT 1""",  # nosec B608
+                params,
+            ).fetchone()
 
         if existing:
             topic_id: str = str(existing["id"])
             old_sources = json.loads(existing["source_episodes"])
             merged = list(set(old_sources + source_episodes))
+            persisted_storage_filename = str(existing["storage_filename"] or storage_filename)
             conn.execute(
                 """UPDATE knowledge_topics
                    SET title = ?, summary = ?, updated_at = ?,
-                       source_episodes = ?, fact_count = ?, confidence = ?,
+                       source_episodes = ?, fact_count = ?, access_count = ?, confidence = ?,
+                       storage_filename = ?,
                        namespace_slug = ?, namespace_sharing_mode = ?,
                        app_client_name = ?, app_client_type = ?, app_client_provider = ?, app_client_external_key = ?,
                        agent_name = ?, agent_external_key = ?,
@@ -1363,8 +1677,15 @@ def upsert_knowledge_topic(
                        project_slug = ?, project_display_name = ?, project_root_uri = ?,
                        project_repo_remote = ?, project_default_branch = ?
                    WHERE id = ?""",
-                (title, summary, now, json.dumps(merged),
-                 fact_count, confidence,
+                (
+                    title,
+                    summary,
+                    updated_ts,
+                    json.dumps(merged),
+                    fact_count,
+                    int(existing["access_count"]) if access_count is None else int(access_count),
+                    confidence,
+                    persisted_storage_filename,
                  scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
                  scope_row["app_client_name"], scope_row["app_client_type"],
                  scope_row["app_client_provider"], scope_row["app_client_external_key"],
@@ -1372,24 +1693,36 @@ def upsert_knowledge_topic(
                  scope_row["session_external_key"], scope_row["session_kind"],
                  scope_row["project_slug"], scope_row["project_display_name"],
                  scope_row["project_root_uri"], scope_row["project_repo_remote"],
-                 scope_row["project_default_branch"], topic_id),
+                 scope_row["project_default_branch"], topic_id,
+                ),
             )
         else:
-            topic_id = str(uuid.uuid4())
+            topic_id = topic_id or str(uuid.uuid4())
+            created_ts = created_at or updated_ts
             try:
                 conn.execute(
                     """INSERT INTO knowledge_topics
-                       (id, filename, title, summary, created_at, updated_at,
-                        source_episodes, fact_count, confidence,
+                       (id, filename, storage_filename, title, summary, created_at, updated_at,
+                        source_episodes, fact_count, access_count, confidence,
                         namespace_slug, namespace_sharing_mode,
                         app_client_name, app_client_type, app_client_provider, app_client_external_key,
                         agent_name, agent_external_key,
                         session_external_key, session_kind,
                         project_slug, project_display_name, project_root_uri,
                         project_repo_remote, project_default_branch)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (topic_id, filename, title, summary, now, now,
-                     json.dumps(source_episodes), fact_count, confidence,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        topic_id,
+                        filename,
+                        storage_filename,
+                        title,
+                        summary,
+                        created_ts,
+                        updated_ts,
+                        json.dumps(source_episodes),
+                        fact_count,
+                        0 if access_count is None else int(access_count),
+                        confidence,
                      scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
                      scope_row["app_client_name"], scope_row["app_client_type"],
                      scope_row["app_client_provider"], scope_row["app_client_external_key"],
@@ -1397,23 +1730,33 @@ def upsert_knowledge_topic(
                      scope_row["session_external_key"], scope_row["session_kind"],
                      scope_row["project_slug"], scope_row["project_display_name"],
                      scope_row["project_root_uri"], scope_row["project_repo_remote"],
-                     scope_row["project_default_branch"]),
+                     scope_row["project_default_branch"],
+                    ),
                 )
             except sqlite3.IntegrityError:
                 # Race: concurrent insert won — fall back to update
+                conditions = ["(filename = ? OR storage_filename = ?)"]
+                params = [filename, filename]
+                _apply_exact_scope_filters(conditions, params, scope_row)
                 existing = conn.execute(
-                    "SELECT id, source_episodes FROM knowledge_topics WHERE filename = ?",
-                    (filename,),
+                    f"""SELECT id, source_episodes, access_count, storage_filename
+                        FROM knowledge_topics
+                        WHERE {' AND '.join(conditions)}
+                        ORDER BY updated_at DESC, id ASC
+                        LIMIT 1""",  # nosec B608
+                    params,
                 ).fetchone()
                 if existing is None:
                     raise
                 topic_id = str(existing["id"])
                 old_sources = json.loads(existing["source_episodes"])
                 merged = list(set(old_sources + source_episodes))
+                persisted_storage_filename = str(existing["storage_filename"] or storage_filename)
                 conn.execute(
                     """UPDATE knowledge_topics
                        SET title = ?, summary = ?, updated_at = ?,
-                           source_episodes = ?, fact_count = ?, confidence = ?,
+                           source_episodes = ?, fact_count = ?, access_count = ?, confidence = ?,
+                           storage_filename = ?,
                            namespace_slug = ?, namespace_sharing_mode = ?,
                            app_client_name = ?, app_client_type = ?, app_client_provider = ?, app_client_external_key = ?,
                            agent_name = ?, agent_external_key = ?,
@@ -1421,8 +1764,15 @@ def upsert_knowledge_topic(
                            project_slug = ?, project_display_name = ?, project_root_uri = ?,
                            project_repo_remote = ?, project_default_branch = ?
                        WHERE id = ?""",
-                    (title, summary, now, json.dumps(merged),
-                     fact_count, confidence,
+                    (
+                        title,
+                        summary,
+                        updated_ts,
+                        json.dumps(merged),
+                        fact_count,
+                        int(existing["access_count"]) if access_count is None else int(access_count),
+                        confidence,
+                        persisted_storage_filename,
                      scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
                      scope_row["app_client_name"], scope_row["app_client_type"],
                      scope_row["app_client_provider"], scope_row["app_client_external_key"],
@@ -1430,7 +1780,8 @@ def upsert_knowledge_topic(
                      scope_row["session_external_key"], scope_row["session_kind"],
                      scope_row["project_slug"], scope_row["project_display_name"],
                      scope_row["project_root_uri"], scope_row["project_repo_remote"],
-                     scope_row["project_default_branch"], topic_id),
+                     scope_row["project_default_branch"], topic_id,
+                    ),
                 )
     return topic_id
 
@@ -1454,8 +1805,8 @@ def get_knowledge_topic(
     filename: str,
     scope: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    conditions = ["filename = ?"]
-    params: list[Any] = [filename]
+    conditions = ["(filename = ? OR storage_filename = ?)"]
+    params: list[Any] = [filename, filename]
     _apply_scope_filters(conditions, params, scope)
     where_clause = " AND ".join(conditions)
     with get_connection() as conn:
@@ -1466,16 +1817,34 @@ def get_knowledge_topic(
     return dict(row) if row else None
 
 
-def increment_topic_access(filenames: list[str]) -> None:
-    if not filenames:
+def get_knowledge_topics_by_name(
+    filename: str,
+    scope: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    conditions = ["(filename = ? OR storage_filename = ?)"]
+    params: list[Any] = [filename, filename]
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM knowledge_topics
+                WHERE {where_clause}
+                ORDER BY updated_at DESC, id ASC""",  # nosec B608
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def increment_topic_access_by_ids(topic_ids: list[str]) -> None:
+    if not topic_ids:
         return
     with get_connection() as conn:
-        placeholders = ",".join("?" for _ in filenames)
+        placeholders = ",".join("?" for _ in topic_ids)
         query = f"""UPDATE knowledge_topics SET access_count = access_count + 1,
-            updated_at = ? WHERE filename IN ({placeholders})"""  # nosec B608
+            updated_at = ? WHERE id IN ({placeholders})"""  # nosec B608
         conn.execute(
             query,
-            [_now()] + filenames,
+            [_now()] + topic_ids,
         )
 
 
@@ -1498,37 +1867,67 @@ def insert_knowledge_records(
     if not records:
         return []
     now = _now()
-    src = json.dumps(source_episodes or [])
     scope_row = _coerce_scope_row(scope)
     ids: list[str] = []
 
     def _insert_rows(active_conn: sqlite3.Connection) -> None:
         for rec in records:
-            rec_id = str(uuid.uuid4())
+            rec_id = str(rec.get("id") or uuid.uuid4())
             content = rec["content"] if isinstance(rec["content"], str) else json.dumps(rec["content"])
             valid_from = rec.get("valid_from")
+            valid_until = rec.get("valid_until")
+            created_ts = str(rec.get("created_at") or now)
+            updated_ts = str(rec.get("updated_at") or created_ts)
+            record_scope_row = _coerce_scope_row(
+                rec["scope"] if isinstance(rec.get("scope"), Mapping) else scope
+            )
+            record_source_episodes_raw = rec.get("source_episodes", source_episodes or [])
+            if isinstance(record_source_episodes_raw, str):
+                record_source_episodes = parse_json_list(record_source_episodes_raw)
+            else:
+                record_source_episodes = list(record_source_episodes_raw or [])
             active_conn.execute(
                 """INSERT INTO knowledge_records
                    (id, topic_id, record_type, content, embedding_text,
-                    source_episodes, confidence, created_at, updated_at, valid_from,
+                    source_episodes, confidence, created_at, updated_at, access_count,
+                    deleted, valid_from, valid_until,
                     namespace_slug, namespace_sharing_mode,
                     app_client_name, app_client_type, app_client_provider, app_client_external_key,
                     agent_name, agent_external_key,
                     session_external_key, session_kind,
                     project_slug, project_display_name, project_root_uri,
                     project_repo_remote, project_default_branch)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (rec_id, topic_id, rec["record_type"], content,
-                 rec["embedding_text"], src, rec.get("confidence", 0.8),
-                 now, now, valid_from,
-                 scope_row["namespace_slug"], scope_row["namespace_sharing_mode"],
-                 scope_row["app_client_name"], scope_row["app_client_type"],
-                 scope_row["app_client_provider"], scope_row["app_client_external_key"],
-                 scope_row["agent_name"], scope_row["agent_external_key"],
-                 scope_row["session_external_key"], scope_row["session_kind"],
-                 scope_row["project_slug"], scope_row["project_display_name"],
-                 scope_row["project_root_uri"], scope_row["project_repo_remote"],
-                 scope_row["project_default_branch"]),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    rec_id,
+                    topic_id,
+                    rec["record_type"],
+                    content,
+                    rec["embedding_text"],
+                    json.dumps(record_source_episodes),
+                    rec.get("confidence", 0.8),
+                    created_ts,
+                    updated_ts,
+                    0 if rec.get("access_count") is None else int(rec.get("access_count")),
+                    0 if rec.get("deleted") is None else int(rec.get("deleted")),
+                    valid_from,
+                    valid_until,
+                    record_scope_row["namespace_slug"],
+                    record_scope_row["namespace_sharing_mode"],
+                    record_scope_row["app_client_name"],
+                    record_scope_row["app_client_type"],
+                    record_scope_row["app_client_provider"],
+                    record_scope_row["app_client_external_key"],
+                    record_scope_row["agent_name"],
+                    record_scope_row["agent_external_key"],
+                    record_scope_row["session_external_key"],
+                    record_scope_row["session_kind"],
+                    record_scope_row["project_slug"],
+                    record_scope_row["project_display_name"],
+                    record_scope_row["project_root_uri"],
+                    record_scope_row["project_repo_remote"],
+                    record_scope_row["project_default_branch"],
+                ),
             )
             ids.append(rec_id)
 

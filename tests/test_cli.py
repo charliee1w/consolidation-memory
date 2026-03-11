@@ -324,6 +324,8 @@ class TestExportImportHardening:
         assert json.loads(topics[0]["source_episodes"]) == []
 
     def test_import_round_trip_claim_graph_entities(self, tmp_data_dir):
+        import numpy as np
+
         from consolidation_memory.cli import cmd_import
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
@@ -430,7 +432,11 @@ class TestExportImportHardening:
         import_path = cfg.BACKUP_DIR / "import_claim_graph_round_trip.json"
         import_path.write_text(json.dumps(payload), encoding="utf-8")
 
-        cmd_import(str(import_path))
+        with patch(
+            "consolidation_memory.backends.encode_documents",
+            return_value=np.ones((1, 384), dtype=np.float32),
+        ):
+            cmd_import(str(import_path))
 
         assert len(get_all_claims()) == 2
         assert len(get_all_claim_edges()) == 1
@@ -468,7 +474,7 @@ class TestExportImportHardening:
 
         assert get_all_episodes(include_deleted=False) == []
 
-    def test_import_remaps_topic_ids_for_knowledge_records(self, tmp_data_dir):
+    def test_import_preserves_exported_topic_ids_for_knowledge_records(self, tmp_data_dir):
         from consolidation_memory.cli import cmd_import
         from consolidation_memory.config import get_config
         from consolidation_memory.database import get_all_active_records, get_all_knowledge_topics
@@ -510,10 +516,11 @@ class TestExportImportHardening:
         records = get_all_active_records()
         assert len(topics) == 1
         assert len(records) == 1
-        assert topics[0]["id"] != "topic-export-1"
-        assert records[0]["topic_id"] == topics[0]["id"]
+        assert topics[0]["id"] == "topic-export-1"
+        assert records[0]["topic_id"] == "topic-export-1"
+        assert records[0]["id"] == "record-export-1"
 
-    def test_import_remaps_record_ids_for_claim_sources(self, tmp_data_dir):
+    def test_import_preserves_exported_record_ids_for_claim_sources(self, tmp_data_dir):
         from consolidation_memory.cli import cmd_import
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
@@ -592,6 +599,183 @@ class TestExportImportHardening:
         assert len(topics) == 1
         assert len(records) == 1
         assert len(claim_sources) == 1
-        assert claim_sources[0]["source_topic_id"] == topics[0]["id"]
-        assert claim_sources[0]["source_record_id"] == records[0]["id"]
-        assert claim_sources[0]["source_record_id"] != "record-export-1"
+        assert topics[0]["id"] == "topic-export-1"
+        assert records[0]["id"] == "record-export-1"
+        assert claim_sources[0]["source_topic_id"] == "topic-export-1"
+        assert claim_sources[0]["source_record_id"] == "record-export-1"
+
+    def test_import_preserves_episode_scope_and_temporal_fields(self, tmp_data_dir):
+        import numpy as np
+
+        from consolidation_memory.cli import cmd_import
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import get_episode
+
+        cfg = get_config()
+        payload = {
+            "exported_at": "2026-03-06T00:00:00+00:00",
+            "version": "1.2",
+            "episodes": [
+                {
+                    "id": "ep-scope-1",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-02T00:00:00+00:00",
+                    "content": "Scoped imported episode",
+                    "content_type": "fact",
+                    "tags": ["imported", "scoped"],
+                    "surprise_score": 0.6,
+                    "access_count": 7,
+                    "source_session": "session-42",
+                    "consolidated": 1,
+                    "consolidated_at": "2026-01-03T00:00:00+00:00",
+                    "consolidated_to": "topic.md",
+                    "deleted": 0,
+                    "consolidation_attempts": 2,
+                    "last_consolidation_attempt": "2026-01-03T00:00:00+00:00",
+                    "protected": 1,
+                    "namespace_slug": "team-a",
+                    "namespace_sharing_mode": "shared",
+                    "app_client_name": "gateway",
+                    "app_client_type": "rest",
+                    "project_slug": "repo-a",
+                    "project_display_name": "Repo A",
+                }
+            ],
+            "knowledge_topics": [],
+            "knowledge_records": [],
+            "stats": {"episode_count": 1, "knowledge_count": 0, "record_count": 0},
+        }
+        import_path = cfg.BACKUP_DIR / "import_episode_scope_temporal.json"
+        import_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with patch(
+            "consolidation_memory.backends.encode_documents",
+            return_value=np.ones((1, 384), dtype=np.float32),
+        ):
+            cmd_import(str(import_path))
+
+        episode = get_episode(
+            "ep-scope-1",
+            scope={
+                "namespace_slug": "team-a",
+                "project_slug": "repo-a",
+                "app_client_name": "gateway",
+                "app_client_type": "rest",
+            },
+        )
+        assert episode is not None
+        assert episode["created_at"] == "2026-01-01T00:00:00+00:00"
+        assert episode["updated_at"] == "2026-01-02T00:00:00+00:00"
+        assert episode["access_count"] == 7
+        assert episode["source_session"] == "session-42"
+        assert episode["consolidated"] == 1
+        assert episode["consolidated_at"] == "2026-01-03T00:00:00+00:00"
+        assert episode["consolidated_to"] == "topic.md"
+        assert episode["consolidation_attempts"] == 2
+        assert episode["last_consolidation_attempt"] == "2026-01-03T00:00:00+00:00"
+        assert episode["protected"] == 1
+        assert episode["namespace_slug"] == "team-a"
+        assert episode["namespace_sharing_mode"] == "shared"
+        assert episode["app_client_name"] == "gateway"
+        assert episode["app_client_type"] == "rest"
+        assert episode["project_slug"] == "repo-a"
+        assert episode["project_display_name"] == "Repo A"
+
+    def test_import_preserves_knowledge_topic_and_record_scope_and_temporal_fields(self, tmp_data_dir):
+        from consolidation_memory.cli import cmd_import
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import get_all_active_records, get_all_knowledge_topics
+
+        cfg = get_config()
+        payload = {
+            "exported_at": "2026-03-06T00:00:00+00:00",
+            "version": "1.2",
+            "episodes": [],
+            "knowledge_topics": [
+                {
+                    "id": "topic-scope-1",
+                    "filename": "topic.md",
+                    "title": "Topic",
+                    "summary": "Summary",
+                    "source_episodes": ["ep-scope-1"],
+                    "fact_count": 1,
+                    "confidence": 0.85,
+                    "created_at": "2026-01-10T00:00:00+00:00",
+                    "updated_at": "2026-01-12T00:00:00+00:00",
+                    "access_count": 4,
+                    "namespace_slug": "team-a",
+                    "namespace_sharing_mode": "shared",
+                    "app_client_name": "gateway",
+                    "app_client_type": "rest",
+                    "project_slug": "repo-a",
+                    "project_display_name": "Repo A",
+                    "file_content": "# Topic\n",
+                }
+            ],
+            "knowledge_records": [
+                {
+                    "id": "record-scope-1",
+                    "topic_id": "topic-scope-1",
+                    "record_type": "fact",
+                    "content": {"subject": "A", "info": "old"},
+                    "embedding_text": "A old",
+                    "source_episodes": ["ep-scope-1"],
+                    "confidence": 0.75,
+                    "created_at": "2026-01-11T00:00:00+00:00",
+                    "updated_at": "2026-01-13T00:00:00+00:00",
+                    "access_count": 9,
+                    "valid_from": "2026-01-11T00:00:00+00:00",
+                    "valid_until": "2026-02-01T00:00:00+00:00",
+                    "namespace_slug": "team-a",
+                    "namespace_sharing_mode": "shared",
+                    "app_client_name": "gateway",
+                    "app_client_type": "rest",
+                    "project_slug": "repo-a",
+                    "project_display_name": "Repo A",
+                }
+            ],
+            "stats": {"episode_count": 0, "knowledge_count": 1, "record_count": 1},
+        }
+        import_path = cfg.BACKUP_DIR / "import_record_scope_temporal.json"
+        import_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        cmd_import(str(import_path))
+
+        topics = get_all_knowledge_topics(
+            scope={
+                "namespace_slug": "team-a",
+                "project_slug": "repo-a",
+                "app_client_name": "gateway",
+                "app_client_type": "rest",
+            }
+        )
+        records = get_all_active_records(
+            include_expired=True,
+            scope={
+                "namespace_slug": "team-a",
+                "project_slug": "repo-a",
+                "app_client_name": "gateway",
+                "app_client_type": "rest",
+            },
+        )
+
+        assert len(topics) == 1
+        assert topics[0]["id"] == "topic-scope-1"
+        assert topics[0]["created_at"] == "2026-01-10T00:00:00+00:00"
+        assert topics[0]["updated_at"] == "2026-01-12T00:00:00+00:00"
+        assert topics[0]["access_count"] == 4
+        assert topics[0]["namespace_slug"] == "team-a"
+        assert topics[0]["app_client_name"] == "gateway"
+        assert topics[0]["project_slug"] == "repo-a"
+
+        assert len(records) == 1
+        assert records[0]["id"] == "record-scope-1"
+        assert records[0]["topic_id"] == "topic-scope-1"
+        assert records[0]["created_at"] == "2026-01-11T00:00:00+00:00"
+        assert records[0]["updated_at"] == "2026-01-13T00:00:00+00:00"
+        assert records[0]["access_count"] == 9
+        assert records[0]["valid_from"] == "2026-01-11T00:00:00+00:00"
+        assert records[0]["valid_until"] == "2026-02-01T00:00:00+00:00"
+        assert records[0]["namespace_slug"] == "team-a"
+        assert records[0]["app_client_name"] == "gateway"
+        assert records[0]["project_slug"] == "repo-a"

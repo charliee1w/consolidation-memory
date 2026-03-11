@@ -41,6 +41,16 @@ def test_validate_rest_bind_allows_public_host_with_explicit_override(monkeypatc
     validate_rest_bind("0.0.0.0")
 
 
+def test_create_app_rejects_explicit_public_bind_without_auth(monkeypatch):
+    from consolidation_memory.rest import create_app
+
+    monkeypatch.delenv("CONSOLIDATION_MEMORY_REST_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CONSOLIDATION_MEMORY_REST_ALLOW_PUBLIC_BIND", raising=False)
+
+    with pytest.raises(RuntimeError, match="Refusing to bind REST API"):
+        create_app(bind_host="0.0.0.0")
+
+
 def test_rest_auth_rejects_missing_bearer_header(monkeypatch):
     from consolidation_memory.rest import create_app
 
@@ -90,3 +100,18 @@ def test_health_remains_open_when_auth_enabled(monkeypatch):
     with TestClient(create_app()) as client:
         response = client.get("/health")
     assert response.status_code == 200
+
+
+def test_programmatic_app_blocks_public_requests_without_auth(monkeypatch):
+    from consolidation_memory.rest import create_app
+
+    monkeypatch.delenv("CONSOLIDATION_MEMORY_REST_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CONSOLIDATION_MEMORY_REST_ALLOW_PUBLIC_BIND", raising=False)
+
+    with TestClient(create_app(), base_url="http://0.0.0.0:8123") as client:
+        response = client.get("/memory/status")
+        health = client.get("/health")
+
+    assert response.status_code == 503
+    assert "Refusing unauthenticated REST requests on a non-loopback bind" in response.json()["detail"]
+    assert health.status_code == 200

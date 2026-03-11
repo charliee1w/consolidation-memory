@@ -66,3 +66,11 @@ class TestScopeEnvelopeCoercion:
     def test_invalid_scope_type_raises(self):
         with pytest.raises(TypeError, match="scope must be a ScopeEnvelope, mapping, or None"):
             coerce_scope_envelope(123)  # type: ignore[arg-type]
+
+    def test_invalid_nested_project_type_raises(self):
+        with pytest.raises(TypeError, match=r"scope\.project must be an object"):
+            coerce_scope_envelope({"project": 5})  # type: ignore[arg-type]
+
+    def test_invalid_nested_policy_type_raises(self):
+        with pytest.raises(TypeError, match=r"scope\.policy must be an object"):
+            coerce_scope_envelope({"policy": 5})  # type: ignore[arg-type]

@@ -157,10 +157,12 @@ class ScopeResolver(Protocol):
         """Resolve scope input into a stable envelope."""
 
 
-def _as_mapping(value: object) -> Mapping[str, Any]:
+def _as_mapping(value: object, *, field_name: str) -> Mapping[str, Any]:
+    if value is None:
+        return {}
     if isinstance(value, Mapping):
         return value
-    return {}
+    raise TypeError(f"scope.{field_name} must be an object when provided")
 
 
 def _clean_str(value: object) -> str | None:
@@ -262,7 +264,7 @@ def coerce_scope_envelope(
     elif isinstance(namespace_raw, str):
         namespace = NamespaceScope(slug=namespace_raw)
     else:
-        ns = _as_mapping(namespace_raw)
+        ns = _as_mapping(namespace_raw, field_name="namespace")
         namespace = NamespaceScope(
             id=_clean_str(ns.get("id")),
             slug=_clean_str(ns.get("slug")) or "default",
@@ -276,7 +278,7 @@ def coerce_scope_envelope(
     elif isinstance(app_raw, str):
         app_client = AppClientScope(name=app_raw)
     else:
-        app = _as_mapping(app_raw)
+        app = _as_mapping(app_raw, field_name="app_client")
         app_client = AppClientScope(
             id=_clean_str(app.get("id")),
             app_type=_coerce_app_client_type(app.get("app_type")),
@@ -289,7 +291,7 @@ def coerce_scope_envelope(
     if isinstance(agent_raw, AgentScope):
         agent = agent_raw
     else:
-        agent_map = _as_mapping(agent_raw)
+        agent_map = _as_mapping(agent_raw, field_name="agent")
         agent = None
         if agent_map:
             agent = AgentScope(
@@ -304,7 +306,7 @@ def coerce_scope_envelope(
     if isinstance(session_raw, SessionScope):
         session = session_raw
     else:
-        session_map = _as_mapping(session_raw)
+        session_map = _as_mapping(session_raw, field_name="session")
         session = None
         if session_map:
             session = SessionScope(
@@ -317,7 +319,7 @@ def coerce_scope_envelope(
     if isinstance(project_raw, ProjectRepoScope):
         project = project_raw
     else:
-        project_map = _as_mapping(project_raw)
+        project_map = _as_mapping(project_raw, field_name="project")
         project = None
         if project_map:
             project = ProjectRepoScope(
@@ -333,7 +335,7 @@ def coerce_scope_envelope(
     if isinstance(policy_raw, PolicyScope):
         policy = policy_raw
     else:
-        policy_map = _as_mapping(policy_raw)
+        policy_map = _as_mapping(policy_raw, field_name="policy")
         policy = None
         if policy_map:
             policy = PolicyScope(

@@ -48,17 +48,34 @@ _MAX_BATCH_SIZE = 100
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "180")
 )
+_MEMORY_RECALL_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS", "45")
+)
+_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", "10")
+)
 _CLIENT_INIT_TIMEOUT_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "45")
 )
 _REST_AUTH_TOKEN_ENV = "CONSOLIDATION_MEMORY_REST_AUTH_TOKEN"  # nosec B105
 _REST_ALLOW_PUBLIC_BIND_ENV = "CONSOLIDATION_MEMORY_REST_ALLOW_PUBLIC_BIND"
 _AUTH_EXEMPT_PATHS = frozenset({"/health"})
+_SYNTHETIC_LOOPBACK_HOSTS = frozenset({"testserver"})
 
 
 def _drift_timeout_seconds() -> float:
     configured = _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS
     return configured if configured > 0 else 180.0
+
+
+def _recall_timeout_seconds() -> float:
+    configured = _MEMORY_RECALL_TIMEOUT_SECONDS
+    return configured if configured > 0 else 90.0
+
+
+def _recall_fallback_timeout_seconds() -> float:
+    configured = _MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS
+    return configured if configured > 0 else 20.0
 
 
 def _client_init_timeout_seconds() -> float:
@@ -111,6 +128,30 @@ def validate_rest_bind(host: str) -> None:
         return
     raise RuntimeError(
         "Refusing to bind REST API to non-loopback host without auth. "
+        f"Set {_REST_AUTH_TOKEN_ENV} to require Bearer auth, or set "
+        f"{_REST_ALLOW_PUBLIC_BIND_ENV}=true to override (not recommended)."
+    )
+
+
+def _request_bind_host(request: Request) -> str | None:
+    server = request.scope.get("server")
+    if not isinstance(server, (tuple, list)) or not server:
+        return None
+    host = server[0]
+    return host if isinstance(host, str) and host else None
+
+
+def _request_bind_is_safe(host: str | None) -> bool:
+    if host is None:
+        return False
+    if host in _SYNTHETIC_LOOPBACK_HOSTS:
+        return True
+    return _is_loopback_host(host)
+
+
+def _public_bind_detail() -> str:
+    return (
+        "Refusing unauthenticated REST requests on a non-loopback bind. "
         f"Set {_REST_AUTH_TOKEN_ENV} to require Bearer auth, or set "
         f"{_REST_ALLOW_PUBLIC_BIND_ENV}=true to override (not recommended)."
     )
@@ -228,12 +269,15 @@ class ConsolidationLogRequest(BaseModel):
     last_n: int = Field(default=5, ge=1, le=20)
 
 
-def create_app() -> FastAPI:
+def create_app(*, bind_host: str | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
+    if bind_host is not None:
+        validate_rest_bind(bind_host)
     runtime = MemoryRuntime()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        del app
         runtime.startup()
         from consolidation_memory.config import get_active_project
         import logging
@@ -258,6 +302,19 @@ def _install_auth_middleware(app: FastAPI) -> None:
     @app.middleware("http")
     async def _rest_auth_middleware(request: Request, call_next):  # pragma: no cover - exercised in REST tests
         token = get_rest_auth_token()
+        allow_public_bind = _truthy_env(_REST_ALLOW_PUBLIC_BIND_ENV)
+        if (
+            token is None
+            and not allow_public_bind
+            and request.method != "OPTIONS"
+            and request.url.path not in _AUTH_EXEMPT_PATHS
+            and not _request_bind_is_safe(_request_bind_host(request))
+        ):
+            return JSONResponse(
+                status_code=503,
+                content={"detail": _public_bind_detail()},
+            )
+
         if token is None or request.method == "OPTIONS" or request.url.path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
 
@@ -308,13 +365,23 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
                         "increase CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS."
                     ),
                 ) from exc
-        return await runtime.run_blocking(
-            execute_tool_call,
-            name,
-            arguments,
-            client=client,
-            timeout=timeout,
-        )
+        try:
+            return await runtime.run_blocking(
+                execute_tool_call,
+                name,
+                arguments,
+                client=client,
+                timeout=timeout,
+            )
+        except TimeoutError as exc:
+            timeout_detail = (
+                f"{name} timed out after {timeout:g}s."
+                if timeout is not None
+                else f"{name} timed out."
+            )
+            raise HTTPException(status_code=408, detail=timeout_detail) from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/memory/store")
     async def store(req: StoreRequest):
@@ -334,7 +401,69 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         """Retrieve relevant memories by semantic similarity."""
         payload = req.model_dump()
         payload["content_types"] = cast(list[str] | None, req.content_types)
-        return await _execute("memory_recall", payload)
+        timeout_seconds = _recall_timeout_seconds()
+        fallback_timeout = _recall_fallback_timeout_seconds()
+        try:
+            return await _execute("memory_recall", payload, timeout=timeout_seconds)
+        except HTTPException as exc:
+            if exc.status_code != 408:
+                raise
+
+        search_payload: dict[str, object] = {
+            "query": req.query,
+            "content_types": cast(list[str] | None, req.content_types),
+            "tags": req.tags,
+            "after": req.after,
+            "before": req.before,
+            "limit": req.n_results,
+            "scope": req.scope,
+        }
+        try:
+            keyword_result = await _execute(
+                "memory_search",
+                search_payload,
+                timeout=fallback_timeout,
+            )
+        except HTTPException as exc:
+            if exc.status_code == 408:
+                raise HTTPException(
+                    status_code=408,
+                    detail=(
+                        f"memory_recall timed out after {timeout_seconds:g}s and keyword "
+                        f"fallback timed out after {fallback_timeout:g}s. Try a shorter query, "
+                        "reduce n_results, or set "
+                        "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS higher."
+                    ),
+                ) from exc
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"memory_recall timed out after {timeout_seconds:g}s and keyword fallback "
+                    f"failed: {exc.detail}"
+                ),
+            ) from exc
+
+        warnings = [
+            f"Recall timed out after {timeout_seconds:g}s; returned episodes-only fallback."
+        ]
+        if req.include_knowledge:
+            warnings.append("Knowledge retrieval skipped in fallback mode.")
+
+        return {
+            "episodes": list(keyword_result.get("episodes", [])),
+            "knowledge": [],
+            "records": [],
+            "claims": [],
+            "total_episodes": int(
+                keyword_result.get(
+                    "total_matches",
+                    len(keyword_result.get("episodes", [])),
+                )
+            ),
+            "total_knowledge_topics": 0,
+            "message": "Semantic recall timed out; returned keyword episodes-only fallback.",
+            "warnings": warnings,
+        }
 
     @app.post("/memory/search")
     async def search(req: SearchRequest):

@@ -37,7 +37,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install dependencies
-        run: pip install -e ".[fastembed,rest,dev]" pytest-cov
+        run: pip install -e ".[fastembed,rest,dev]"
 
       - name: Run tests
         run: python -m pytest tests/ -v --cov=consolidation_memory --cov-report=xml
@@ -53,6 +53,9 @@ jobs:
 
       - name: Type check
         run: mypy src/consolidation_memory/
+
+      - name: Security check
+        run: bandit -q -r src scripts
 
   release_gates:
     needs: quality_gates
@@ -96,10 +99,38 @@ jobs:
           python-version: "3.13"
 
       - name: Install build tools
-        run: pip install build
+        run: pip install build twine
 
       - name: Build sdist and wheel
         run: python -m build
+
+      - name: Verify build output
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          files = sorted(path.name for path in Path("dist").iterdir() if path.is_file())
+          wheels = [name for name in files if name.endswith(".whl")]
+          sdists = [name for name in files if name.endswith(".tar.gz")]
+          if len(wheels) != 1 or len(sdists) != 1:
+              raise SystemExit(
+                  f"Expected exactly one wheel and one sdist, found wheels={len(wheels)}, "
+                  f"sdists={len(sdists)}: {files}"
+              )
+          bad = [
+              name
+              for name in wheels + sdists
+              if version not in name or not name.startswith("consolidation_memory-")
+          ]
+          if bad:
+              raise SystemExit(f"Artifact names do not match version {version}: {bad}")
+          print(f"Validated build artifacts for version {version}: {files}")
+          PY
+
+      - name: Validate build artifacts
+        run: python -m twine check --strict dist/*
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

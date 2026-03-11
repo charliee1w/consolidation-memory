@@ -1572,6 +1572,7 @@ class MemoryClient:
             get_knowledge_topic,
             get_records_by_topic,
             insert_knowledge_records,
+            topic_storage_filename,
             upsert_knowledge_topic,
         )
         from consolidation_memory.consolidation.engine import _version_knowledge_file
@@ -1592,16 +1593,16 @@ class MemoryClient:
         mutation_filter = _resolved_scope_to_mutation_filter(resolved_scope)
 
         # Validate filename doesn't escape KNOWLEDGE_DIR (path traversal)
-        filepath = (cfg.KNOWLEDGE_DIR / topic_filename).resolve()
+        existing_topic = get_knowledge_topic(topic_filename, scope=mutation_filter)
+        if existing_topic is None:
+            return CorrectResult(status="not_found", filename=topic_filename)
+        filepath = (cfg.KNOWLEDGE_DIR / topic_storage_filename(existing_topic)).resolve()
         if not filepath.is_relative_to(cfg.KNOWLEDGE_DIR.resolve()):
             return CorrectResult(
                 status="error",
                 filename=topic_filename,
                 message="Invalid filename: path traversal detected.",
             )
-        existing_topic = get_knowledge_topic(topic_filename, scope=mutation_filter)
-        if existing_topic is None:
-            return CorrectResult(status="not_found", filename=topic_filename)
         if not filepath.exists():
             return CorrectResult(status="not_found", filename=topic_filename)
 
@@ -1758,7 +1759,11 @@ class MemoryClient:
         Returns:
             BrowseResult with topic list and count.
         """
-        from consolidation_memory.database import get_all_knowledge_topics, get_all_active_records
+        from consolidation_memory.database import (
+            get_all_active_records,
+            get_all_knowledge_topics,
+            topic_storage_filename,
+        )
         from consolidation_memory.config import get_config
 
         self._ensure_open()
@@ -1780,7 +1785,7 @@ class MemoryClient:
 
         result_topics = []
         for topic in topics:
-            filepath = cfg.KNOWLEDGE_DIR / topic["filename"]
+            filepath = cfg.KNOWLEDGE_DIR / topic_storage_filename(topic)
             rec_counts = records_by_topic.get(topic["id"], {})
             total_records = sum(rec_counts.values())
             result_topics.append({
@@ -1812,16 +1817,17 @@ class MemoryClient:
             TopicDetailResult with the markdown content.
         """
         from consolidation_memory.config import get_config
-        from consolidation_memory.database import get_knowledge_topic
+        from consolidation_memory.database import get_knowledge_topic, topic_storage_filename
 
         self._ensure_open()
         cfg = get_config()
         resolved_scope = self.resolve_scope(scope)
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
-        if get_knowledge_topic(filename, scope=scope_filter) is None:
+        topic_row = get_knowledge_topic(filename, scope=scope_filter)
+        if topic_row is None:
             return TopicDetailResult(status="not_found", filename=filename)
 
-        filepath = (cfg.KNOWLEDGE_DIR / filename).resolve()
+        filepath = (cfg.KNOWLEDGE_DIR / topic_storage_filename(topic_row)).resolve()
 
         # Path traversal guard
         if not filepath.is_relative_to(cfg.KNOWLEDGE_DIR.resolve()):
@@ -1988,6 +1994,7 @@ class MemoryClient:
         from consolidation_memory.database import (
             get_contradictions as db_get_contradictions,
             get_all_knowledge_topics,
+            topic_storage_filename,
         )
 
         self._ensure_open()
@@ -1995,7 +2002,9 @@ class MemoryClient:
         if topic:
             topics = get_all_knowledge_topics()
             for t in topics:
-                if topic in (t["filename"], t["title"]):
+                logical_filename = str(t.get("filename", ""))
+                storage_name = topic_storage_filename(t)
+                if topic in (logical_filename, storage_name, t["title"]):
                     topic_id = t["id"]
                     break
             else:

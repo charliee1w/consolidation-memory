@@ -48,6 +48,24 @@ jobs:
               sys.exit(1)
           PY
 
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install packaging dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Validate built artifacts
+        run: python -m twine check --strict dist/*
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -72,7 +90,7 @@ jobs:
             ${{ runner.os }}-pip-${{ matrix.python-version }}-
 
       - name: Install dependencies
-        run: pip install -e ".[fastembed,dev]" pytest-cov
+        run: pip install -e ".[fastembed,dev]"
 
       - name: Install REST dependencies
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
@@ -100,3 +118,29 @@ jobs:
       - name: Security check
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
         run: bandit -q -r src scripts
+
+  optional_surfaces:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install optional surface dependencies
+        run: pip install -e ".[all,dev]"
+
+      - name: Run optional surface tests
+        run: >
+          python -m pytest
+          tests/test_optional_surfaces.py
+          tests/test_rest.py
+          tests/test_rest_security.py
+          tests/test_claim_retrieval.py
+          tests/test_scope_policy_contracts.py
+          tests/test_surface_contracts.py
+          tests/test_temporal_belief_queries.py
+          tests/test_dashboard.py
+          tests/test_dashboard_data.py
+          -q

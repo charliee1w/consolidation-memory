@@ -23,6 +23,30 @@ import tempfile
 from consolidation_memory import __version__
 from consolidation_memory.utils import parse_json_list
 
+_EXPORTED_SCOPE_KEYS: tuple[str, ...] = (
+    "namespace_slug",
+    "namespace_sharing_mode",
+    "app_client_name",
+    "app_client_type",
+    "app_client_provider",
+    "app_client_external_key",
+    "agent_name",
+    "agent_external_key",
+    "session_external_key",
+    "session_kind",
+    "project_slug",
+    "project_display_name",
+    "project_root_uri",
+    "project_repo_remote",
+    "project_default_branch",
+)
+
+
+def _scope_from_export_row(row: dict[str, object]) -> dict[str, object]:
+    """Extract persisted scope columns from an exported row."""
+    scope = {key: row.get(key) for key in _EXPORTED_SCOPE_KEYS if key in row}
+    return {key: value for key, value in scope.items() if value is not None}
+
 
 def _recommended_mcp_server_config(project: str) -> dict[str, object]:
     """Return the most stable MCP launch configuration for the current interpreter."""
@@ -545,7 +569,7 @@ def cmd_import(path: str):
     from consolidation_memory.database import (
         ensure_schema, insert_episode, upsert_knowledge_topic, get_episode,
         insert_knowledge_records, hard_delete_episode,
-        import_claim_graph_snapshot,
+        import_claim_graph_snapshot, get_connection,
     )
     from consolidation_memory.backends import encode_documents
     from consolidation_memory.vector_store import VectorStore
@@ -597,6 +621,18 @@ def cmd_import(path: str):
                 "content_type": ep.get("content_type", "exchange"),
                 "tags": tags,
                 "surprise_score": ep.get("surprise_score", 0.5),
+                "source_session": ep.get("source_session"),
+                "created_at": ep.get("created_at"),
+                "updated_at": ep.get("updated_at"),
+                "access_count": ep.get("access_count"),
+                "consolidated": ep.get("consolidated"),
+                "consolidated_at": ep.get("consolidated_at"),
+                "consolidated_to": ep.get("consolidated_to"),
+                "deleted": ep.get("deleted"),
+                "consolidation_attempts": ep.get("consolidation_attempts"),
+                "last_consolidation_attempt": ep.get("last_consolidation_attempt"),
+                "protected": ep.get("protected"),
+                "scope": _scope_from_export_row(ep),
             }
         )
 
@@ -621,7 +657,19 @@ def cmd_import(path: str):
                     content_type=ep["content_type"],
                     tags=ep["tags"],
                     surprise_score=ep["surprise_score"],
+                    source_session=ep.get("source_session"),
+                    scope=ep.get("scope"),
                     episode_id=ep["id"],
+                    created_at=ep.get("created_at"),
+                    updated_at=ep.get("updated_at"),
+                    access_count=ep.get("access_count"),
+                    consolidated=ep.get("consolidated"),
+                    consolidated_at=ep.get("consolidated_at"),
+                    consolidated_to=ep.get("consolidated_to"),
+                    deleted=ep.get("deleted"),
+                    consolidation_attempts=ep.get("consolidation_attempts"),
+                    last_consolidation_attempt=ep.get("last_consolidation_attempt"),
+                    protected=ep.get("protected"),
                 )
             except Exception as e:
                 print(f"  Warning: Failed to insert episode {ep.get('id', '?')}: {e}")
@@ -668,6 +716,11 @@ def cmd_import(path: str):
             source_episodes=source_eps,
             fact_count=topic.get("fact_count", 0),
             confidence=topic.get("confidence", 0.8),
+            scope=_scope_from_export_row(topic),
+            topic_id=topic.get("id"),
+            created_at=topic.get("created_at"),
+            updated_at=topic.get("updated_at"),
+            access_count=topic.get("access_count"),
         )
         old_topic_id = topic.get("id")
         if old_topic_id:
@@ -679,24 +732,43 @@ def cmd_import(path: str):
     # Import knowledge records (v1.1+ exports)
     r_imported = 0
     record_id_map: dict[str, str] = {}
+    with get_connection() as conn:
+        existing_record_ids = {
+            str(row["id"])
+            for row in conn.execute("SELECT id FROM knowledge_records").fetchall()
+            if row["id"] is not None
+        }
     for rec in data.get("knowledge_records", []):
         if not rec.get("topic_id") or not rec.get("record_type"):
+            continue
+        old_record_id = rec.get("id")
+        if old_record_id is not None and str(old_record_id) in existing_record_ids:
+            record_id_map[str(old_record_id)] = str(old_record_id)
             continue
         topic_id = topic_id_map.get(str(rec["topic_id"]), rec["topic_id"])
         try:
             inserted_ids = insert_knowledge_records(
                 topic_id=topic_id,
                 records=[{
+                    "id": rec.get("id"),
                     "record_type": rec["record_type"],
                     "content": rec.get("content", "{}"),
                     "embedding_text": rec.get("embedding_text", ""),
+                    "source_episodes": rec.get("source_episodes", []),
                     "confidence": rec.get("confidence", 0.8),
+                    "created_at": rec.get("created_at"),
+                    "updated_at": rec.get("updated_at"),
+                    "access_count": rec.get("access_count"),
+                    "deleted": rec.get("deleted"),
+                    "valid_from": rec.get("valid_from"),
+                    "valid_until": rec.get("valid_until"),
+                    "scope": _scope_from_export_row(rec),
                 }],
                 source_episodes=parse_json_list(rec.get("source_episodes")),
             )
-            old_record_id = rec.get("id")
             if old_record_id and inserted_ids:
                 record_id_map[str(old_record_id)] = inserted_ids[0]
+                existing_record_ids.add(inserted_ids[0])
             r_imported += 1
         except Exception as e:
             print(f"  Warning: Failed to import record {rec.get('id', '?')}: {e}")

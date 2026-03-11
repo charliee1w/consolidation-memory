@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/charliee1w/consolidation-memory/discussions
+    about: Ask usage questions or share what you built.
+  - name: Security policy
+    url: https://github.com/charliee1w/consolidation-memory/security/policy
+    about: Report a security issue privately.

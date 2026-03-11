@@ -1,40 +1,104 @@
 # consolidation-memory
 
 [![PyPI](https://img.shields.io/pypi/v/consolidation-memory)](https://pypi.org/project/consolidation-memory/)
+[![GitHub Release](https://img.shields.io/github/v/release/charliee1w/consolidation-memory?display_name=tag)](https://github.com/charliee1w/consolidation-memory/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/charliee1w/consolidation-memory/test.yml?label=tests)](https://github.com/charliee1w/consolidation-memory/actions)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://pypi.org/project/consolidation-memory/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/charliee1w/consolidation-memory?style=social)](https://github.com/charliee1w/consolidation-memory/stargazers)
 
-Local-first persistent memory for coding agents.
+Local-first memory for coding agents that preserves provenance, temporal truth, and code-drift awareness.
 
+`consolidation-memory` stores episodic events, consolidates them into structured knowledge, and serves the same trust-aware retrieval semantics across Python, MCP, REST, and OpenAI-style tool calls.
 
+## Try It In 5 Minutes
 
-`consolidation-memory` stores episodic events, consolidates them into structured knowledge, and exposes a trust-aware retrieval stack (temporal recall, contradiction tracking, claim provenance, and drift challenge workflows).
+```bash
+pip install "consolidation-memory[fastembed]"
+consolidation-memory init
+consolidation-memory test
+consolidation-memory serve
+```
 
-## What It Is
+What that gives you immediately:
 
-- Episode storage with semantic dedup and FAISS indexing.
-- Hybrid recall across episodes, knowledge topics, structured records, and claims.
-- Claim graph with provenance (`claim_sources`) and lifecycle events (`claim_events`).
-- Temporal queries (`as_of`) for both knowledge and claims.
-- Drift detection that maps changed files to anchored claims and marks impacted claims challenged.
-- Multi-scope persistence (namespace/project/app/agent/session columns) with compatibility defaults.
-- Four access surfaces:
-  - MCP server (`consolidation-memory serve`)
-  - Python API (`MemoryClient`)
-  - REST API (`consolidation-memory serve --rest`)
-  - OpenAI-style tool schemas (`consolidation_memory.schemas.openai_tools`)
+- Durable local storage with SQLite + FAISS
+- A health check that validates the runtime end to end
+- An MCP server that coding agents can connect to over stdio
+- A clean path to REST, OpenAI-style tools, and scoped shared-memory use later
+
+If you want runnable integration snippets instead of docs, start in [examples/](examples/README.md).
+
+## Why It Is Different
+
+| Capability | What `consolidation-memory` does |
+| --- | --- |
+| Local-first persistence | Stores memory on disk in inspectable SQLite, FAISS, markdown, and log artifacts |
+| Trust-aware retrieval | Tracks temporal validity, contradictions, provenance, and claim lifecycle events |
+| Drift-aware knowledge | Maps changed files to anchored claims and challenges impacted knowledge automatically |
+| Shared memory without chaos | Supports namespace/project/app/agent/session scope dimensions with policy controls |
+| Transport parity | Keeps MCP, REST, Python, and OpenAI-style tool semantics aligned |
+| Builder ergonomics | Ships package metadata, release gates, examples, smoke tests, CI, and contributor docs |
+
+## Architecture At A Glance
+
+```mermaid
+flowchart LR
+    A["Agent / App"] --> B["MCP / REST / Python / OpenAI tools"]
+    B --> C["MemoryClient"]
+    C --> D["Canonical query semantics"]
+    C --> E["SQLite + knowledge markdown"]
+    C --> F["FAISS vector store"]
+    C --> G["Claim graph + anchors + drift signals"]
+    G --> H["Changed files -> challenged claims"]
+    D --> I["Episodes + topics + records + claims"]
+```
+
+More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Examples
+
+The repo now keeps runnable or close-to-runnable examples in the root [examples/](examples/README.md) directory:
+
+- [Python quickstart](examples/python-quickstart/quickstart.py)
+- [REST API client](examples/rest-api/README.md)
+- [Cursor MCP config](examples/cursor-integration/README.md)
+- [Continue config](examples/continue-dev/README.md)
+- [LangGraph memory node](examples/langgraph-memory-node/README.md)
+- [Plugin hook example](examples/plugins/README.md)
+
+Legacy raw config snippets still exist under [docs/examples/](docs/examples/).
+
+## Backend Support
+
+`consolidation-memory` supports both fully local and hosted setups.
+
+| Layer | Supported backends | Recommended default | Local-only option |
+| --- | --- | --- | --- |
+| Embeddings | `fastembed`, `lmstudio`, `openai`, `ollama` | `fastembed` | `fastembed`, `lmstudio`, `ollama` |
+| LLM consolidation | `lmstudio`, `openai`, `ollama`, `disabled` | `lmstudio` | `lmstudio`, `ollama`, `disabled` |
+
+See [docs/MODEL_SUPPORT.md](docs/MODEL_SUPPORT.md) for the full matrix, defaults, and install notes.
+
+## Privacy And Trust
+
+- No built-in telemetry.
+- Data is stored locally under `platformdirs.user_data_dir("consolidation_memory")`.
+- Network calls only go to the embedding and LLM backends you configure.
+- REST auth is required before non-loopback binds.
+- The repo ships with tests, smoke checks, release gates, lint, type checks, and security scanning.
 
 ## Install
 
 ```bash
-pip install consolidation-memory[fastembed]
+pip install "consolidation-memory[fastembed]"
 ```
 
 Common extras:
 
 - `consolidation-memory[rest]` for FastAPI endpoints
 - `consolidation-memory[dashboard]` for the Textual dashboard
+- `consolidation-memory[openai]` for the OpenAI SDK backend
 - `consolidation-memory[all,dev]` for full local development
 
 ## Quick Start
@@ -82,7 +146,8 @@ dashboard        Launch Textual dashboard
 }
 ```
 
-Prefer an exact Python interpreter over the `consolidation-memory` console script. It avoids PATH/env drift and is more reliable on Windows when MCP hosts restart the server.
+Prefer an exact Python interpreter over the `consolidation-memory` console script. It avoids PATH and env drift and is more reliable on Windows when MCP hosts restart the server.
+
 For long-lived MCP hosts, keep `CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS=0` unless you explicitly want the server to auto-exit when idle.
 
 MCP tools exposed by `server.py`:
@@ -134,7 +199,7 @@ with MemoryClient(auto_consolidate=False) as mem:
 Run:
 
 ```bash
-pip install consolidation-memory[rest]
+pip install "consolidation-memory[rest]"
 consolidation-memory serve --rest --host 127.0.0.1 --port 8080
 ```
 
@@ -200,7 +265,7 @@ Optional `scope.policy` controls:
 - `write_mode`: `allow` (default), `deny`
 
 Persisted ACL entities are also supported (`access_policies`, `policy_principals`, `policy_acl_entries`).
-When persisted ACL rows match the resolved scope/principal, they are authoritative over `scope.policy`.
+When persisted ACL rows match the resolved scope and principal, they are authoritative over `scope.policy`.
 Conflict rules: write `deny` overrides `allow`; read visibility resolves to the most restrictive level.
 
 ## Storage Layout
@@ -241,11 +306,11 @@ CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=6
 ## Documentation Map
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Roadmap](docs/ROADMAP.md)
+- [Builder Baseline](docs/BUILDER_BASELINE.md)
+- [Model Support](docs/MODEL_SUPPORT.md)
 - [Release Gates](docs/RELEASE_GATES.md)
 - [Novelty Metrics](docs/NOVELTY_METRICS.md)
 - [Novelty Eval Guide](docs/NOVELTY_EVAL_GUIDE.md)
-- [Builder Baseline](docs/BUILDER_BASELINE.md)
 - [External Review Playbook](docs/EXTERNAL_REVIEW_PLAYBOOK.md)
 - [Recommended Agent Instructions](docs/recommended-agent-instructions.md)
 - [Universal-memory strategy docs](docs/strategy/)
@@ -255,11 +320,13 @@ CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=6
 ```bash
 git clone https://github.com/charliee1w/consolidation-memory
 cd consolidation-memory
-pip install -e ".[all,dev]"
+pip install -r requirements-dev.txt
 python scripts/smoke_builder_base.py
 pytest tests/ -q
+pytest tests/ -q -W error::ResourceWarning
 ruff check src/ tests/
 mypy src/consolidation_memory/
+bandit -q -r src scripts
 ```
 
 ## Community
@@ -267,10 +334,14 @@ mypy src/consolidation_memory/
 - Contributors: [CONTRIBUTORS.md](CONTRIBUTORS.md)
 - Issues: [GitHub Issues](https://github.com/charliee1w/consolidation-memory/issues)
 - Discussions: [GitHub Discussions](https://github.com/charliee1w/consolidation-memory/discussions)
+- Releases: [GitHub Releases](https://github.com/charliee1w/consolidation-memory/releases)
 
 ## License, Etc.
+
 Project policies:
+
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
+
 MIT

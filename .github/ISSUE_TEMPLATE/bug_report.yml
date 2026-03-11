@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a defect with concrete reproduction details.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please include a minimal reproduction and the
+        exact validation evidence you already gathered.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What broke?
+      placeholder: Recall returned records from the wrong scope after...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use a numbered list or paste exact commands/code.
+      placeholder: |
+        1. Set CONSOLIDATION_MEMORY_PROJECT=demo
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Validation evidence
+      description: Paste command output, stack traces, logs, or screenshots.
+      placeholder: |
+        pytest tests/test_client.py -q
+        Traceback (most recent call last):
+        ...
+    validations:
+      required: true
+  - type: dropdown
+    id: surfaces
+    attributes:
+      label: Affected surface
+      multiple: true
+      options:
+        - Python API
+        - MCP server
+        - REST API
+        - OpenAI-compatible tools
+        - CLI
+        - Dashboard
+        - Export/import
+        - Plugins
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        OS:
+        Python:
+        package version:
+        embedding backend:
+        llm backend:
+  - type: checkboxes
+    id: trust
+    attributes:
+      label: Trust-sensitive impact
+      options:
+        - label: This affects scope, ACL, privacy, or authorization behavior.
+        - label: This affects provenance, contradiction, or drift semantics.

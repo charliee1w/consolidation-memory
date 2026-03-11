@@ -10,7 +10,19 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{name = "Charlie Wright"}]
-keywords = ["mcp", "memory", "ai", "semantic-search", "faiss", "agents"]
+keywords = [
+    "mcp",
+    "memory",
+    "ai",
+    "semantic-search",
+    "faiss",
+    "agents",
+    "persistent-memory",
+    "local-first",
+    "coding-agents",
+    "drift-detection",
+    "provenance",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -46,8 +58,12 @@ consolidation-memory = "consolidation_memory.cli:main"
 [project.urls]
 Homepage = "https://github.com/charliee1w/consolidation-memory"
 Repository = "https://github.com/charliee1w/consolidation-memory"
+Documentation = "https://github.com/charliee1w/consolidation-memory#readme"
 Issues = "https://github.com/charliee1w/consolidation-memory/issues"
+Discussions = "https://github.com/charliee1w/consolidation-memory/discussions"
 Changelog = "https://github.com/charliee1w/consolidation-memory/blob/main/CHANGELOG.md"
+Releases = "https://github.com/charliee1w/consolidation-memory/releases"
+Security = "https://github.com/charliee1w/consolidation-memory/security/policy"
 
 [tool.setuptools.package-data]
 consolidation_memory = ["py.typed"]

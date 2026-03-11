@@ -1,0 +1,3 @@
+# Local contributor environment
+-e .[all,dev]
+pytest-cov>=6.0.0

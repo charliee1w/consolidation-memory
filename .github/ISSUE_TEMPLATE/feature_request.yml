@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a focused improvement with concrete user value.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is hard, missing, or too fragile today?
+      placeholder: I want to...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the change you want.
+      placeholder: Add a new query path that...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What have you tried already?
+  - type: dropdown
+    id: surfaces
+    attributes:
+      label: Primary surface
+      options:
+        - Python API
+        - MCP server
+        - REST API
+        - OpenAI-compatible tools
+        - CLI
+        - Dashboard
+        - Examples/docs
+        - Plugins
+        - Benchmark/eval
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and migration notes
+      description: Call out any breaking-change or migration concerns.
+  - type: checkboxes
+    id: trust
+    attributes:
+      label: Trust/privacy considerations
+      options:
+        - label: This request touches privacy, ACLs, or tenant boundaries.
+        - label: This request touches provenance, contradictions, or drift.
+        - label: This request is docs/examples only.

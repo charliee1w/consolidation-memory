@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "consolidation_memory": {
+      "command": "/absolute/path/to/python",
+      "args": [
+        "-m",
+        "consolidation_memory",
+        "--project",
+        "universal",
+        "serve"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "0"
+      }
+    }
+  }
+}

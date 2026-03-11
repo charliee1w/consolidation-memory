@@ -9,7 +9,13 @@ Thanks for contributing to `consolidation-memory`.
 3. Install development dependencies:
 
 ```bash
-pip install -e .[all,dev]
+pip install -r requirements-dev.txt
+```
+
+If you prefer not to use the helper file, the equivalent install is:
+
+```bash
+pip install -e ".[all,dev]"
 ```
 
 ## Local Validation
@@ -28,10 +34,11 @@ bandit -q -r src scripts
 1. Create a focused branch from `main`.
 2. Keep changes scoped and include tests for behavior changes.
 3. Update docs when user-visible behavior or release process changes.
-4. Open a PR with:
+4. Use the repository PR template and open a PR with:
    - Problem statement
    - Summary of changes
    - Test evidence (command output or equivalent)
+   - Risk notes when trust, scope, or adapter parity changes
 
 ## Commit Style
 
@@ -41,6 +48,7 @@ bandit -q -r src scripts
 ## Reporting Bugs and Features
 
 - Bug reports and feature requests: [GitHub Issues](https://github.com/charliee1w/consolidation-memory/issues)
+- Usage questions and build showcases: [GitHub Discussions](https://github.com/charliee1w/consolidation-memory/discussions)
 - Security issues: see [SECURITY.md](SECURITY.md)
 
 ## Code of Conduct

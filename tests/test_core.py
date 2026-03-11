@@ -27,6 +27,131 @@ from tests.helpers import make_normalized_batch as _make_normalized_batch
 # ── Database tests ────────────────────────────────────────────────────────────
 
 class TestDatabase:
+    @staticmethod
+    def _rewrite_episodes_table_without_indexed(conn: sqlite3.Connection) -> None:
+        conn.execute("DROP INDEX IF EXISTS idx_episodes_indexed")
+        conn.execute("ALTER TABLE episodes RENAME TO episodes_with_indexed")
+        conn.execute(
+            """CREATE TABLE episodes (
+                id                        TEXT PRIMARY KEY,
+                created_at                TEXT NOT NULL,
+                updated_at                TEXT NOT NULL,
+                content                   TEXT NOT NULL,
+                content_type              TEXT NOT NULL DEFAULT 'exchange',
+                tags                      TEXT NOT NULL DEFAULT '[]',
+                surprise_score            REAL NOT NULL DEFAULT 0.5,
+                access_count              INTEGER NOT NULL DEFAULT 0,
+                source_session            TEXT,
+                consolidated              INTEGER NOT NULL DEFAULT 0,
+                consolidated_at           TEXT,
+                consolidated_to           TEXT,
+                deleted                   INTEGER NOT NULL DEFAULT 0,
+                consolidation_attempts    INTEGER NOT NULL DEFAULT 0,
+                last_consolidation_attempt TEXT,
+                protected                 INTEGER NOT NULL DEFAULT 0,
+                namespace_slug            TEXT NOT NULL DEFAULT 'default',
+                namespace_sharing_mode    TEXT NOT NULL DEFAULT 'private',
+                app_client_name           TEXT NOT NULL DEFAULT 'legacy_client',
+                app_client_type           TEXT NOT NULL DEFAULT 'python_sdk',
+                app_client_provider       TEXT,
+                app_client_external_key   TEXT,
+                agent_name                TEXT,
+                agent_external_key        TEXT,
+                session_external_key      TEXT,
+                session_kind              TEXT,
+                project_slug              TEXT NOT NULL DEFAULT 'default',
+                project_display_name      TEXT,
+                project_root_uri          TEXT,
+                project_repo_remote       TEXT,
+                project_default_branch    TEXT
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO episodes (
+                id, created_at, updated_at, content, content_type, tags, surprise_score,
+                access_count, source_session, consolidated, consolidated_at, consolidated_to,
+                deleted, consolidation_attempts, last_consolidation_attempt, protected,
+                namespace_slug, namespace_sharing_mode, app_client_name, app_client_type,
+                app_client_provider, app_client_external_key, agent_name, agent_external_key,
+                session_external_key, session_kind, project_slug, project_display_name,
+                project_root_uri, project_repo_remote, project_default_branch
+            )
+            SELECT
+                id, created_at, updated_at, content, content_type, tags, surprise_score,
+                access_count, source_session, consolidated, consolidated_at, consolidated_to,
+                deleted, consolidation_attempts, last_consolidation_attempt, protected,
+                namespace_slug, namespace_sharing_mode, app_client_name, app_client_type,
+                app_client_provider, app_client_external_key, agent_name, agent_external_key,
+                session_external_key, session_kind, project_slug, project_display_name,
+                project_root_uri, project_repo_remote, project_default_branch
+            FROM episodes_with_indexed"""
+        )
+        conn.execute("DROP TABLE episodes_with_indexed")
+
+    @staticmethod
+    def _rewrite_knowledge_topics_table_without_storage_filename(
+        conn: sqlite3.Connection,
+    ) -> None:
+        foreign_keys_enabled = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+        if foreign_keys_enabled:
+            conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_knowledge_storage_filename")
+            conn.execute("ALTER TABLE knowledge_topics RENAME TO knowledge_topics_with_storage")
+            conn.execute(
+                """CREATE TABLE knowledge_topics (
+                    id                      TEXT PRIMARY KEY,
+                    filename                TEXT NOT NULL,
+                    title                   TEXT NOT NULL,
+                    summary                 TEXT NOT NULL,
+                    created_at              TEXT NOT NULL,
+                    updated_at              TEXT NOT NULL,
+                    source_episodes         TEXT NOT NULL DEFAULT '[]',
+                    fact_count              INTEGER NOT NULL DEFAULT 0,
+                    access_count            INTEGER NOT NULL DEFAULT 0,
+                    confidence              REAL NOT NULL DEFAULT 0.8,
+                    namespace_slug          TEXT NOT NULL DEFAULT 'default',
+                    namespace_sharing_mode  TEXT NOT NULL DEFAULT 'private',
+                    app_client_name         TEXT NOT NULL DEFAULT 'legacy_client',
+                    app_client_type         TEXT NOT NULL DEFAULT 'python_sdk',
+                    app_client_provider     TEXT,
+                    app_client_external_key TEXT,
+                    agent_name              TEXT,
+                    agent_external_key      TEXT,
+                    session_external_key    TEXT,
+                    session_kind            TEXT,
+                    project_slug            TEXT NOT NULL DEFAULT 'default',
+                    project_display_name    TEXT,
+                    project_root_uri        TEXT,
+                    project_repo_remote     TEXT,
+                    project_default_branch  TEXT
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO knowledge_topics (
+                    id, filename, title, summary, created_at, updated_at,
+                    source_episodes, fact_count, access_count, confidence,
+                    namespace_slug, namespace_sharing_mode,
+                    app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                    agent_name, agent_external_key, session_external_key, session_kind,
+                    project_slug, project_display_name, project_root_uri,
+                    project_repo_remote, project_default_branch
+                )
+                SELECT
+                    id, filename, title, summary, created_at, updated_at,
+                    source_episodes, fact_count, access_count, confidence,
+                    namespace_slug, namespace_sharing_mode,
+                    app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                    agent_name, agent_external_key, session_external_key, session_kind,
+                    project_slug, project_display_name, project_root_uri,
+                    project_repo_remote, project_default_branch
+                FROM knowledge_topics_with_storage"""
+            )
+            conn.execute("DROP TABLE knowledge_topics_with_storage")
+        finally:
+            if foreign_keys_enabled:
+                conn.execute("PRAGMA foreign_keys=ON")
+
     def test_schema_creation(self):
         from consolidation_memory.database import ensure_schema, get_stats
         ensure_schema()
@@ -129,6 +254,177 @@ class TestDatabase:
         episode = get_episode(episode_id)
         assert episode is not None
         assert episode["content"] == "pre-v14 migration episode"
+
+    def test_episode_index_visibility_migration_from_v14_is_additive_and_preserves_data(self):
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+            get_episode,
+            insert_episode,
+        )
+
+        ensure_schema()
+        episode_id = insert_episode(content="pre-v16 migration episode")
+
+        with get_connection() as conn:
+            self._rewrite_episodes_table_without_indexed(conn)
+            conn.execute("DELETE FROM schema_version WHERE version >= 15")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (14, datetime.now(timezone.utc).isoformat()),
+            )
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+            cols = {
+                str(column["name"])
+                for column in conn.execute("PRAGMA table_info(episodes)").fetchall()
+            }
+            indexed_row = conn.execute(
+                "SELECT indexed FROM episodes WHERE id = ?",
+                (episode_id,),
+            ).fetchone()
+
+        assert row is not None and row["v"] == CURRENT_SCHEMA_VERSION
+        assert "indexed" in cols
+        assert indexed_row is not None and indexed_row["indexed"] == 1
+        episode = get_episode(episode_id)
+        assert episode is not None
+        assert episode["content"] == "pre-v16 migration episode"
+
+    def test_schema_repair_adds_indexed_column_when_version_marker_is_current(self):
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+            insert_episode,
+        )
+
+        ensure_schema()
+        episode_id = insert_episode(content="repair missing indexed column")
+
+        with get_connection() as conn:
+            self._rewrite_episodes_table_without_indexed(conn)
+            conn.execute("DELETE FROM schema_version")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (CURRENT_SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()),
+            )
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            cols = {
+                str(column["name"])
+                for column in conn.execute("PRAGMA table_info(episodes)").fetchall()
+            }
+            indexes = {
+                str(index_row["name"])
+                for index_row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'episodes'"
+                ).fetchall()
+            }
+            indexed_row = conn.execute(
+                "SELECT indexed FROM episodes WHERE id = ?",
+                (episode_id,),
+            ).fetchone()
+
+        assert "indexed" in cols
+        assert "idx_episodes_indexed" in indexes
+        assert indexed_row is not None and indexed_row["indexed"] == 1
+
+    def test_topic_storage_migration_from_v14_is_additive_and_preserves_data(self):
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+            upsert_knowledge_topic,
+        )
+
+        ensure_schema()
+        upsert_knowledge_topic(
+            filename="legacy-topic.md",
+            title="Legacy Topic",
+            summary="Legacy summary",
+            source_episodes=["ep-1"],
+        )
+
+        with get_connection() as conn:
+            self._rewrite_knowledge_topics_table_without_storage_filename(conn)
+            conn.execute("DELETE FROM schema_version WHERE version >= 15")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (14, datetime.now(timezone.utc).isoformat()),
+            )
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+            cols = {
+                str(column["name"])
+                for column in conn.execute("PRAGMA table_info(knowledge_topics)").fetchall()
+            }
+            topic_row = conn.execute(
+                "SELECT filename, storage_filename FROM knowledge_topics WHERE filename = ?",
+                ("legacy-topic.md",),
+            ).fetchone()
+
+        assert row is not None and row["v"] == CURRENT_SCHEMA_VERSION
+        assert "storage_filename" in cols
+        assert topic_row is not None
+        assert topic_row["filename"] == "legacy-topic.md"
+        assert topic_row["storage_filename"] == "legacy-topic.md"
+
+    def test_schema_repair_adds_storage_filename_when_version_marker_is_current(self):
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+            upsert_knowledge_topic,
+        )
+
+        ensure_schema()
+        upsert_knowledge_topic(
+            filename="repair-topic.md",
+            title="Repair Topic",
+            summary="Repair summary",
+            source_episodes=["ep-1"],
+        )
+
+        with get_connection() as conn:
+            self._rewrite_knowledge_topics_table_without_storage_filename(conn)
+            conn.execute("DELETE FROM schema_version")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (CURRENT_SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()),
+            )
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            cols = {
+                str(column["name"])
+                for column in conn.execute("PRAGMA table_info(knowledge_topics)").fetchall()
+            }
+            indexes = {
+                str(index_row["name"])
+                for index_row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'knowledge_topics'"
+                ).fetchall()
+            }
+            topic_row = conn.execute(
+                "SELECT filename, storage_filename FROM knowledge_topics WHERE filename = ?",
+                ("repair-topic.md",),
+            ).fetchone()
+
+        assert "storage_filename" in cols
+        assert "idx_knowledge_storage_filename" in indexes
+        assert topic_row is not None
+        assert topic_row["storage_filename"] == "repair-topic.md"
 
     def test_get_connection_depth_restored_on_commit_failure(self):
         import consolidation_memory.database as database

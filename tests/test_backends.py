@@ -175,6 +175,73 @@ class TestOllamaLLMBackend:
         assert mock_post.call_count == 2
 
 
+# ── FastEmbed Backend ────────────────────────────────────────────────────────
+
+class _FakeFastEmbedModel:
+    def __init__(self, dim: int = 3):
+        self._dim = dim
+
+    def embed(self, texts):
+        return [[1.0] * self._dim for _ in texts]
+
+    def query_embed(self, text):
+        return [[1.0] * self._dim]
+
+
+class TestFastEmbedEmbeddingBackend:
+    def test_uses_configured_cache_dir(self, monkeypatch, tmp_path):
+        from consolidation_memory.backends.fastembed_backend import FastEmbedEmbeddingBackend
+
+        cache_dir = tmp_path / "fastembed-cache"
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_FASTEMBED_CACHE_DIR", str(cache_dir))
+        text_embedding_cls = MagicMock(return_value=_FakeFastEmbedModel())
+
+        with patch.dict("sys.modules", {"fastembed": MagicMock(TextEmbedding=text_embedding_cls)}):
+            backend = FastEmbedEmbeddingBackend(model_name="test-model")
+
+        assert backend.dimension == 3
+        assert cache_dir.is_dir()
+        text_embedding_cls.assert_called_once_with("test-model", cache_dir=str(cache_dir))
+
+    def test_recovers_from_missing_cached_model(self, monkeypatch, tmp_path):
+        from consolidation_memory.backends.fastembed_backend import FastEmbedEmbeddingBackend
+
+        cache_dir = tmp_path / "fastembed-cache"
+        cache_dir.mkdir()
+        stale_file = cache_dir / "stale.bin"
+        stale_file.write_text("stale")
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_FASTEMBED_CACHE_DIR", str(cache_dir))
+
+        text_embedding_cls = MagicMock(
+            side_effect=[
+                RuntimeError(
+                    "[ONNXRuntimeError] : 3 : NO_SUCHFILE : Load model failed. File doesn't exist"
+                ),
+                _FakeFastEmbedModel(),
+            ]
+        )
+
+        with patch.dict("sys.modules", {"fastembed": MagicMock(TextEmbedding=text_embedding_cls)}):
+            backend = FastEmbedEmbeddingBackend(model_name="test-model")
+
+        assert backend.dimension == 3
+        assert text_embedding_cls.call_count == 2
+        assert not stale_file.exists()
+
+    def test_does_not_retry_non_cache_errors(self, monkeypatch, tmp_path):
+        from consolidation_memory.backends.fastembed_backend import FastEmbedEmbeddingBackend
+
+        cache_dir = tmp_path / "fastembed-cache"
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_FASTEMBED_CACHE_DIR", str(cache_dir))
+        text_embedding_cls = MagicMock(side_effect=RuntimeError("unexpected failure"))
+
+        with patch.dict("sys.modules", {"fastembed": MagicMock(TextEmbedding=text_embedding_cls)}):
+            with pytest.raises(RuntimeError, match="unexpected failure"):
+                FastEmbedEmbeddingBackend(model_name="test-model")
+
+        assert text_embedding_cls.call_count == 1
+
+
 # ── OpenAI Backend ────────────────────────────────────────────────────────────
 
 class TestOpenAIEmbeddingBackend:

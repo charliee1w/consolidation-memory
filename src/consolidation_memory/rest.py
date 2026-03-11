@@ -449,17 +449,25 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         if req.include_knowledge:
             warnings.append("Knowledge retrieval skipped in fallback mode.")
 
+        episodes_value = keyword_result.get("episodes")
+        fallback_episodes = episodes_value if isinstance(episodes_value, list) else []
+        total_matches_value = keyword_result.get("total_matches")
+        if isinstance(total_matches_value, int):
+            total_episodes = total_matches_value
+        elif isinstance(total_matches_value, str):
+            try:
+                total_episodes = int(total_matches_value)
+            except ValueError:
+                total_episodes = len(fallback_episodes)
+        else:
+            total_episodes = len(fallback_episodes)
+
         return {
-            "episodes": list(keyword_result.get("episodes", [])),
+            "episodes": fallback_episodes,
             "knowledge": [],
             "records": [],
             "claims": [],
-            "total_episodes": int(
-                keyword_result.get(
-                    "total_matches",
-                    len(keyword_result.get("episodes", [])),
-                )
-            ),
+            "total_episodes": total_episodes,
             "total_knowledge_topics": 0,
             "message": "Semantic recall timed out; returned keyword episodes-only fallback.",
             "warnings": warnings,

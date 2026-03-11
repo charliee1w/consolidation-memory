@@ -782,9 +782,6 @@ def ensure_schema() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_knowledge_filename ON knowledge_topics(filename)"
         )
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_storage_filename ON knowledge_topics(storage_filename)"
-        )
         conn.execute("""CREATE TABLE IF NOT EXISTS consolidation_runs (
                 id                  TEXT PRIMARY KEY,
                 started_at          TEXT NOT NULL,
@@ -928,6 +925,7 @@ def _repair_schema_invariants(conn: sqlite3.Connection) -> None:
     startup is resilient even when the version marker is ahead of the actual
     table shape.
     """
+    _apply_topic_storage_migration(conn)
     _apply_episode_index_visibility_migration(conn)
 
 
@@ -1655,13 +1653,14 @@ def upsert_knowledge_topic(
     updated_ts = updated_at or now
     scope_row = _coerce_scope_row(scope)
     storage_filename = _topic_storage_filename(filename, scope_row)
+    resolved_topic_id: str | None = topic_id
     with get_connection() as conn:
         existing = None
-        if topic_id is not None:
+        if resolved_topic_id is not None:
             existing = conn.execute(
                 "SELECT id, source_episodes, access_count, storage_filename "
                 "FROM knowledge_topics WHERE id = ?",
-                (topic_id,),
+                (resolved_topic_id,),
             ).fetchone()
         if existing is None:
             conditions = ["(filename = ? OR storage_filename = ?)"]
@@ -1677,7 +1676,7 @@ def upsert_knowledge_topic(
             ).fetchone()
 
         if existing:
-            topic_id: str = str(existing["id"])
+            resolved_topic_id = str(existing["id"])
             old_sources = json.loads(existing["source_episodes"])
             merged = list(set(old_sources + source_episodes))
             persisted_storage_filename = str(existing["storage_filename"] or storage_filename)
@@ -1709,11 +1708,11 @@ def upsert_knowledge_topic(
                  scope_row["session_external_key"], scope_row["session_kind"],
                  scope_row["project_slug"], scope_row["project_display_name"],
                  scope_row["project_root_uri"], scope_row["project_repo_remote"],
-                 scope_row["project_default_branch"], topic_id,
+                 scope_row["project_default_branch"], resolved_topic_id,
                 ),
             )
         else:
-            topic_id = topic_id or str(uuid.uuid4())
+            resolved_topic_id = resolved_topic_id or str(uuid.uuid4())
             created_ts = created_at or updated_ts
             try:
                 conn.execute(
@@ -1728,7 +1727,7 @@ def upsert_knowledge_topic(
                         project_repo_remote, project_default_branch)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        topic_id,
+                        resolved_topic_id,
                         filename,
                         storage_filename,
                         title,
@@ -1764,7 +1763,7 @@ def upsert_knowledge_topic(
                 ).fetchone()
                 if existing is None:
                     raise
-                topic_id = str(existing["id"])
+                resolved_topic_id = str(existing["id"])
                 old_sources = json.loads(existing["source_episodes"])
                 merged = list(set(old_sources + source_episodes))
                 persisted_storage_filename = str(existing["storage_filename"] or storage_filename)
@@ -1796,10 +1795,12 @@ def upsert_knowledge_topic(
                      scope_row["session_external_key"], scope_row["session_kind"],
                      scope_row["project_slug"], scope_row["project_display_name"],
                      scope_row["project_root_uri"], scope_row["project_repo_remote"],
-                     scope_row["project_default_branch"], topic_id,
+                     scope_row["project_default_branch"], resolved_topic_id,
                     ),
                 )
-    return topic_id
+    if resolved_topic_id is None:
+        raise RuntimeError("Failed to resolve knowledge topic id during upsert")
+    return resolved_topic_id
 
 
 def get_all_knowledge_topics(
@@ -1929,6 +1930,21 @@ def insert_knowledge_records(
     now = _now()
     ids: list[str] = []
 
+    def _coerce_int_column(value: object | None, default: int = 0) -> int:
+        if value is None:
+            return default
+        if isinstance(value, (int, float, bool)):
+            return int(value)
+        if isinstance(value, (str, bytes, bytearray)):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+        try:
+            return int(str(value))
+        except (TypeError, ValueError):
+            return default
+
     def _insert_rows(active_conn: sqlite3.Connection) -> None:
         for rec in records:
             rec_id = str(rec.get("id") or uuid.uuid4())
@@ -1937,6 +1953,8 @@ def insert_knowledge_records(
             valid_until = rec.get("valid_until")
             created_ts = str(rec.get("created_at") or now)
             updated_ts = str(rec.get("updated_at") or created_ts)
+            access_count_value = _coerce_int_column(rec.get("access_count"))
+            deleted_value = _coerce_int_column(rec.get("deleted"))
             record_scope_row = _coerce_scope_row(
                 rec["scope"] if isinstance(rec.get("scope"), Mapping) else scope
             )
@@ -1967,8 +1985,8 @@ def insert_knowledge_records(
                     rec.get("confidence", 0.8),
                     created_ts,
                     updated_ts,
-                    0 if rec.get("access_count") is None else int(rec.get("access_count")),
-                    0 if rec.get("deleted") is None else int(rec.get("deleted")),
+                    access_count_value,
+                    deleted_value,
                     valid_from,
                     valid_until,
                     record_scope_row["namespace_slug"],

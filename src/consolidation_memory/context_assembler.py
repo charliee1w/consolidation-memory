@@ -7,6 +7,7 @@ Topic embeddings are cached via topic_cache (shared with consolidation).
 import json
 import logging
 import math
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -26,9 +27,11 @@ from consolidation_memory.database import (
     increment_access,
     increment_record_access,
     increment_topic_access,
+    increment_topic_access_by_ids,
 )
 from consolidation_memory import backends
 from consolidation_memory import claim_cache
+from consolidation_memory.knowledge_paths import resolve_topic_path
 from consolidation_memory.query_semantics import (
     filter_claims_for_scope as _filter_claims_for_scope,
     matches_scope_filter as _matches_scope_filter,
@@ -734,7 +737,6 @@ def _search_knowledge(
     query_words = set(query_lower.split())
 
     scored_topics = []
-    knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
     for i, topic in enumerate(topics):
         sem_score = float(sims[i]) if sims is not None else 0.0
 
@@ -756,10 +758,14 @@ def _search_knowledge(
         if relevance < cfg.KNOWLEDGE_RELEVANCE_THRESHOLD:
             continue
 
-        filepath = (cfg.KNOWLEDGE_DIR / topic["filename"]).resolve()
         content = ""
-        if filepath.is_relative_to(knowledge_resolved) and filepath.exists():
-            content = filepath.read_text(encoding="utf-8")
+        try:
+            filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic, prefer_existing=True)
+            if filepath.exists():
+                content = filepath.read_text(encoding="utf-8")
+        except ValueError:
+            # Keep recall robust when malformed filenames are encountered.
+            content = ""
 
         # Parse source_episodes for traceability
         topic_src_eps: list[str] = parse_json_list(topic.get("source_episodes"))
@@ -785,7 +791,15 @@ def _search_knowledge(
     top_topics = scored_topics[:cfg.KNOWLEDGE_MAX_RESULTS]
 
     if top_topics:
-        increment_topic_access([t["filename"] for t in top_topics])
+        topic_ids = [str(t["_topic_id"]) for t in top_topics if t.get("_topic_id")]
+        if topic_ids:
+            try:
+                increment_topic_access_by_ids(topic_ids)
+            except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                logger.warning("Topic access update by id failed: %s", exc)
+                increment_topic_access([t["filename"] for t in top_topics])
+        else:
+            increment_topic_access([t["filename"] for t in top_topics])
 
     # Uncertainty signaling: flag evolving topics with recent contradictions
     _apply_evolving_topic_signals(top_topics, warnings)

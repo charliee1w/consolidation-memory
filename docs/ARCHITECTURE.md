@@ -67,7 +67,7 @@ flowchart TD
 
 ## Persistence Model
 
-`database.py` uses `CURRENT_SCHEMA_VERSION = 14`.
+`database.py` uses `CURRENT_SCHEMA_VERSION = 16`.
 
 Primary tables:
 

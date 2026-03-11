@@ -94,6 +94,9 @@ def topic_storage_path(topic: Mapping[str, Any]) -> str:
     storage_path = str(topic.get("storage_path") or "").strip()
     if storage_path:
         return storage_path
+    storage_filename = str(topic.get("storage_filename") or "").strip()
+    if storage_filename:
+        return storage_filename
     return str(topic.get("filename") or "").strip()
 
 

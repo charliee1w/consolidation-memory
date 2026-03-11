@@ -1465,6 +1465,7 @@ class MemoryClient:
             get_all_episodes,
             get_all_knowledge_topics,
         )
+        from consolidation_memory.knowledge_paths import resolve_topic_path
         from consolidation_memory.query_semantics import filter_claims_for_scope
 
         self._ensure_open()
@@ -1477,13 +1478,18 @@ class MemoryClient:
 
         topics = get_all_knowledge_topics(scope=scope_filter)
         knowledge = []
-        knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
         for topic in topics:
-            filepath = (cfg.KNOWLEDGE_DIR / topic["filename"]).resolve()
             content = ""
-            # Path traversal guard: skip files that resolve outside KNOWLEDGE_DIR
-            if filepath.is_relative_to(knowledge_resolved) and filepath.exists():
-                content = filepath.read_text(encoding="utf-8")
+            try:
+                filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic, prefer_existing=True)
+                if filepath.exists():
+                    content = filepath.read_text(encoding="utf-8")
+            except ValueError:
+                logger.warning(
+                    "Skipped invalid knowledge export path for topic %s (%s)",
+                    topic.get("id"),
+                    topic.get("filename"),
+                )
             knowledge.append({**topic, "file_content": content})
 
         records = get_all_active_records(scope=scope_filter)
@@ -1572,7 +1578,6 @@ class MemoryClient:
             get_knowledge_topic,
             get_records_by_topic,
             insert_knowledge_records,
-            topic_storage_filename,
             upsert_knowledge_topic,
         )
         from consolidation_memory.consolidation.engine import _version_knowledge_file
@@ -1583,6 +1588,7 @@ class MemoryClient:
             _sanitize_for_prompt,
         )
         from consolidation_memory.backends import get_llm_backend
+        from consolidation_memory.knowledge_paths import resolve_topic_path
 
         self._ensure_open()
         cfg = get_config()
@@ -1596,8 +1602,10 @@ class MemoryClient:
         existing_topic = get_knowledge_topic(topic_filename, scope=mutation_filter)
         if existing_topic is None:
             return CorrectResult(status="not_found", filename=topic_filename)
-        filepath = (cfg.KNOWLEDGE_DIR / topic_storage_filename(existing_topic)).resolve()
-        if not filepath.is_relative_to(cfg.KNOWLEDGE_DIR.resolve()):
+        try:
+            # Prefer an existing legacy logical filename when present.
+            filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, existing_topic, prefer_existing=True)
+        except ValueError:
             return CorrectResult(
                 status="error",
                 filename=topic_filename,
@@ -1762,9 +1770,9 @@ class MemoryClient:
         from consolidation_memory.database import (
             get_all_active_records,
             get_all_knowledge_topics,
-            topic_storage_filename,
         )
         from consolidation_memory.config import get_config
+        from consolidation_memory.knowledge_paths import resolve_topic_path
 
         self._ensure_open()
         cfg = get_config()
@@ -1785,7 +1793,18 @@ class MemoryClient:
 
         result_topics = []
         for topic in topics:
-            filepath = cfg.KNOWLEDGE_DIR / topic_storage_filename(topic)
+            file_exists = False
+            file_path = ""
+            try:
+                filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic, prefer_existing=True)
+                file_exists = filepath.exists()
+                file_path = str(filepath)
+            except ValueError:
+                logger.warning(
+                    "Skipped invalid knowledge path for topic %s (%s)",
+                    topic.get("id"),
+                    topic.get("filename"),
+                )
             rec_counts = records_by_topic.get(topic["id"], {})
             total_records = sum(rec_counts.values())
             result_topics.append({
@@ -1796,8 +1815,8 @@ class MemoryClient:
                 "updated_at": topic.get("updated_at", ""),
                 "record_counts": rec_counts,
                 "total_records": total_records,
-                "file_exists": filepath.exists(),
-                "file_path": str(filepath),
+                "file_exists": file_exists,
+                "file_path": file_path,
             })
 
         return BrowseResult(topics=result_topics, total=len(result_topics))
@@ -1817,7 +1836,8 @@ class MemoryClient:
             TopicDetailResult with the markdown content.
         """
         from consolidation_memory.config import get_config
-        from consolidation_memory.database import get_knowledge_topic, topic_storage_filename
+        from consolidation_memory.database import get_knowledge_topic
+        from consolidation_memory.knowledge_paths import resolve_topic_path
 
         self._ensure_open()
         cfg = get_config()
@@ -1827,10 +1847,10 @@ class MemoryClient:
         if topic_row is None:
             return TopicDetailResult(status="not_found", filename=filename)
 
-        filepath = (cfg.KNOWLEDGE_DIR / topic_storage_filename(topic_row)).resolve()
-
-        # Path traversal guard
-        if not filepath.is_relative_to(cfg.KNOWLEDGE_DIR.resolve()):
+        try:
+            # Prefer an existing legacy logical filename when present.
+            filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic_row, prefer_existing=True)
+        except ValueError:
             return TopicDetailResult(
                 status="error",
                 filename=filename,

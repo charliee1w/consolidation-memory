@@ -1835,6 +1835,50 @@ def get_knowledge_topics_by_name(
     return [dict(row) for row in rows]
 
 
+def increment_topic_access(
+    filenames: list[str],
+    *,
+    scope: Mapping[str, Any] | None = None,
+) -> None:
+    """Increment topic access counters using legacy filename-based lookup.
+
+    This compatibility surface is still used by call sites that only have the
+    topic filename. Prefer ``increment_topic_access_by_ids`` for unambiguous
+    updates when topic IDs are available.
+    """
+    deduped_filenames: list[str] = []
+    seen: set[str] = set()
+    for filename in filenames:
+        token = str(filename or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        deduped_filenames.append(token)
+
+    if not deduped_filenames:
+        return
+
+    now = _now()
+    with get_connection() as conn:
+        # Keep chunks well under SQLite's default parameter limit.
+        for start in range(0, len(deduped_filenames), 250):
+            chunk = deduped_filenames[start:start + 250]
+            placeholders = ",".join("?" for _ in chunk)
+            conditions: list[str] = [
+                f"(filename IN ({placeholders}) OR storage_filename IN ({placeholders}))",
+            ]
+            params: list[Any] = [now, *chunk, *chunk]
+            _apply_scope_filters(conditions, params, scope)
+            where_clause = " AND ".join(conditions)
+            conn.execute(
+                f"""UPDATE knowledge_topics
+                    SET access_count = access_count + 1,
+                        updated_at = ?
+                    WHERE {where_clause}""",  # nosec B608
+                params,
+            )
+
+
 def increment_topic_access_by_ids(topic_ids: list[str]) -> None:
     if not topic_ids:
         return

@@ -446,6 +446,7 @@ def cmd_export():
     )
     from consolidation_memory.config import get_config
     from datetime import datetime, timezone
+    from consolidation_memory.knowledge_paths import resolve_topic_path
 
     cfg = get_config()
     ensure_schema()
@@ -454,15 +455,17 @@ def cmd_export():
     episodes = get_all_episodes(include_deleted=False)
     topics = get_all_knowledge_topics()
     knowledge = []
-    knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
     for topic in topics:
-        filepath = (cfg.KNOWLEDGE_DIR / topic["filename"]).resolve()
         content = ""
-        if filepath.is_relative_to(knowledge_resolved) and filepath.exists():
-            content = filepath.read_text(encoding="utf-8")
+        try:
+            filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic, prefer_existing=True)
+            if filepath.exists():
+                content = filepath.read_text(encoding="utf-8")
+        except ValueError:
+            content = ""
         knowledge.append({**topic, "file_content": content})
 
-    records = get_all_active_records()
+    records = get_all_active_records(include_expired=True)
     claims = get_all_claims()
     claim_edges = get_all_claim_edges()
     claim_sources = get_all_claim_sources()
@@ -574,6 +577,7 @@ def cmd_import(path: str):
     from consolidation_memory.backends import encode_documents
     from consolidation_memory.vector_store import VectorStore
     from consolidation_memory.config import get_config
+    from consolidation_memory.knowledge_paths import resolve_topic_path
 
     cfg = get_config()
     export_path = Path(path)
@@ -699,13 +703,14 @@ def cmd_import(path: str):
     cfg.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     k_imported = 0
     topic_id_map: dict[str, str] = {}
-    knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
     for topic in data.get("knowledge_topics", []):
         if topic.get("file_content"):
-            filepath = (cfg.KNOWLEDGE_DIR / topic["filename"]).resolve()
-            if not filepath.is_relative_to(knowledge_resolved):
+            try:
+                filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic, prefer_existing=True)
+            except ValueError:
                 print(f"  Skipping {topic['filename']!r}: path traversal detected")
                 continue
+            filepath.parent.mkdir(parents=True, exist_ok=True)
             filepath.write_text(topic["file_content"], encoding="utf-8")
 
         source_eps = parse_json_list(topic.get("source_episodes"))

@@ -43,7 +43,7 @@ class TestCanonicalQueryServiceRecall:
 
         with (
             patch("consolidation_memory.context_assembler.recall", return_value=payload) as mock_recall,
-            patch("consolidation_memory.database.get_stats", return_value=fake_stats),
+            patch("consolidation_memory.database.get_stats", return_value=fake_stats) as mock_get_stats,
         ):
             result = service.recall(
                 RecallQuery(
@@ -64,6 +64,7 @@ class TestCanonicalQueryServiceRecall:
         call_kwargs = mock_recall.call_args.kwargs
         assert call_kwargs["as_of"] == "2025-06-01T00:00:00+00:00"
         assert call_kwargs["scope"] == {"namespace_slug": "team-a"}
+        mock_get_stats.assert_called_once_with(scope={"namespace_slug": "team-a"})
 
 
 class TestCanonicalQueryServiceClaims:

@@ -584,6 +584,27 @@ class TestClientRecall:
         finally:
             client.close()
 
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_store_batch_raises_on_malformed_embedding_batch_before_persistence(self, mock_embed):
+        import numpy as np
+
+        from consolidation_memory.database import ensure_schema, get_all_episodes
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            mock_embed.return_value = np.ones((2, 384), dtype=np.float32)
+
+            with patch.object(client._vector_store, "add_batch") as mock_add_batch:
+                with pytest.raises(ValueError, match="returned 2 vectors for 1 texts"):
+                    client.store_batch([{"content": "broken embedding batch"}])
+
+            assert get_all_episodes(include_deleted=False) == []
+            mock_add_batch.assert_not_called()
+        finally:
+            client.close()
+
     def test_recall_surfaces_claims_field(self):
         from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
@@ -944,6 +965,68 @@ class TestClientExport:
 
         client.close()
 
+    def test_export_includes_expired_knowledge_records(self, tmp_data_dir):
+        from pathlib import Path
+
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_knowledge_records,
+            upsert_knowledge_topic,
+        )
+
+        ensure_schema()
+        cfg = get_config()
+        filename = "python.md"
+        (cfg.KNOWLEDGE_DIR / filename).write_text("# Python\n", encoding="utf-8")
+        topic_id = upsert_knowledge_topic(
+            filename=filename,
+            title="Python",
+            summary="Python versions",
+            source_episodes=[],
+            fact_count=2,
+            confidence=0.8,
+        )
+        insert_knowledge_records(
+            topic_id,
+            [
+                {
+                    "id": "record-active",
+                    "record_type": "fact",
+                    "content": {"type": "fact", "subject": "Python", "info": "3.13"},
+                    "embedding_text": "Python 3.13",
+                    "confidence": 0.9,
+                    "valid_from": "2026-01-01T00:00:00+00:00",
+                },
+                {
+                    "id": "record-expired",
+                    "record_type": "fact",
+                    "content": {"type": "fact", "subject": "Python", "info": "3.12"},
+                    "embedding_text": "Python 3.12",
+                    "confidence": 0.8,
+                    "valid_from": "2026-01-01T00:00:00+00:00",
+                    "valid_until": "2026-01-02T00:00:00+00:00",
+                },
+            ],
+            source_episodes=[],
+        )
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            result = client.export()
+        finally:
+            client.close()
+
+        export_data = json.loads(Path(result.path).read_text(encoding="utf-8"))
+        exported_ids = {record["id"] for record in export_data["knowledge_records"]}
+        assert exported_ids == {"record-active", "record-expired"}
+        expired = next(
+            record for record in export_data["knowledge_records"] if record["id"] == "record-expired"
+        )
+        assert expired["valid_until"] == "2026-01-02T00:00:00+00:00"
+        assert export_data["stats"]["record_count"] == 2
+
     def test_export_respects_scope_for_all_exported_entities(self):
         from pathlib import Path
 
@@ -1243,6 +1326,93 @@ class TestClientCorrect:
             assert len(all_records) == 2
             old = next(r for r in all_records if json.loads(r["content"]).get("info") == "3.12")
             assert old["valid_until"] is not None
+        finally:
+            client.close()
+
+    def test_correct_preserves_original_file_and_records_if_insert_fails(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_knowledge_topic,
+            get_records_by_topic,
+            insert_knowledge_records,
+            upsert_knowledge_topic,
+        )
+
+        ensure_schema()
+        cfg = get_config()
+        filename = "python.md"
+        original = (
+            "---\n"
+            "title: Python\n"
+            "summary: Python 3.12\n"
+            "---\n\n"
+            "## Facts\n"
+            "- **Python**: 3.12\n"
+        )
+        (cfg.KNOWLEDGE_DIR / filename).write_text(original, encoding="utf-8")
+        topic_id = upsert_knowledge_topic(
+            filename=filename,
+            title="Python",
+            summary="Python 3.12",
+            source_episodes=["ep1"],
+            fact_count=1,
+            confidence=0.8,
+        )
+        insert_knowledge_records(
+            topic_id,
+            records=[{
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Python", "info": "3.12"},
+                "embedding_text": "Python: 3.12",
+                "confidence": 0.8,
+            }],
+            source_episodes=["ep1"],
+        )
+
+        corrected_md = (
+            "---\n"
+            "title: Python\n"
+            "summary: Python 3.13\n"
+            "tags: [python]\n"
+            "confidence: 0.9\n"
+            "---\n\n"
+            "## Facts\n"
+            "- **Python**: 3.13\n"
+        )
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = corrected_md
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with (
+                patch("consolidation_memory.backends.get_llm_backend", return_value=mock_llm),
+                patch("consolidation_memory.consolidation.engine._version_knowledge_file"),
+                patch(
+                    "consolidation_memory.database.insert_knowledge_records",
+                    side_effect=RuntimeError("insert failed"),
+                ),
+            ):
+                try:
+                    result = client.correct(filename, "Python version changed to 3.13")
+                except RuntimeError as exc:
+                    assert "insert failed" in str(exc)
+                else:
+                    assert result.status == "error"
+
+            assert (cfg.KNOWLEDGE_DIR / filename).read_text(encoding="utf-8") == original
+            topic = get_knowledge_topic(filename)
+            assert topic is not None
+            assert topic["summary"] == "Python 3.12"
+
+            active = get_records_by_topic(topic_id, include_expired=False)
+            assert len(active) == 1
+            assert json.loads(active[0]["content"])["info"] == "3.12"
+            assert active[0]["valid_until"] is None
+
+            all_records = get_records_by_topic(topic_id, include_expired=True)
+            assert len(all_records) == 1
         finally:
             client.close()
 

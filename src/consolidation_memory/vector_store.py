@@ -286,6 +286,67 @@ class VectorStore:
             os.replace(tmp, str(cfg.FAISS_TOMBSTONE_PATH))
             self.signal_reload()
 
+    def _validate_new_episode_ids(
+        self,
+        episode_ids: list[str],
+        *,
+        operation: str,
+    ) -> None:
+        """Reject duplicate or already indexed episode IDs before mutation."""
+        duplicates: set[str] = set()
+        seen: set[str] = set()
+        for episode_id in episode_ids:
+            if not str(episode_id).strip():
+                raise ValueError(f"{operation} requires non-empty episode IDs.")
+            if episode_id in seen:
+                duplicates.add(episode_id)
+            seen.add(episode_id)
+
+        if duplicates:
+            duplicate_list = ", ".join(sorted(duplicates))
+            raise ValueError(f"{operation} received duplicate episode IDs: {duplicate_list}")
+
+        existing = [episode_id for episode_id in episode_ids if episode_id in self._uuid_to_pos]
+        if existing:
+            existing_list = ", ".join(existing[:5])
+            raise ValueError(
+                f"{operation} attempted to index existing episode ID(s): {existing_list}"
+            )
+
+    def _validate_mutation_embeddings(
+        self,
+        embeddings: np.ndarray,
+        *,
+        expected_rows: int,
+        operation: str,
+    ) -> np.ndarray:
+        """Normalize and validate embeddings before mutating the FAISS index."""
+        matrix = np.asarray(embeddings, dtype=np.float32)
+        if matrix.size == 0 and expected_rows == 0:
+            return np.empty((0, self._index.d), dtype=np.float32)
+        if matrix.ndim == 1:
+            if expected_rows != 1:
+                raise ValueError(
+                    f"{operation} expected {expected_rows} vectors but received a single vector."
+                )
+            matrix = matrix.reshape(1, -1)
+        elif matrix.ndim != 2:
+            raise ValueError(
+                f"{operation} requires a 2D embedding matrix; received shape {matrix.shape!r}."
+            )
+        if matrix.shape[0] != expected_rows:
+            raise ValueError(
+                f"{operation} received {matrix.shape[0]} vectors for {expected_rows} episode IDs."
+            )
+        if matrix.shape[1] != self._index.d:
+            raise ValueError(
+                f"{operation} embedding dimension mismatch: received {matrix.shape[1]}, "
+                f"expected {self._index.d}."
+            )
+        if not np.isfinite(matrix).all():
+            raise ValueError(f"{operation} embeddings must be finite.")
+        return np.ascontiguousarray(matrix, dtype=np.float32)
+
     # ── Index upgrade ────────────────────────────────────────────────────────
 
     def _maybe_upgrade_index(self, force: bool = False) -> bool:
@@ -396,7 +457,12 @@ class VectorStore:
         with self._lock:
             with self._mutation_lease():
                 was_empty = self._index.ntotal == 0
-                vec = embedding.reshape(1, -1).astype(np.float32)
+                self._validate_new_episode_ids([episode_id], operation="VectorStore.add")
+                vec = self._validate_mutation_embeddings(
+                    embedding,
+                    expected_rows=1,
+                    operation="VectorStore.add",
+                )
                 try:
                     self._index.add(vec)
                     self._id_map.append(episode_id)
@@ -413,8 +479,15 @@ class VectorStore:
         """Add multiple vectors with UUIDs. More efficient than repeated add() calls."""
         with self._lock:
             with self._mutation_lease():
+                self._validate_new_episode_ids(episode_ids, operation="VectorStore.add_batch")
                 was_empty = self._index.ntotal == 0
-                vecs = embeddings.astype(np.float32)
+                vecs = self._validate_mutation_embeddings(
+                    embeddings,
+                    expected_rows=len(episode_ids),
+                    operation="VectorStore.add_batch",
+                )
+                if vecs.shape[0] == 0:
+                    return
                 try:
                     self._index.add(vecs)
                     start = len(self._id_map)

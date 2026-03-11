@@ -6,10 +6,22 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 from tests.helpers import make_normalized_batch as _make_normalized_batch
 from tests.helpers import make_normalized_vec as _make_normalized_vec
+
+
+def _snapshot_store_state(vs):
+    return vs.size, list(vs._id_map), dict(vs._uuid_to_pos)
+
+
+def _assert_rejected_without_mutation(vs, operation, *, match):
+    before = _snapshot_store_state(vs)
+    with pytest.raises(ValueError, match=match):
+        operation()
+    assert _snapshot_store_state(vs) == before
 
 
 class TestVectorStorePersistenceRollback:
@@ -41,6 +53,71 @@ class TestVectorStorePersistenceRollback:
         assert vs.size == 0
         assert vs._id_map == []
         assert vs._uuid_to_pos == {}
+
+
+class TestVectorStoreInputValidation:
+    def test_add_batch_rejects_id_vector_count_mismatch_without_mutation(self):
+        from consolidation_memory.vector_store import VectorStore
+
+        vs = VectorStore()
+        ids = ["ep-1", "ep-2"]
+        vecs = _make_normalized_batch(1, seed=42)
+
+        _assert_rejected_without_mutation(
+            vs,
+            lambda: vs.add_batch(ids, vecs),
+            match="received 1 vectors for 2 episode IDs",
+        )
+
+    def test_add_rejects_wrong_dimension_without_mutation(self):
+        from consolidation_memory.vector_store import VectorStore
+
+        vs = VectorStore()
+        vec = _make_normalized_vec(dim=383, seed=42)
+
+        _assert_rejected_without_mutation(
+            vs,
+            lambda: vs.add("ep-wrong-dim", vec),
+            match="embedding dimension mismatch",
+        )
+
+    def test_add_batch_rejects_wrong_dimension_without_mutation(self):
+        from consolidation_memory.vector_store import VectorStore
+
+        vs = VectorStore()
+        vecs = _make_normalized_batch(2, dim=383, seed=42)
+
+        _assert_rejected_without_mutation(
+            vs,
+            lambda: vs.add_batch(["ep-1", "ep-2"], vecs),
+            match="embedding dimension mismatch",
+        )
+
+    @pytest.mark.parametrize("bad_value", [np.nan, np.inf], ids=["nan", "inf"])
+    def test_add_rejects_non_finite_values_without_mutation(self, bad_value):
+        from consolidation_memory.vector_store import VectorStore
+
+        vs = VectorStore()
+        vec = np.full((384,), bad_value, dtype=np.float32)
+
+        _assert_rejected_without_mutation(
+            vs,
+            lambda: vs.add("ep-non-finite", vec),
+            match="embeddings must be finite",
+        )
+
+    @pytest.mark.parametrize("bad_value", [np.nan, np.inf], ids=["nan", "inf"])
+    def test_add_batch_rejects_non_finite_values_without_mutation(self, bad_value):
+        from consolidation_memory.vector_store import VectorStore
+
+        vs = VectorStore()
+        vecs = np.full((2, 384), bad_value, dtype=np.float32)
+
+        _assert_rejected_without_mutation(
+            vs,
+            lambda: vs.add_batch(["ep-1", "ep-2"], vecs),
+            match="embeddings must be finite",
+        )
 
 
 class TestVectorStoreReloadSignals:

@@ -35,19 +35,27 @@ from consolidation_memory.tool_dispatch import dispatch_tool_call as _dispatch_t
 
 # ── Tool Schemas ─────────────────────────────────────────────────────────────
 
+_MAX_CONTENT_LENGTH = 50_000
+_MAX_QUERY_LENGTH = 10_000
+_MAX_TOPIC_LENGTH = 500
+_MAX_FILENAME_LENGTH = 255
+_MAX_PATH_LENGTH = 4096
+
 SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": (
         "Optional canonical scope envelope for universal shared memory. "
         "If omitted, legacy single-project defaults are used."
     ),
+    "additionalProperties": False,
     "properties": {
         "namespace": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
-                "id": {"type": "string"},
-                "slug": {"type": "string"},
-                "display_name": {"type": "string"},
+                "id": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "slug": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "display_name": {"type": "string", "maxLength": _MAX_TOPIC_LENGTH},
                 "sharing_mode": {
                     "type": "string",
                     "enum": ["private", "shared", "team", "managed"],
@@ -56,8 +64,9 @@ SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
         },
         "app_client": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
-                "id": {"type": "string"},
+                "id": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "app_type": {
                     "type": "string",
                     "enum": [
@@ -72,26 +81,28 @@ SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
                         "other",
                     ],
                 },
-                "name": {"type": "string"},
-                "provider": {"type": "string"},
-                "external_key": {"type": "string"},
+                "name": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "provider": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "external_key": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
             },
         },
         "agent": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
-                "id": {"type": "string"},
-                "name": {"type": "string"},
-                "external_key": {"type": "string"},
-                "model_provider": {"type": "string"},
-                "model_name": {"type": "string"},
+                "id": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "name": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "external_key": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "model_provider": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "model_name": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
             },
         },
         "session": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
-                "id": {"type": "string"},
-                "external_key": {"type": "string"},
+                "id": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "external_key": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "session_kind": {
                     "type": "string",
                     "enum": ["conversation", "thread", "workflow", "job"],
@@ -100,17 +111,19 @@ SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
         },
         "project": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
-                "id": {"type": "string"},
-                "slug": {"type": "string"},
-                "display_name": {"type": "string"},
-                "root_uri": {"type": "string"},
-                "repo_remote": {"type": "string"},
-                "default_branch": {"type": "string"},
+                "id": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "slug": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "display_name": {"type": "string", "maxLength": _MAX_TOPIC_LENGTH},
+                "root_uri": {"type": "string", "maxLength": _MAX_PATH_LENGTH},
+                "repo_remote": {"type": "string", "maxLength": _MAX_PATH_LENGTH},
+                "default_branch": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
             },
         },
         "policy": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "read_visibility": {
                     "type": "string",
@@ -139,9 +152,11 @@ MEMORY_STORE_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "content": {
                     "type": "string",
+                    "maxLength": _MAX_CONTENT_LENGTH,
                     "description": "The text content to store. Include relevant context.",
                 },
                 "content_type": {
@@ -183,14 +198,17 @@ MEMORY_STORE_BATCH_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "episodes": {
                     "type": "array",
                     "items": {
                         "type": "object",
+                        "additionalProperties": False,
                         "properties": {
                             "content": {
                                 "type": "string",
+                                "maxLength": _MAX_CONTENT_LENGTH,
                                 "description": "The text content to store.",
                             },
                             "content_type": {
@@ -234,9 +252,11 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "query": {
                     "type": "string",
+                    "maxLength": _MAX_QUERY_LENGTH,
                     "description": "Natural language description of what to recall.",
                 },
                 "n_results": {
@@ -266,10 +286,12 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
                 },
                 "after": {
                     "type": "string",
+                    "maxLength": 64,
                     "description": "Only episodes created after this ISO date (e.g. '2025-01-01').",
                 },
                 "before": {
                     "type": "string",
+                    "maxLength": 64,
                     "description": "Only episodes created before this ISO date.",
                 },
                 "include_expired": {
@@ -279,6 +301,7 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
                 },
                 "as_of": {
                     "type": "string",
+                    "maxLength": 64,
                     "description": (
                         "ISO datetime for temporal belief queries. Returns knowledge "
                         "state at that point in time, including records that have since "
@@ -299,6 +322,7 @@ MEMORY_STATUS_SCHEMA: dict[str, Any] = {
         "description": "Show memory system statistics including episode counts, knowledge base size, and backend info.",
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {},
             "required": [],
         },
@@ -316,9 +340,11 @@ MEMORY_FORGET_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "episode_id": {
                     "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
                     "description": "The UUID of the episode to forget.",
                 },
                 "scope": SCOPE_ENVELOPE_SCHEMA,
@@ -338,6 +364,7 @@ MEMORY_EXPORT_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "scope": SCOPE_ENVELOPE_SCHEMA,
             },
@@ -357,13 +384,16 @@ MEMORY_CORRECT_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "topic_filename": {
                     "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
                     "description": "The filename of the knowledge topic (e.g., 'vr_setup.md').",
                 },
                 "correction": {
                     "type": "string",
+                    "maxLength": _MAX_CONTENT_LENGTH,
                     "description": "Description of what needs to be corrected and the correct information.",
                 },
                 "scope": SCOPE_ENVELOPE_SCHEMA,
@@ -384,9 +414,11 @@ MEMORY_SEARCH_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "query": {
                     "type": "string",
+                    "maxLength": _MAX_QUERY_LENGTH,
                     "description": "Text substring to search for in episode content (case-insensitive).",
                 },
                 "content_types": {
@@ -404,10 +436,12 @@ MEMORY_SEARCH_SCHEMA: dict[str, Any] = {
                 },
                 "after": {
                     "type": "string",
+                    "maxLength": 64,
                     "description": "Only episodes created after this ISO date (e.g. '2025-01-01').",
                 },
                 "before": {
                     "type": "string",
+                    "maxLength": 64,
                     "description": "Only episodes created before this ISO date.",
                 },
                 "limit": {
@@ -434,13 +468,16 @@ MEMORY_CLAIM_BROWSE_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "claim_type": {
                     "type": "string",
+                    "maxLength": 64,
                     "description": "Optional claim type filter (e.g. 'fact', 'solution').",
                 },
                 "as_of": {
                     "type": "string",
+                    "maxLength": 64,
                     "description": (
                         "Optional ISO datetime for temporal claim queries. "
                         "When set, returns claims valid at that point in time."
@@ -470,17 +507,21 @@ MEMORY_CLAIM_SEARCH_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "query": {
                     "type": "string",
+                    "maxLength": _MAX_QUERY_LENGTH,
                     "description": "Search text to match against claim canonical text and payload.",
                 },
                 "claim_type": {
                     "type": "string",
+                    "maxLength": 64,
                     "description": "Optional claim type filter (e.g. 'fact', 'solution').",
                 },
                 "as_of": {
                     "type": "string",
+                    "maxLength": 64,
                     "description": (
                         "Optional ISO datetime for temporal claim queries. "
                         "When set, searches claims valid at that point in time."
@@ -510,13 +551,16 @@ MEMORY_DETECT_DRIFT_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "base_ref": {
                     "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
                     "description": "Optional git base ref for comparison (e.g. 'origin/main').",
                 },
                 "repo_path": {
                     "type": "string",
+                    "maxLength": _MAX_PATH_LENGTH,
                     "description": "Optional repository path (defaults to current working directory).",
                 },
             },
@@ -535,6 +579,7 @@ MEMORY_COMPACT_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {},
             "required": [],
         },
@@ -552,6 +597,7 @@ MEMORY_CONSOLIDATE_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {},
             "required": [],
         },
@@ -569,13 +615,16 @@ MEMORY_PROTECT_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "episode_id": {
                     "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
                     "description": "Protect a specific episode by its UUID.",
                 },
                 "tag": {
                     "type": "string",
+                    "maxLength": 100,
                     "description": "Protect all episodes with this tag.",
                 },
                 "scope": SCOPE_ENVELOPE_SCHEMA,
@@ -596,9 +645,11 @@ MEMORY_TIMELINE_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "topic": {
                     "type": "string",
+                    "maxLength": _MAX_TOPIC_LENGTH,
                     "description": (
                         "Natural language topic to query "
                         "(e.g., 'frontend framework preference')."
@@ -622,9 +673,11 @@ MEMORY_CONTRADICTIONS_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "topic": {
                     "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
                     "description": "Optional topic filename or title to filter results.",
                 },
             },
@@ -644,6 +697,7 @@ MEMORY_BROWSE_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "scope": SCOPE_ENVELOPE_SCHEMA,
             },
@@ -662,9 +716,11 @@ MEMORY_READ_TOPIC_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "filename": {
                     "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
                     "description": "The filename of the knowledge topic (e.g., 'python_setup.md').",
                 },
                 "scope": SCOPE_ENVELOPE_SCHEMA,
@@ -685,6 +741,7 @@ MEMORY_DECAY_REPORT_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {},
             "required": [],
         },
@@ -702,6 +759,7 @@ MEMORY_CONSOLIDATION_LOG_SCHEMA: dict[str, Any] = {
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "last_n": {
                     "type": "integer",

@@ -115,6 +115,19 @@ class TestSchemaStructure:
             "allow",
             "deny",
         ]
+        assert scope_schema["additionalProperties"] is False
+        assert scope_schema["properties"]["project"]["additionalProperties"] is False
+
+    def test_string_bounds_are_declared_for_high_risk_inputs(self):
+        store = next(t for t in openai_tools if t["function"]["name"] == "memory_store")
+        recall = next(t for t in openai_tools if t["function"]["name"] == "memory_recall")
+        detect_drift = next(t for t in openai_tools if t["function"]["name"] == "memory_detect_drift")
+        read_topic = next(t for t in openai_tools if t["function"]["name"] == "memory_read_topic")
+
+        assert store["function"]["parameters"]["properties"]["content"]["maxLength"] == 50_000
+        assert recall["function"]["parameters"]["properties"]["query"]["maxLength"] == 10_000
+        assert detect_drift["function"]["parameters"]["properties"]["repo_path"]["maxLength"] == 4096
+        assert read_topic["function"]["parameters"]["properties"]["filename"]["maxLength"] == 255
 
 
 class TestDispatch:
@@ -300,7 +313,7 @@ class TestDispatch:
 
         assert result["status"] == "stored"
         client.store_batch_with_scope.assert_called_once_with(
-            episodes=[{"content": "x"}],
+            episodes=[{"content": "x", "content_type": "exchange", "tags": None, "surprise": 0.5}],
             scope={"namespace": {"slug": "team-a"}},
         )
         client.store_batch.assert_not_called()
@@ -522,3 +535,42 @@ class TestDispatch:
             tags=None,
             surprise=0.5,
         )
+
+    def test_dispatch_rejects_invalid_scope_enums(self):
+        client = MagicMock()
+
+        result = dispatch_tool_call(
+            client,
+            "memory_store",
+            {"content": "test", "scope": {"policy": {"write_mode": "invalid"}}},
+        )
+
+        assert "error" in result
+        assert "scope.policy.write_mode must be one of" in result["error"]
+        client.store.assert_not_called()
+        client.store_with_scope.assert_not_called()
+
+    def test_dispatch_rejects_non_string_scope_fields(self):
+        client = MagicMock()
+
+        result = dispatch_tool_call(
+            client,
+            "memory_search",
+            {"scope": {"project": {"slug": 5}}},
+        )
+
+        assert result == {"error": "scope.project.slug must be a string when provided"}
+        client.query_search.assert_not_called()
+
+    def test_dispatch_rejects_oversized_query(self):
+        client = MagicMock()
+
+        result = dispatch_tool_call(
+            client,
+            "memory_claim_search",
+            {"query": "x" * 10_001},
+        )
+
+        assert "error" in result
+        assert "Maximum is 10000 characters" in result["error"]
+        client.query_search_claims.assert_not_called()

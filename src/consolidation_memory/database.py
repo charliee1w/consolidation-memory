@@ -3756,29 +3756,44 @@ def update_surprise_scores(updates: list[tuple[float, str]]) -> None:
 
 # ── Stats ────────────────────────────────────────────────────────────────────
 
-def get_stats() -> StatsDict:
+def get_stats(scope: Mapping[str, Any] | None = None) -> StatsDict:
     with get_connection() as conn:
+        episode_conditions: list[str] = []
+        episode_params: list[Any] = []
+        _apply_scope_filters(episode_conditions, episode_params, scope)
+        episode_where = f"WHERE {' AND '.join(episode_conditions)}" if episode_conditions else ""
         ep_counts = conn.execute(
-            """SELECT
+            f"""SELECT
                  COUNT(*) FILTER (WHERE deleted = 0) as total,
                  COUNT(*) FILTER (WHERE consolidated = 0 AND deleted = 0) as pending,
                  COUNT(*) FILTER (WHERE consolidated = 1 AND deleted = 0) as consolidated,
                  COUNT(*) FILTER (WHERE consolidated = 2 OR deleted = 1) as pruned
-               FROM episodes"""
+               FROM episodes {episode_where}""",  # nosec B608
+            episode_params,
         ).fetchone()
+        topic_conditions: list[str] = []
+        topic_params: list[Any] = []
+        _apply_scope_filters(topic_conditions, topic_params, scope)
+        topic_where = f"WHERE {' AND '.join(topic_conditions)}" if topic_conditions else ""
         kt_counts = conn.execute(
-            """SELECT COUNT(*) as total_topics,
+            f"""SELECT COUNT(*) as total_topics,
                       COALESCE(SUM(fact_count), 0) as total_facts
-               FROM knowledge_topics"""
+               FROM knowledge_topics {topic_where}""",  # nosec B608
+            topic_params,
         ).fetchone()
+        record_conditions: list[str] = []
+        record_params: list[Any] = []
+        _apply_scope_filters(record_conditions, record_params, scope)
+        record_where = f"WHERE {' AND '.join(record_conditions)}" if record_conditions else ""
         rec_counts = conn.execute(
-            """SELECT
+            f"""SELECT
                  COUNT(*) FILTER (WHERE deleted = 0) as total_records,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'fact') as facts,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'solution') as solutions,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'preference') as preferences,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'procedure') as procedures
-               FROM knowledge_records"""
+               FROM knowledge_records {record_where}""",  # nosec B608
+            record_params,
         ).fetchone()
 
     return {

@@ -10,6 +10,35 @@ from consolidation_memory.database import ensure_schema
 from tests.helpers import make_normalized_vec as _make_normalized_vec
 
 
+def _reset_test_data_dir(base_dir):
+    from consolidation_memory.config import reset_config
+
+    import consolidation_memory.database as database
+    from consolidation_memory import claim_cache, record_cache, topic_cache
+    from consolidation_memory.backends import reset_backends
+
+    data_root = base_dir / "data"
+    project_dir = data_root / "projects" / "default"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "knowledge").mkdir(exist_ok=True)
+    (project_dir / "knowledge" / "versions").mkdir(parents=True, exist_ok=True)
+    (project_dir / "consolidation_logs").mkdir(exist_ok=True)
+    (data_root / "logs").mkdir(parents=True, exist_ok=True)
+    (project_dir / "backups").mkdir(exist_ok=True)
+
+    reset_config(
+        _base_data_dir=data_root,
+        active_project="default",
+        EMBEDDING_DIMENSION=384,
+        EMBEDDING_BACKEND="fastembed",
+    )
+    database.close_all_connections()
+    reset_backends()
+    topic_cache.invalidate()
+    record_cache.invalidate()
+    claim_cache.invalidate()
+
+
 class TestCmdTest:
     """Tests for the `consolidation-memory test` CLI subcommand."""
 
@@ -292,6 +321,90 @@ class TestExportImportHardening:
         data = json.loads(exports[0].read_text(encoding="utf-8"))
         exported = next(t for t in data["knowledge_topics"] if t["filename"] == "../outside_secret.txt")
         assert exported["file_content"] == ""
+
+    def test_export_import_round_trips_distinct_scoped_topic_files(self, tmp_data_dir):
+        from consolidation_memory.cli import cmd_export, cmd_import
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import ensure_schema, get_knowledge_topic, upsert_knowledge_topic
+        from consolidation_memory.knowledge_paths import resolve_topic_path
+
+        cfg = get_config()
+        ensure_schema()
+        scope_a = {
+            "namespace_slug": "team-a",
+            "namespace_sharing_mode": "shared",
+            "app_client_name": "gateway-a",
+            "app_client_type": "rest",
+            "project_slug": "repo-a",
+            "project_display_name": "Repo A",
+        }
+        scope_b = {
+            "namespace_slug": "team-a",
+            "namespace_sharing_mode": "shared",
+            "app_client_name": "gateway-b",
+            "app_client_type": "rest",
+            "project_slug": "repo-a",
+            "project_display_name": "Repo A",
+        }
+
+        topic_a_id = upsert_knowledge_topic(
+            filename="topic.md",
+            title="Topic A",
+            summary="Scoped topic A",
+            source_episodes=[],
+            fact_count=1,
+            confidence=0.8,
+            scope=scope_a,
+            topic_id="topic-scope-a",
+        )
+        topic_b_id = upsert_knowledge_topic(
+            filename="topic.md",
+            title="Topic B",
+            summary="Scoped topic B",
+            source_episodes=[],
+            fact_count=1,
+            confidence=0.8,
+            scope=scope_b,
+            topic_id="topic-scope-b",
+        )
+
+        topic_a = get_knowledge_topic("topic.md", scope=scope_a)
+        topic_b = get_knowledge_topic("topic.md", scope=scope_b)
+        assert topic_a is not None
+        assert topic_b is not None
+
+        path_a = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic_a)
+        path_b = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic_b)
+        path_a.parent.mkdir(parents=True, exist_ok=True)
+        path_b.parent.mkdir(parents=True, exist_ok=True)
+        path_a.write_text("# Topic\nscope-a\n", encoding="utf-8")
+        path_b.write_text("# Topic\nscope-b\n", encoding="utf-8")
+        assert path_a != path_b
+
+        cmd_export()
+
+        exports = list(cfg.BACKUP_DIR.glob("memory_export_*.json"))
+        assert len(exports) == 1
+        export_path = exports[0]
+        export_data = json.loads(export_path.read_text(encoding="utf-8"))
+        exported_by_id = {topic["id"]: topic for topic in export_data["knowledge_topics"]}
+        assert exported_by_id[topic_a_id]["file_content"] == "# Topic\nscope-a\n"
+        assert exported_by_id[topic_b_id]["file_content"] == "# Topic\nscope-b\n"
+
+        _reset_test_data_dir(tmp_data_dir / "round_trip_import")
+        imported_cfg = get_config()
+        cmd_import(str(export_path))
+
+        imported_topic_a = get_knowledge_topic("topic.md", scope=scope_a)
+        imported_topic_b = get_knowledge_topic("topic.md", scope=scope_b)
+        assert imported_topic_a is not None
+        assert imported_topic_b is not None
+
+        imported_path_a = resolve_topic_path(imported_cfg.KNOWLEDGE_DIR, imported_topic_a)
+        imported_path_b = resolve_topic_path(imported_cfg.KNOWLEDGE_DIR, imported_topic_b)
+        assert imported_path_a != imported_path_b
+        assert imported_path_a.read_text(encoding="utf-8") == "# Topic\nscope-a\n"
+        assert imported_path_b.read_text(encoding="utf-8") == "# Topic\nscope-b\n"
 
     def test_import_missing_source_episodes_uses_default(self, tmp_data_dir):
         from consolidation_memory.cli import cmd_import

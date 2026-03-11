@@ -204,6 +204,29 @@ class TestRecallEndpoint:
         assert resp.status_code == 422
         assert "scope.project must be an object when provided" in resp.json()["detail"]
 
+    def test_invalid_scope_enum_returns_422(self, api_client):
+        resp = api_client.post(
+            "/memory/store",
+            json={
+                "content": "scope",
+                "scope": {"policy": {"write_mode": "invalid"}},
+            },
+        )
+
+        assert resp.status_code == 422
+        assert "scope.policy.write_mode must be one of" in resp.json()["detail"]
+
+    def test_oversized_claim_search_query_returns_422(self, api_client):
+        resp = api_client.post(
+            "/memory/claims/search",
+            json={"query": "x" * 10_001},
+        )
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert isinstance(detail, list)
+        assert "at most 10000 characters" in detail[0]["msg"]
+
 
 class TestStatusEndpoint:
     def test_status(self, api_client):

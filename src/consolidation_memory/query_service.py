@@ -107,7 +107,7 @@ class CanonicalQueryService:
             as_of=query.as_of,
             scope=dict(scope_filter) if scope_filter is not None else None,
         )
-        stats = get_stats()
+        stats = get_stats(scope=scope_filter)
 
         return RecallResult(
             episodes=list(payload.get("episodes", [])),

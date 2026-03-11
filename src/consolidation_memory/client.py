@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 import uuid
@@ -25,6 +26,8 @@ from collections import deque
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
+
+import numpy as np
 
 from consolidation_memory import __version__
 from consolidation_memory.client_runtime import (
@@ -114,6 +117,60 @@ def _normalize_content_type(ct: str) -> str:
         return ct
     logger.warning("Invalid content_type %r, defaulting to 'exchange'", ct)
     return ContentType.EXCHANGE.value
+
+
+def _validate_embedding_batch(
+    embeddings: object,
+    *,
+    expected_count: int,
+    operation: str,
+) -> np.ndarray:
+    """Validate backend embedding output before any durable mutation."""
+    from consolidation_memory.config import get_config
+
+    matrix = np.asarray(embeddings, dtype=np.float32)
+    if matrix.ndim != 2:
+        raise ValueError(
+            f"Embedding backend returned invalid shape {matrix.shape!r} for {operation}; "
+            "expected a 2D matrix."
+        )
+    if matrix.shape[0] != expected_count:
+        raise ValueError(
+            f"Embedding backend returned {matrix.shape[0]} vectors for {expected_count} texts "
+            f"during {operation}."
+        )
+    expected_dim = int(get_config().EMBEDDING_DIMENSION)
+    if matrix.shape[1] != expected_dim:
+        raise ValueError(
+            f"Embedding backend returned dimension {matrix.shape[1]} during {operation}; "
+            f"expected {expected_dim}."
+        )
+    if not np.isfinite(matrix).all():
+        raise ValueError(f"Embedding backend returned non-finite values during {operation}.")
+    return matrix
+
+
+def _write_temp_text(path: os.PathLike[str] | str, content: str) -> str:
+    """Write text to a sibling temp file and return its path for atomic replace."""
+    target = os.fspath(path)
+    directory = os.path.dirname(target) or "."
+    prefix = f".{os.path.basename(target)}."
+    fd, temp_path = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                pass
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+    return temp_path
 
 
 def _normalize_scope_token(value: str | None) -> str | None:
@@ -671,17 +728,22 @@ class MemoryClient:
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
         try:
-            embedding = encode_documents([content])
+            embedding_matrix = _validate_embedding_batch(
+                encode_documents([content]),
+                expected_count=1,
+                operation="store",
+            )
         except ConnectionError as e:
             logger.error("Embedding backend unreachable during store: %s", e)
             return StoreResult(
                 status="backend_unavailable",
                 message=f"Embedding backend unreachable: {e}",
             )
+        embedding = embedding_matrix[0]
 
         # Dedup check is scope-aware to avoid false positives across isolated contexts.
         if cfg.DEDUP_ENABLED and self._vector_store.size > 0:
-            matches = self._vector_store.search(embedding[0], k=10)
+            matches = self._vector_store.search(embedding, k=10)
             for match_id, match_sim in matches:
                 if match_sim >= cfg.DEDUP_SIMILARITY_THRESHOLD:
                     existing = get_episode(match_id)
@@ -713,7 +775,7 @@ class MemoryClient:
         )
 
         try:
-            self._vector_store.add(episode_id, embedding[0])
+            self._vector_store.add(episode_id, embedding)
         except Exception as e:
             # Hard-delete (not soft-delete) so dedup checks don't still find this orphan
             hard_delete_episode(episode_id)
@@ -842,7 +904,11 @@ class MemoryClient:
 
         # Single embedding call for all texts
         try:
-            embeddings = encode_documents([it["content"] for it in items])
+            embeddings = _validate_embedding_batch(
+                encode_documents([it["content"] for it in items]),
+                expected_count=len(items),
+                operation="store_batch",
+            )
         except ConnectionError as e:
             logger.error("Embedding backend unreachable during batch store: %s", e)
             return BatchStoreResult(
@@ -1492,7 +1558,7 @@ class MemoryClient:
                 )
             knowledge.append({**topic, "file_content": content})
 
-        records = get_all_active_records(scope=scope_filter)
+        records = get_all_active_records(include_expired=True, scope=scope_filter)
         claims = filter_claims_for_scope(get_all_claims(), scope_filter)
         claim_ids = [str(claim["id"]) for claim in claims if claim.get("id")]
         claim_edges = get_all_claim_edges(claim_ids=claim_ids)
@@ -1575,6 +1641,7 @@ class MemoryClient:
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             expire_record,
+            get_connection,
             get_knowledge_topic,
             get_records_by_topic,
             insert_knowledge_records,
@@ -1660,9 +1727,6 @@ class MemoryClient:
                 message="LLM output missing frontmatter structure; original document preserved.",
             )
 
-        _version_knowledge_file(filepath)
-        filepath.write_text(corrected, encoding="utf-8")
-
         parsed = _parse_frontmatter(corrected)
         meta = parsed["meta"]
         body = parsed.get("body", "")
@@ -1719,27 +1783,61 @@ class MemoryClient:
                 "valid_from": now_ts,
             })
 
-        topic_id = upsert_knowledge_topic(
-            filename=topic_filename,
-            title=str(meta.get("title", existing_topic["title"])),
-            summary=str(meta.get("summary", existing_topic["summary"])),
-            source_episodes=source_eps,
-            fact_count=len(record_rows),
-            confidence=confidence,
-            scope=topic_scope,
-        )
+        prepared_path: str | None = None
+        replaced_file = False
+        try:
+            prepared_path = _write_temp_text(filepath, corrected)
+            with get_connection():
+                topic_id = upsert_knowledge_topic(
+                    filename=topic_filename,
+                    title=str(meta.get("title", existing_topic["title"])),
+                    summary=str(meta.get("summary", existing_topic["summary"])),
+                    source_episodes=source_eps,
+                    fact_count=len(record_rows),
+                    confidence=confidence,
+                    scope=topic_scope,
+                )
 
-        for old in get_records_by_topic(topic_id, include_expired=False):
-            expire_record(old["id"], valid_until=now_ts)
+                for old in get_records_by_topic(topic_id, include_expired=False):
+                    expire_record(old["id"], valid_until=now_ts)
 
-        if record_rows:
-            insert_knowledge_records(
-                topic_id,
-                record_rows,
-                source_episodes=source_eps,
-                scope=topic_scope,
-            )
+                if record_rows:
+                    insert_knowledge_records(
+                        topic_id,
+                        record_rows,
+                        source_episodes=source_eps,
+                        scope=topic_scope,
+                    )
 
+                _version_knowledge_file(filepath)
+                os.replace(prepared_path, filepath)
+                replaced_file = True
+        except Exception as e:
+            restore_error: Exception | None = None
+            if replaced_file:
+                try:
+                    restored_path = _write_temp_text(filepath, existing_content)
+                    try:
+                        os.replace(restored_path, filepath)
+                    finally:
+                        if os.path.exists(restored_path):
+                            os.unlink(restored_path)
+                except Exception as restore_exc:  # pragma: no cover - rare fs failure
+                    restore_error = restore_exc
+                    logger.exception(
+                        "Failed to restore knowledge file after correction rollback: %s",
+                        filepath,
+                    )
+            message = str(e)
+            if restore_error is not None:
+                message = (
+                    f"{message}. Database changes were rolled back, but restoring the original "
+                    f"knowledge file failed: {restore_error}"
+                )
+            return CorrectResult(status="error", filename=topic_filename, message=message)
+        finally:
+            if prepared_path is not None and os.path.exists(prepared_path):
+                os.unlink(prepared_path)
         from consolidation_memory import claim_cache as _cc, topic_cache as _tc, record_cache as _rc
         _cc.invalidate()
         _tc.invalidate()

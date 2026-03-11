@@ -165,15 +165,19 @@ def _as_mapping(value: object, *, field_name: str) -> Mapping[str, Any]:
     raise TypeError(f"scope.{field_name} must be an object when provided")
 
 
-def _clean_str(value: object) -> str | None:
-    if not isinstance(value, str):
+def _coerce_optional_str(value: object, *, field_name: str) -> str | None:
+    if value is None:
         return None
+    if not isinstance(value, str):
+        raise TypeError(f"scope.{field_name} must be a string when provided")
     cleaned = value.strip()
     return cleaned or None
 
 
 def _coerce_namespace_sharing_mode(value: object) -> NamespaceSharingMode:
-    cleaned = _clean_str(value)
+    cleaned = _coerce_optional_str(value, field_name="namespace.sharing_mode")
+    if cleaned is None:
+        return "private"
     if cleaned == "private":
         return "private"
     if cleaned == "shared":
@@ -182,11 +186,15 @@ def _coerce_namespace_sharing_mode(value: object) -> NamespaceSharingMode:
         return "team"
     if cleaned == "managed":
         return "managed"
-    return "private"
+    raise ValueError(
+        "scope.namespace.sharing_mode must be one of: private, shared, team, managed"
+    )
 
 
 def _coerce_app_client_type(value: object) -> AppClientType:
-    cleaned = _clean_str(value)
+    cleaned = _coerce_optional_str(value, field_name="app_client.app_type")
+    if cleaned is None:
+        return "python_sdk"
     if cleaned == "mcp":
         return "mcp"
     if cleaned == "python_sdk":
@@ -205,11 +213,16 @@ def _coerce_app_client_type(value: object) -> AppClientType:
         return "cli"
     if cleaned == "other":
         return "other"
-    return "python_sdk"
+    raise ValueError(
+        "scope.app_client.app_type must be one of: "
+        "mcp, python_sdk, rest, openai_agents, langgraph, adk, letta, cli, other"
+    )
 
 
 def _coerce_session_kind(value: object) -> SessionKind:
-    cleaned = _clean_str(value)
+    cleaned = _coerce_optional_str(value, field_name="session.session_kind")
+    if cleaned is None:
+        return "conversation"
     if cleaned == "conversation":
         return "conversation"
     if cleaned == "thread":
@@ -218,27 +231,31 @@ def _coerce_session_kind(value: object) -> SessionKind:
         return "workflow"
     if cleaned == "job":
         return "job"
-    return "conversation"
+    raise ValueError("scope.session.session_kind must be one of: conversation, thread, workflow, job")
 
 
 def _coerce_policy_read_visibility(value: object) -> PolicyReadVisibility:
-    cleaned = _clean_str(value)
+    cleaned = _coerce_optional_str(value, field_name="policy.read_visibility")
+    if cleaned is None:
+        return "private"
     if cleaned == "private":
         return "private"
     if cleaned == "namespace":
         return "namespace"
     if cleaned == "project":
         return "project"
-    return "private"
+    raise ValueError("scope.policy.read_visibility must be one of: private, namespace, project")
 
 
 def _coerce_policy_write_mode(value: object) -> PolicyWriteMode:
-    cleaned = _clean_str(value)
+    cleaned = _coerce_optional_str(value, field_name="policy.write_mode")
+    if cleaned is None:
+        return "allow"
     if cleaned == "deny":
         return "deny"
     if cleaned == "allow":
         return "allow"
-    return "allow"
+    raise ValueError("scope.policy.write_mode must be one of: allow, deny")
 
 
 def coerce_scope_envelope(
@@ -266,9 +283,11 @@ def coerce_scope_envelope(
     else:
         ns = _as_mapping(namespace_raw, field_name="namespace")
         namespace = NamespaceScope(
-            id=_clean_str(ns.get("id")),
-            slug=_clean_str(ns.get("slug")) or "default",
-            display_name=_clean_str(ns.get("display_name")),
+            id=_coerce_optional_str(ns.get("id"), field_name="namespace.id"),
+            slug=_coerce_optional_str(ns.get("slug"), field_name="namespace.slug") or "default",
+            display_name=_coerce_optional_str(
+                ns.get("display_name"), field_name="namespace.display_name"
+            ),
             sharing_mode=_coerce_namespace_sharing_mode(ns.get("sharing_mode")),
         )
 
@@ -280,11 +299,15 @@ def coerce_scope_envelope(
     else:
         app = _as_mapping(app_raw, field_name="app_client")
         app_client = AppClientScope(
-            id=_clean_str(app.get("id")),
+            id=_coerce_optional_str(app.get("id"), field_name="app_client.id"),
             app_type=_coerce_app_client_type(app.get("app_type")),
-            name=_clean_str(app.get("name")) or "legacy_client",
-            provider=_clean_str(app.get("provider")),
-            external_key=_clean_str(app.get("external_key")),
+            name=_coerce_optional_str(app.get("name"), field_name="app_client.name") or "legacy_client",
+            provider=_coerce_optional_str(
+                app.get("provider"), field_name="app_client.provider"
+            ),
+            external_key=_coerce_optional_str(
+                app.get("external_key"), field_name="app_client.external_key"
+            ),
         )
 
     agent_raw = scope.get("agent")
@@ -295,11 +318,17 @@ def coerce_scope_envelope(
         agent = None
         if agent_map:
             agent = AgentScope(
-                id=_clean_str(agent_map.get("id")),
-                name=_clean_str(agent_map.get("name")),
-                external_key=_clean_str(agent_map.get("external_key")),
-                model_provider=_clean_str(agent_map.get("model_provider")),
-                model_name=_clean_str(agent_map.get("model_name")),
+                id=_coerce_optional_str(agent_map.get("id"), field_name="agent.id"),
+                name=_coerce_optional_str(agent_map.get("name"), field_name="agent.name"),
+                external_key=_coerce_optional_str(
+                    agent_map.get("external_key"), field_name="agent.external_key"
+                ),
+                model_provider=_coerce_optional_str(
+                    agent_map.get("model_provider"), field_name="agent.model_provider"
+                ),
+                model_name=_coerce_optional_str(
+                    agent_map.get("model_name"), field_name="agent.model_name"
+                ),
             )
 
     session_raw = scope.get("session")
@@ -310,8 +339,10 @@ def coerce_scope_envelope(
         session = None
         if session_map:
             session = SessionScope(
-                id=_clean_str(session_map.get("id")),
-                external_key=_clean_str(session_map.get("external_key")),
+                id=_coerce_optional_str(session_map.get("id"), field_name="session.id"),
+                external_key=_coerce_optional_str(
+                    session_map.get("external_key"), field_name="session.external_key"
+                ),
                 session_kind=_coerce_session_kind(session_map.get("session_kind")),
             )
 
@@ -323,12 +354,20 @@ def coerce_scope_envelope(
         project = None
         if project_map:
             project = ProjectRepoScope(
-                id=_clean_str(project_map.get("id")),
-                slug=_clean_str(project_map.get("slug")),
-                display_name=_clean_str(project_map.get("display_name")),
-                root_uri=_clean_str(project_map.get("root_uri")),
-                repo_remote=_clean_str(project_map.get("repo_remote")),
-                default_branch=_clean_str(project_map.get("default_branch")),
+                id=_coerce_optional_str(project_map.get("id"), field_name="project.id"),
+                slug=_coerce_optional_str(project_map.get("slug"), field_name="project.slug"),
+                display_name=_coerce_optional_str(
+                    project_map.get("display_name"), field_name="project.display_name"
+                ),
+                root_uri=_coerce_optional_str(
+                    project_map.get("root_uri"), field_name="project.root_uri"
+                ),
+                repo_remote=_coerce_optional_str(
+                    project_map.get("repo_remote"), field_name="project.repo_remote"
+                ),
+                default_branch=_coerce_optional_str(
+                    project_map.get("default_branch"), field_name="project.default_branch"
+                ),
             )
 
     policy_raw = scope.get("policy")

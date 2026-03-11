@@ -17,6 +17,7 @@ slot is fresh and filter from it, avoiding a redundant embed call.
 
 import logging
 import threading
+import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 
@@ -36,6 +37,8 @@ _EMPTY_SLOT: dict = {
     "texts": [],
     "vecs": None,
     "records": [],
+    "refresh_after_epoch": None,
+    "loaded": False,
 }
 
 _cache_all: dict = dict(_EMPTY_SLOT)
@@ -90,13 +93,83 @@ def _is_record_current(record: dict, reference_time: datetime | None = None) -> 
     return True
 
 
-def _filter_unexpired(records: list[dict], vecs: np.ndarray) -> tuple[list[dict], np.ndarray | None]:
+def _filter_unexpired(
+    records: list[dict],
+    vecs: np.ndarray | None,
+) -> tuple[list[dict], np.ndarray | None]:
     """Filter records whose validity window does not include the current time."""
     mask = [_is_record_current(r) for r in records]
     filtered_records = [r for r, keep in zip(records, mask) if keep]
     if not filtered_records:
         return [], None
     filtered_vecs = vecs[mask] if vecs is not None else None
+    return filtered_records, filtered_vecs
+
+
+def _next_refresh_after_epoch(records: list[dict], reference_time: datetime | None = None) -> float | None:
+    """Return the next wall-clock time when unexpired membership can change."""
+    now = reference_time or datetime.now(timezone.utc)
+    candidates: list[float] = []
+    for record in records:
+        valid_from = _normalize_datetime(record.get("valid_from"))
+        if valid_from is not None and valid_from > now:
+            candidates.append(valid_from.timestamp())
+
+        valid_until = _normalize_datetime(record.get("valid_until"))
+        if valid_until is not None and valid_until > now:
+            candidates.append(valid_until.timestamp())
+
+    return min(candidates) if candidates else None
+
+
+def _slot_is_fresh(slot: dict, *, include_expired: bool) -> bool:
+    """Return True when a cache slot can be safely reused."""
+    if slot.get("version") != _version or not slot.get("loaded", False):
+        return False
+    if include_expired:
+        return True
+
+    refresh_after = slot.get("refresh_after_epoch")
+    if refresh_after is None:
+        return True
+    return time.time() < float(refresh_after)
+
+
+def _populate_slot(
+    slot: dict,
+    *,
+    version: int,
+    texts: list[str],
+    vecs: np.ndarray | None,
+    records: list[dict],
+    refresh_after_epoch: float | None = None,
+) -> None:
+    """Write a cache slot atomically under the module lock."""
+    slot["version"] = version
+    slot["texts"] = texts
+    slot["vecs"] = vecs
+    slot["records"] = records
+    slot["refresh_after_epoch"] = refresh_after_epoch
+    slot["loaded"] = True
+
+
+def _derive_unexpired_slot(
+    slot: dict,
+    *,
+    version: int,
+    records: list[dict],
+    vecs: np.ndarray | None,
+) -> tuple[list[dict], np.ndarray | None]:
+    """Populate an unexpired slot from an all-records snapshot."""
+    filtered_records, filtered_vecs = _filter_unexpired(records, vecs)
+    _populate_slot(
+        slot,
+        version=version,
+        texts=[r["embedding_text"] for r in filtered_records],
+        vecs=filtered_vecs,
+        records=filtered_records,
+        refresh_after_epoch=_next_refresh_after_epoch(records),
+    )
     return filtered_records, filtered_vecs
 
 
@@ -121,19 +194,54 @@ def get_record_vecs(
     """
     if scope:
         scoped_key = (include_expired, _scope_cache_key(scope))
+        scoped_all_key = (True, _scope_cache_key(scope))
         with _lock:
             scoped_slot = _scoped_cache.get(scoped_key)
-            if (
-                scoped_slot is not None
-                and scoped_slot["version"] == _version
-                and scoped_slot["vecs"] is not None
+            if scoped_slot is not None and _slot_is_fresh(
+                scoped_slot,
+                include_expired=include_expired,
             ):
                 _scoped_cache.move_to_end(scoped_key)
                 return scoped_slot["records"], scoped_slot["vecs"]
+
+            if not include_expired:
+                scoped_all_slot = _scoped_cache.get(scoped_all_key)
+                if scoped_all_slot is not None and _slot_is_fresh(
+                    scoped_all_slot,
+                    include_expired=True,
+                ):
+                    target_slot = scoped_slot or dict(_EMPTY_SLOT)
+                    filtered_records, filtered_vecs = _derive_unexpired_slot(
+                        target_slot,
+                        version=_version,
+                        records=scoped_all_slot["records"],
+                        vecs=scoped_all_slot["vecs"],
+                    )
+                    _scoped_cache[scoped_key] = target_slot
+                    _scoped_cache.move_to_end(scoped_key)
+                    while len(_scoped_cache) > _SCOPED_CACHE_MAX:
+                        _scoped_cache.popitem(last=False)
+                    return filtered_records, filtered_vecs
             fetch_version = _version
 
-        records = get_all_active_records(include_expired=include_expired, scope=scope)
+        fetch_include_expired = True if not include_expired else include_expired
+        records = get_all_active_records(include_expired=fetch_include_expired, scope=scope)
         if not records:
+            with _lock:
+                if fetch_version == _version:
+                    target_slot = _scoped_cache.get(scoped_key) or dict(_EMPTY_SLOT)
+                    _populate_slot(
+                        target_slot,
+                        version=fetch_version,
+                        texts=[],
+                        vecs=None,
+                        records=[],
+                        refresh_after_epoch=None,
+                    )
+                    _scoped_cache[scoped_key] = target_slot
+                    _scoped_cache.move_to_end(scoped_key)
+                    while len(_scoped_cache) > _SCOPED_CACHE_MAX:
+                        _scoped_cache.popitem(last=False)
             return [], None
 
         texts = [r["embedding_text"] for r in records]
@@ -141,17 +249,45 @@ def get_record_vecs(
             vecs = encode_documents(texts)
         except Exception as e:
             logger.warning("Failed to embed scoped record texts: %s", e, exc_info=True)
-            return records, None
+            if include_expired:
+                return records, None
+            filtered_records, _filtered_vecs = _filter_unexpired(records, vecs=None)
+            return filtered_records, None
 
         with _lock:
             if _version == fetch_version:
-                _scoped_cache[scoped_key] = {
-                    "version": fetch_version,
-                    "texts": texts,
-                    "vecs": vecs,
-                    "records": records,
-                }
-                _scoped_cache.move_to_end(scoped_key)
+                if include_expired:
+                    target_slot = _scoped_cache.get(scoped_key) or dict(_EMPTY_SLOT)
+                    _populate_slot(
+                        target_slot,
+                        version=fetch_version,
+                        texts=texts,
+                        vecs=vecs,
+                        records=records,
+                    )
+                    _scoped_cache[scoped_key] = target_slot
+                    _scoped_cache.move_to_end(scoped_key)
+                else:
+                    all_slot = _scoped_cache.get(scoped_all_key) or dict(_EMPTY_SLOT)
+                    _populate_slot(
+                        all_slot,
+                        version=fetch_version,
+                        texts=texts,
+                        vecs=vecs,
+                        records=records,
+                    )
+                    _scoped_cache[scoped_all_key] = all_slot
+                    _scoped_cache.move_to_end(scoped_all_key)
+
+                    current_slot = _scoped_cache.get(scoped_key) or dict(_EMPTY_SLOT)
+                    filtered_records, filtered_vecs = _derive_unexpired_slot(
+                        current_slot,
+                        version=fetch_version,
+                        records=records,
+                        vecs=vecs,
+                    )
+                    _scoped_cache[scoped_key] = current_slot
+                    _scoped_cache.move_to_end(scoped_key)
                 while len(_scoped_cache) > _SCOPED_CACHE_MAX:
                     _scoped_cache.popitem(last=False)
             else:
@@ -161,34 +297,49 @@ def get_record_vecs(
                     _version,
                 )
                 scoped_slot = _scoped_cache.get(scoped_key)
-                if scoped_slot is not None and scoped_slot["vecs"] is not None:
+                if scoped_slot is not None and _slot_is_fresh(
+                    scoped_slot,
+                    include_expired=include_expired,
+                ):
                     _scoped_cache.move_to_end(scoped_key)
                     return scoped_slot["records"], scoped_slot["vecs"]
 
-        return records, vecs
+        if include_expired:
+            return records, vecs
+        return filtered_records, filtered_vecs
 
     slot = _cache_all if include_expired else _cache_unexpired
 
     with _lock:
-        if slot["version"] == _version and slot["vecs"] is not None:
+        if _slot_is_fresh(slot, include_expired=include_expired):
             return slot["records"], slot["vecs"]
 
         # If requesting unexpired, check if the all-records cache is fresh
         # and filter from it instead of re-embedding
-        if not include_expired and _cache_all["version"] == _version and _cache_all["vecs"] is not None:
-            filtered_records, filtered_vecs = _filter_unexpired(
-                _cache_all["records"], _cache_all["vecs"],
+        if not include_expired and _slot_is_fresh(_cache_all, include_expired=True):
+            filtered_records, filtered_vecs = _derive_unexpired_slot(
+                _cache_unexpired,
+                version=_version,
+                records=_cache_all["records"],
+                vecs=_cache_all["vecs"],
             )
-            _cache_unexpired["version"] = _version
-            _cache_unexpired["records"] = filtered_records
-            _cache_unexpired["vecs"] = filtered_vecs
-            _cache_unexpired["texts"] = [r["embedding_text"] for r in filtered_records]
             return filtered_records, filtered_vecs
 
         fetch_version = _version
 
-    records = get_all_active_records(include_expired=include_expired)
+    fetch_include_expired = True if not include_expired else include_expired
+    records = get_all_active_records(include_expired=fetch_include_expired)
     if not records:
+        with _lock:
+            if _version == fetch_version:
+                _populate_slot(
+                    slot,
+                    version=fetch_version,
+                    texts=[],
+                    vecs=None,
+                    records=[],
+                    refresh_after_epoch=None,
+                )
         return [], None
 
     texts = [r["embedding_text"] for r in records]
@@ -196,34 +347,44 @@ def get_record_vecs(
         vecs = encode_documents(texts)
     except Exception as e:
         logger.warning("Failed to embed record texts: %s", e, exc_info=True)
-        return records, None
+        if include_expired:
+            return records, None
+        filtered_records, _filtered_vecs = _filter_unexpired(records, vecs=None)
+        return filtered_records, None
 
     with _lock:
         if _version == fetch_version:
-            slot["version"] = fetch_version
-            slot["texts"] = texts
-            slot["vecs"] = vecs
-            slot["records"] = records
+            if include_expired:
+                _populate_slot(
+                    slot,
+                    version=fetch_version,
+                    texts=texts,
+                    vecs=vecs,
+                    records=records,
+                )
+            else:
+                _populate_slot(
+                    _cache_all,
+                    version=fetch_version,
+                    texts=texts,
+                    vecs=vecs,
+                    records=records,
+                )
+                filtered_records, filtered_vecs = _derive_unexpired_slot(
+                    _cache_unexpired,
+                    version=fetch_version,
+                    records=records,
+                    vecs=vecs,
+                )
         else:
             logger.debug(
                 "Record cache populate discarded: version changed %d -> %d during fetch",
                 fetch_version, _version,
             )
             # Return cached data if available (consistent pair), else use our fetch
-            if slot["vecs"] is not None:
+            if _slot_is_fresh(slot, include_expired=include_expired):
                 return slot["records"], slot["vecs"]
 
-    if not include_expired:
+    if include_expired:
         return records, vecs
-
-    # When we just populated the all-records cache, also populate unexpired
-    # as a free side-effect
-    with _lock:
-        if _version == fetch_version:
-            filtered_records, filtered_vecs = _filter_unexpired(records, vecs)
-            _cache_unexpired["version"] = fetch_version
-            _cache_unexpired["records"] = filtered_records
-            _cache_unexpired["vecs"] = filtered_vecs
-            _cache_unexpired["texts"] = [r["embedding_text"] for r in filtered_records]
-
-    return records, vecs
+    return filtered_records, filtered_vecs

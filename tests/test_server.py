@@ -180,7 +180,7 @@ class TestMCPStoreTools:
 
         assert json.loads(output)["stored"] == 1
         mock_client.store_batch_with_scope.assert_called_once_with(
-            episodes=[{"content": "x"}],
+            episodes=[{"content": "x", "content_type": "exchange", "tags": None, "surprise": 0.5}],
             scope=scoped_payload,
         )
         mock_client.store_batch.assert_not_called()
@@ -389,6 +389,28 @@ class TestMCPRecallTool:
         data = json.loads(output)
         assert "error" in data
         assert "client init failed" in data["error"]
+
+    def test_memory_store_rejects_invalid_scope_enum(self):
+        from consolidation_memory.server import memory_store
+
+        output = asyncio.run(
+            memory_store(
+                content="test",
+                scope={"policy": {"write_mode": "invalid"}},
+            )
+        )
+
+        data = json.loads(output)
+        assert data == {"error": "scope.policy.write_mode must be one of: allow, deny"}
+
+    def test_memory_claim_search_rejects_oversized_query(self):
+        from consolidation_memory.server import memory_claim_search
+
+        output = asyncio.run(memory_claim_search(query="x" * 10_001))
+
+        data = json.loads(output)
+        assert "error" in data
+        assert "Maximum is 10000 characters" in data["error"]
 
 
 class TestMCPScopeForwarding:

@@ -45,6 +45,10 @@ _ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference"]
 
 # Maximum number of episodes in a single batch store request.
 _MAX_BATCH_SIZE = 100
+_MAX_QUERY_LENGTH = 10_000
+_MAX_TOPIC_LENGTH = 500
+_MAX_FILENAME_LENGTH = 255
+_MAX_PATH_LENGTH = 4096
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "180")
 )
@@ -172,15 +176,15 @@ class StoreRequest(BaseModel):
 
 
 class RecallRequest(BaseModel):
-    query: str
+    query: str = Field(max_length=_MAX_QUERY_LENGTH)
     n_results: int = Field(default=10, ge=1, le=50)
     include_knowledge: bool = True
     content_types: list[_ContentTypeLiteral] | None = None
     tags: list[str] | None = None
-    after: str | None = None
-    before: str | None = None
+    after: str | None = Field(default=None, max_length=64)
+    before: str | None = Field(default=None, max_length=64)
     include_expired: bool = False
-    as_of: str | None = None
+    as_of: str | None = Field(default=None, max_length=64)
     scope: dict[str, object] | None = None
 
 
@@ -197,38 +201,38 @@ class BatchStoreRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str | None = None
+    query: str | None = Field(default=None, max_length=_MAX_QUERY_LENGTH)
     content_types: list[_ContentTypeLiteral] | None = None
     tags: list[str] | None = None
-    after: str | None = None
-    before: str | None = None
+    after: str | None = Field(default=None, max_length=64)
+    before: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=20, ge=1, le=50)
     scope: dict[str, object] | None = None
 
 
 class ClaimBrowseRequest(BaseModel):
-    claim_type: str | None = None
-    as_of: str | None = None
+    claim_type: str | None = Field(default=None, max_length=64)
+    as_of: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=50, ge=1, le=200)
     scope: dict[str, object] | None = None
 
 
 class ClaimSearchRequest(BaseModel):
-    query: str
-    claim_type: str | None = None
-    as_of: str | None = None
+    query: str = Field(max_length=_MAX_QUERY_LENGTH)
+    claim_type: str | None = Field(default=None, max_length=64)
+    as_of: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=50, ge=1, le=200)
     scope: dict[str, object] | None = None
 
 
 class DetectDriftRequest(BaseModel):
-    base_ref: str | None = None
-    repo_path: str | None = None
+    base_ref: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
+    repo_path: str | None = Field(default=None, max_length=_MAX_PATH_LENGTH)
 
 
 class CorrectRequest(BaseModel):
-    topic_filename: str
-    correction: str
+    topic_filename: str = Field(max_length=_MAX_FILENAME_LENGTH)
+    correction: str = Field(max_length=50_000)
     scope: dict[str, object] | None = None
 
 
@@ -237,18 +241,18 @@ class ExportRequest(BaseModel):
 
 
 class ForgetRequest(BaseModel):
-    episode_id: str
+    episode_id: str = Field(max_length=_MAX_FILENAME_LENGTH)
     scope: dict[str, object] | None = None
 
 
 class ProtectRequest(BaseModel):
-    episode_id: str | None = None
-    tag: str | None = None
+    episode_id: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
+    tag: str | None = Field(default=None, max_length=100)
     scope: dict[str, object] | None = None
 
 
 class TimelineRequest(BaseModel):
-    topic: str
+    topic: str = Field(max_length=_MAX_TOPIC_LENGTH)
     scope: dict[str, object] | None = None
 
 
@@ -257,12 +261,12 @@ class BrowseRequest(BaseModel):
 
 
 class ReadTopicRequest(BaseModel):
-    filename: str
+    filename: str = Field(max_length=_MAX_FILENAME_LENGTH)
     scope: dict[str, object] | None = None
 
 
 class ContradictionsRequest(BaseModel):
-    topic: str | None = None
+    topic: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
 
 
 class ConsolidationLogRequest(BaseModel):

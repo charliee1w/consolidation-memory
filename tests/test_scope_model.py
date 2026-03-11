@@ -51,17 +51,22 @@ class TestScopeEnvelopeCoercion:
         assert scope.policy is not None and scope.policy.read_visibility == "namespace"
         assert scope.policy is not None and scope.policy.write_mode == "deny"
 
-    def test_mapping_scope_invalid_policy_values_fall_back_to_defaults(self):
-        scope = coerce_scope_envelope(
-            {
-                "namespace": {"slug": "team-c"},
-                "policy": {"read_visibility": "invalid", "write_mode": "invalid"},
-            }
-        )
-        assert scope is not None
-        assert scope.policy is not None
-        assert scope.policy.read_visibility == "private"
-        assert scope.policy.write_mode == "allow"
+    def test_mapping_scope_invalid_policy_values_raise(self):
+        with pytest.raises(ValueError, match=r"scope\.policy\.read_visibility must be one of"):
+            coerce_scope_envelope(
+                {
+                    "namespace": {"slug": "team-c"},
+                    "policy": {"read_visibility": "invalid", "write_mode": "allow"},
+                }
+            )
+
+        with pytest.raises(ValueError, match=r"scope\.policy\.write_mode must be one of"):
+            coerce_scope_envelope(
+                {
+                    "namespace": {"slug": "team-c"},
+                    "policy": {"read_visibility": "private", "write_mode": "invalid"},
+                }
+            )
 
     def test_invalid_scope_type_raises(self):
         with pytest.raises(TypeError, match="scope must be a ScopeEnvelope, mapping, or None"):
@@ -74,3 +79,7 @@ class TestScopeEnvelopeCoercion:
     def test_invalid_nested_policy_type_raises(self):
         with pytest.raises(TypeError, match=r"scope\.policy must be an object"):
             coerce_scope_envelope({"policy": 5})  # type: ignore[arg-type]
+
+    def test_invalid_nested_string_field_type_raises(self):
+        with pytest.raises(TypeError, match=r"scope\.project\.slug must be a string"):
+            coerce_scope_envelope({"project": {"slug": 5}})  # type: ignore[arg-type]

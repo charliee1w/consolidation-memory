@@ -20,6 +20,22 @@ from consolidation_memory.database import (
 from tests.helpers import mock_encode
 
 
+class _RecordCacheClock:
+    def __init__(self, current: datetime):
+        self.current = current
+
+    def set(self, current: datetime) -> None:
+        self.current = current
+
+    def now(self, tz=None):
+        if tz is None:
+            return self.current
+        return self.current.astimezone(tz)
+
+    def time(self) -> float:
+        return self.current.timestamp()
+
+
 # ── Schema migration ──────────────────────────────────────────────────────────
 
 class TestSchemaMigrationV6:
@@ -198,6 +214,134 @@ class TestTemporalFiltering:
 
         assert any(r["id"] == record_id for r in all_records)
         assert all(r["id"] != record_id for r in current_records)
+
+
+class TestRecordCacheWallClockRefresh:
+    def test_record_cache_refreshes_future_activation_without_invalidate(self, tmp_data_dir):
+        ensure_schema()
+        activation_time = datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc)
+        clock = _RecordCacheClock(activation_time - timedelta(seconds=30))
+        tid = upsert_knowledge_topic(
+            filename="cache-activation-refresh.md",
+            title="Cache Activation Refresh",
+            summary="S",
+            source_episodes=[],
+        )
+        record_id = insert_knowledge_records(tid, [
+            {
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Feature", "info": "active soon"},
+                "embedding_text": "Feature: active soon",
+                "valid_from": activation_time.isoformat(),
+            },
+        ])[0]
+
+        from consolidation_memory import record_cache
+
+        record_cache.invalidate()
+        with patch("consolidation_memory.record_cache.datetime", new=clock), \
+             patch("consolidation_memory.record_cache.time.time", side_effect=clock.time), \
+             patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+            before_records, before_vecs = record_cache.get_record_vecs(include_expired=False)
+            assert before_records == []
+            assert before_vecs is None
+
+            clock.set(activation_time + timedelta(seconds=1))
+            after_records, after_vecs = record_cache.get_record_vecs(include_expired=False)
+
+        assert [r["id"] for r in after_records] == [record_id]
+        assert after_vecs is not None
+        assert mock_embed.call_count == 1
+
+    def test_record_cache_refreshes_expiry_without_invalidate(self, tmp_data_dir):
+        ensure_schema()
+        base_time = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        expiry_time = base_time + timedelta(minutes=1)
+        clock = _RecordCacheClock(base_time)
+        tid = upsert_knowledge_topic(
+            filename="cache-expiry-refresh.md",
+            title="Cache Expiry Refresh",
+            summary="S",
+            source_episodes=[],
+        )
+        record_id = insert_knowledge_records(tid, [
+            {
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Lease", "info": "active briefly"},
+                "embedding_text": "Lease: active briefly",
+                "valid_until": expiry_time.isoformat(),
+            },
+        ])[0]
+
+        from consolidation_memory import record_cache
+
+        record_cache.invalidate()
+        with patch("consolidation_memory.record_cache.datetime", new=clock), \
+             patch("consolidation_memory.record_cache.time.time", side_effect=clock.time), \
+             patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+            before_records, before_vecs = record_cache.get_record_vecs(include_expired=False)
+            assert [r["id"] for r in before_records] == [record_id]
+            assert before_vecs is not None
+
+            clock.set(expiry_time + timedelta(seconds=1))
+            after_records, after_vecs = record_cache.get_record_vecs(include_expired=False)
+
+        assert after_records == []
+        assert after_vecs is None
+        assert mock_embed.call_count == 1
+
+    def test_scoped_record_cache_refreshes_future_activation_without_invalidate(self, tmp_data_dir):
+        ensure_schema()
+        activation_time = datetime(2026, 1, 1, 15, 0, tzinfo=timezone.utc)
+        clock = _RecordCacheClock(activation_time - timedelta(seconds=30))
+        scope = {
+            "namespace_slug": "default",
+            "project_slug": "default",
+            "app_client_name": "legacy_client",
+            "app_client_type": "python_sdk",
+        }
+        tid = upsert_knowledge_topic(
+            filename="scope-cache-activation-refresh.md",
+            title="Scope Cache Activation Refresh",
+            summary="S",
+            source_episodes=[],
+            scope=scope,
+        )
+        record_id = insert_knowledge_records(
+            tid,
+            [
+                {
+                    "record_type": "fact",
+                    "content": {"type": "fact", "subject": "Scoped", "info": "activates later"},
+                    "embedding_text": "Scoped: activates later",
+                    "valid_from": activation_time.isoformat(),
+                },
+            ],
+            scope=scope,
+        )[0]
+
+        from consolidation_memory import record_cache
+
+        record_cache.invalidate()
+        with patch("consolidation_memory.record_cache.datetime", new=clock), \
+             patch("consolidation_memory.record_cache.time.time", side_effect=clock.time), \
+             patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+            before_records, before_vecs = record_cache.get_record_vecs(
+                include_expired=False,
+                scope=scope,
+            )
+            assert before_records == []
+            assert before_vecs is None
+
+            clock.set(activation_time + timedelta(seconds=1))
+            after_records, after_vecs = record_cache.get_record_vecs(
+                include_expired=False,
+                scope=scope,
+            )
+
+        assert [r["id"] for r in after_records] == [record_id]
+        assert after_vecs is not None
+        assert mock_embed.call_count == 1
 
 
 # ── valid_from on insert ────────────────────────────────────────────────────

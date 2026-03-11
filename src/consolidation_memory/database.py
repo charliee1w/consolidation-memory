@@ -755,9 +755,6 @@ def ensure_schema() -> None:
                 deleted         INTEGER NOT NULL DEFAULT 0
             )""")
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_episodes_indexed ON episodes(indexed)"
-        )
-        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_episodes_consolidated ON episodes(consolidated)"
         )
         conn.execute(
@@ -807,6 +804,7 @@ def ensure_schema() -> None:
 
         # Check and apply migrations
         _check_and_migrate(conn)
+        _repair_schema_invariants(conn)
 
 
 def _check_and_migrate(conn: sqlite3.Connection) -> None:
@@ -912,7 +910,25 @@ def _add_column_if_missing(
     existing = _get_table_columns(conn, table_name)
     if column_name in existing:
         return
-    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+    try:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+    except sqlite3.OperationalError:
+        # Another process may have added the column after our PRAGMA check.
+        if column_name in _get_table_columns(conn, table_name):
+            return
+        raise
+
+
+def _repair_schema_invariants(conn: sqlite3.Connection) -> None:
+    """Repair idempotent runtime-required schema invariants.
+
+    ``schema_version`` reflects the expected migration history, but existing
+    user databases can drift when a prior release recorded a version while
+    leaving an additive column behind. Re-apply safe additive repairs here so
+    startup is resilient even when the version marker is ahead of the actual
+    table shape.
+    """
+    _apply_episode_index_visibility_migration(conn)
 
 
 def _apply_scope_migration(conn: sqlite3.Connection) -> None:
@@ -1911,7 +1927,6 @@ def insert_knowledge_records(
     if not records:
         return []
     now = _now()
-    scope_row = _coerce_scope_row(scope)
     ids: list[str] = []
 
     def _insert_rows(active_conn: sqlite3.Connection) -> None:

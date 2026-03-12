@@ -22,7 +22,7 @@ import ipaddress
 import os
 import re
 import secrets
-from typing import Literal, cast
+from typing import Literal, TypeAlias, cast
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -42,6 +42,7 @@ from consolidation_memory.types import DriftOutput
 
 # Valid content types accepted by the memory system.
 _ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference"]
+_ScopeInput: TypeAlias = dict[str, object] | str
 
 # Maximum number of episodes in a single batch store request.
 _MAX_BATCH_SIZE = 100
@@ -172,7 +173,7 @@ class StoreRequest(BaseModel):
     content_type: _ContentTypeLiteral = "exchange"
     tags: list[str] | None = None
     surprise: float = Field(default=0.5, ge=0.0, le=1.0)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class RecallRequest(BaseModel):
@@ -185,7 +186,7 @@ class RecallRequest(BaseModel):
     before: str | None = Field(default=None, max_length=64)
     include_expired: bool = False
     as_of: str | None = Field(default=None, max_length=64)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class EpisodeInput(BaseModel):
@@ -197,7 +198,7 @@ class EpisodeInput(BaseModel):
 
 class BatchStoreRequest(BaseModel):
     episodes: list[EpisodeInput] = Field(max_length=_MAX_BATCH_SIZE)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class SearchRequest(BaseModel):
@@ -207,14 +208,14 @@ class SearchRequest(BaseModel):
     after: str | None = Field(default=None, max_length=64)
     before: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=20, ge=1, le=50)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class ClaimBrowseRequest(BaseModel):
     claim_type: str | None = Field(default=None, max_length=64)
     as_of: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=50, ge=1, le=200)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class ClaimSearchRequest(BaseModel):
@@ -222,7 +223,7 @@ class ClaimSearchRequest(BaseModel):
     claim_type: str | None = Field(default=None, max_length=64)
     as_of: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=50, ge=1, le=200)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class DetectDriftRequest(BaseModel):
@@ -233,36 +234,36 @@ class DetectDriftRequest(BaseModel):
 class CorrectRequest(BaseModel):
     topic_filename: str = Field(max_length=_MAX_FILENAME_LENGTH)
     correction: str = Field(max_length=50_000)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class ExportRequest(BaseModel):
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class ForgetRequest(BaseModel):
     episode_id: str = Field(max_length=_MAX_FILENAME_LENGTH)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class ProtectRequest(BaseModel):
     episode_id: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
     tag: str | None = Field(default=None, max_length=100)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class TimelineRequest(BaseModel):
     topic: str = Field(max_length=_MAX_TOPIC_LENGTH)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class BrowseRequest(BaseModel):
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class ReadTopicRequest(BaseModel):
     filename: str = Field(max_length=_MAX_FILENAME_LENGTH)
-    scope: dict[str, object] | None = None
+    scope: _ScopeInput | None = None
 
 
 class ContradictionsRequest(BaseModel):

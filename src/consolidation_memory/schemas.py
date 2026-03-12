@@ -138,6 +138,21 @@ SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
     },
 }
 
+SCOPE_INPUT_SCHEMA: dict[str, Any] = {
+    "description": (
+        "Optional scope input. Use a canonical scope object, or pass a string shorthand "
+        "that auto-maps to project scope "
+        "(path-like values -> project.root_uri, otherwise -> project.slug)."
+    ),
+    "oneOf": [
+        SCOPE_ENVELOPE_SCHEMA,
+        {
+            "type": "string",
+            "maxLength": _MAX_PATH_LENGTH,
+        },
+    ],
+}
+
 MEMORY_STORE_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -181,7 +196,7 @@ MEMORY_STORE_SCHEMA: dict[str, Any] = {
                     "description": "How novel this is, 0.0 (routine) to 1.0 (very surprising).",
                     "default": 0.5,
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": ["content"],
         },
@@ -231,7 +246,7 @@ MEMORY_STORE_BATCH_SCHEMA: dict[str, Any] = {
                     },
                     "description": "List of episode objects to store.",
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": ["episodes"],
         },
@@ -308,7 +323,7 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
                         "been superseded (e.g. '2025-06-15T00:00:00+00:00')."
                     ),
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": ["query"],
         },
@@ -347,7 +362,7 @@ MEMORY_FORGET_SCHEMA: dict[str, Any] = {
                     "maxLength": _MAX_FILENAME_LENGTH,
                     "description": "The UUID of the episode to forget.",
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": ["episode_id"],
         },
@@ -366,7 +381,7 @@ MEMORY_EXPORT_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": [],
         },
@@ -396,7 +411,7 @@ MEMORY_CORRECT_SCHEMA: dict[str, Any] = {
                     "maxLength": _MAX_CONTENT_LENGTH,
                     "description": "Description of what needs to be corrected and the correct information.",
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": ["topic_filename", "correction"],
         },
@@ -451,7 +466,7 @@ MEMORY_SEARCH_SCHEMA: dict[str, Any] = {
                     "description": "Maximum results to return.",
                     "default": 20,
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": [],
         },
@@ -490,7 +505,7 @@ MEMORY_CLAIM_BROWSE_SCHEMA: dict[str, Any] = {
                     "description": "Maximum claims to return.",
                     "default": 50,
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": [],
         },
@@ -534,7 +549,7 @@ MEMORY_CLAIM_SEARCH_SCHEMA: dict[str, Any] = {
                     "description": "Maximum matched claims to return.",
                     "default": 50,
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": ["query"],
         },
@@ -627,7 +642,7 @@ MEMORY_PROTECT_SCHEMA: dict[str, Any] = {
                     "maxLength": 100,
                     "description": "Protect all episodes with this tag.",
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": [],
         },
@@ -655,7 +670,7 @@ MEMORY_TIMELINE_SCHEMA: dict[str, Any] = {
                         "(e.g., 'frontend framework preference')."
                     ),
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": ["topic"],
         },
@@ -699,7 +714,7 @@ MEMORY_BROWSE_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": [],
         },
@@ -723,7 +738,7 @@ MEMORY_READ_TOPIC_SCHEMA: dict[str, Any] = {
                     "maxLength": _MAX_FILENAME_LENGTH,
                     "description": "The filename of the knowledge topic (e.g., 'python_setup.md').",
                 },
-                "scope": SCOPE_ENVELOPE_SCHEMA,
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": ["filename"],
         },

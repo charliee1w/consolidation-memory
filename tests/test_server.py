@@ -498,6 +498,36 @@ class TestMCPRecallTool:
             scope={"project": "repo-a"},
         )
 
+    def test_memory_recall_accepts_scope_string_path_and_auto_coerces(self):
+        from consolidation_memory.server import memory_recall
+        from consolidation_memory.types import RecallResult
+
+        mock_client = MagicMock()
+        mock_client.query_recall.return_value = RecallResult()
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(
+                memory_recall(
+                    query="python runtime",
+                    scope=r"C:\\Users\\gore\\consolidation-memory",
+                )
+            )
+
+        data = json.loads(output)
+        assert data["total_episodes"] == 0
+        mock_client.query_recall.assert_called_once_with(
+            query="python runtime",
+            n_results=10,
+            include_knowledge=True,
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            include_expired=False,
+            as_of=None,
+            scope={"project": {"root_uri": r"C:\\Users\\gore\\consolidation-memory"}},
+        )
+
     def test_memory_store_rejects_invalid_scope_enum(self):
         from consolidation_memory.server import memory_store
 

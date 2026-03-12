@@ -20,7 +20,7 @@ import threading
 import time
 import traceback
 from contextlib import asynccontextmanager
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeAlias, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 
@@ -93,6 +93,7 @@ _runtime_started = False
 _startup_error: Exception | None = None
 _runtime_start_lock = threading.Lock()
 _stdio_singleton_guard = None
+ScopeInput: TypeAlias = dict[str, object] | str | None
 
 if os.name == "nt":
     import msvcrt
@@ -659,7 +660,7 @@ async def memory_store(
     content_type: str = "exchange",
     tags: list[str] | None = None,
     surprise: float = 0.5,
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Store a memory episode in the episodic buffer."""
     return await _call_tool_json(
@@ -685,7 +686,7 @@ async def memory_recall(
     before: str | None = None,
     include_expired: bool = False,
     as_of: str | None = None,
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Retrieve relevant memories by semantic similarity."""
     try:
@@ -784,7 +785,7 @@ async def memory_recall(
 @_tracked_tool()
 async def memory_store_batch(
     episodes: list[dict],
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Store multiple memory episodes in a single operation."""
     return await _call_tool_json(
@@ -801,7 +802,7 @@ async def memory_search(
     after: str | None = None,
     before: str | None = None,
     limit: int = 20,
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Keyword/metadata search over episodes."""
     return await _call_tool_json(
@@ -823,7 +824,7 @@ async def memory_claim_browse(
     claim_type: str | None = None,
     as_of: str | None = None,
     limit: int = 50,
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Browse claims from the claim graph."""
     return await _call_tool_json(
@@ -843,7 +844,7 @@ async def memory_claim_search(
     claim_type: str | None = None,
     as_of: str | None = None,
     limit: int = 50,
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Search claims by text with optional temporal snapshot filtering."""
     return await _call_tool_json(
@@ -895,14 +896,14 @@ async def memory_status() -> str:
 @_tracked_tool()
 async def memory_forget(
     episode_id: str,
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Mark an episode for removal from the memory system."""
     return await _call_tool_json("memory_forget", {"episode_id": episode_id, "scope": scope})
 
 
 @_tracked_tool()
-async def memory_export(scope: dict[str, object] | None = None) -> str:
+async def memory_export(scope: ScopeInput = None) -> str:
     """Export all episodes and knowledge to a JSON snapshot."""
     return await _call_tool_json("memory_export", {"scope": scope})
 
@@ -911,7 +912,7 @@ async def memory_export(scope: dict[str, object] | None = None) -> str:
 async def memory_correct(
     topic_filename: str,
     correction: str,
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Correct a knowledge document with new information."""
     return await _call_tool_json(
@@ -955,7 +956,7 @@ async def memory_decay_report() -> str:
 async def memory_protect(
     episode_id: str | None = None,
     tag: str | None = None,
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Mark episodes as immune to pruning."""
     return await _call_tool_json(
@@ -965,7 +966,7 @@ async def memory_protect(
 
 
 @_tracked_tool()
-async def memory_timeline(topic: str, scope: dict[str, object] | None = None) -> str:
+async def memory_timeline(topic: str, scope: ScopeInput = None) -> str:
     """Show how understanding of a topic has changed over time."""
     return await _call_tool_json("memory_timeline", {"topic": topic, "scope": scope})
 
@@ -977,7 +978,7 @@ async def memory_contradictions(topic: str | None = None) -> str:
 
 
 @_tracked_tool()
-async def memory_browse(scope: dict[str, object] | None = None) -> str:
+async def memory_browse(scope: ScopeInput = None) -> str:
     """Browse all knowledge topics with summaries and metadata."""
     return await _call_tool_json("memory_browse", {"scope": scope})
 
@@ -985,7 +986,7 @@ async def memory_browse(scope: dict[str, object] | None = None) -> str:
 @_tracked_tool()
 async def memory_read_topic(
     filename: str,
-    scope: dict[str, object] | None = None,
+    scope: ScopeInput = None,
 ) -> str:
     """Read the full markdown content of a knowledge topic."""
     return await _call_tool_json("memory_read_topic", {"filename": filename, "scope": scope})

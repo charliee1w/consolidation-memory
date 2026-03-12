@@ -105,18 +105,20 @@ class TestSchemaStructure:
         assert "scope" in browse["function"]["parameters"]["properties"]
         assert "scope" in read_topic["function"]["parameters"]["properties"]
         scope_schema = store["function"]["parameters"]["properties"]["scope"]
-        assert "policy" in scope_schema["properties"]
-        assert scope_schema["properties"]["policy"]["properties"]["read_visibility"]["enum"] == [
+        object_scope_schema = scope_schema["oneOf"][0]
+        assert "policy" in object_scope_schema["properties"]
+        assert object_scope_schema["properties"]["policy"]["properties"]["read_visibility"]["enum"] == [
             "private",
             "namespace",
             "project",
         ]
-        assert scope_schema["properties"]["policy"]["properties"]["write_mode"]["enum"] == [
+        assert object_scope_schema["properties"]["policy"]["properties"]["write_mode"]["enum"] == [
             "allow",
             "deny",
         ]
-        assert scope_schema["additionalProperties"] is False
-        assert scope_schema["properties"]["project"]["additionalProperties"] is False
+        assert object_scope_schema["additionalProperties"] is False
+        assert object_scope_schema["properties"]["project"]["additionalProperties"] is False
+        assert scope_schema["oneOf"][1]["type"] == "string"
 
     def test_string_bounds_are_declared_for_high_risk_inputs(self):
         store = next(t for t in openai_tools if t["function"]["name"] == "memory_store")
@@ -615,6 +617,34 @@ class TestDispatch:
 
         assert result == {"error": "scope.project.slug must be a string when provided"}
         client.query_search.assert_not_called()
+
+    def test_dispatch_accepts_scope_string_and_coerces_to_project_root_uri(self):
+        client = MagicMock()
+        client.query_recall.return_value = RecallResult()
+
+        dispatch_tool_call(
+            client,
+            "memory_recall",
+            {"query": "test", "scope": r"C:\\Users\\gore\\consolidation-memory"},
+        )
+
+        _, kwargs = client.query_recall.call_args
+        assert kwargs["scope"] == {
+            "project": {"root_uri": r"C:\\Users\\gore\\consolidation-memory"}
+        }
+
+    def test_dispatch_accepts_scope_string_slug_and_coerces_to_project_slug(self):
+        client = MagicMock()
+        client.query_recall.return_value = RecallResult()
+
+        dispatch_tool_call(
+            client,
+            "memory_recall",
+            {"query": "test", "scope": "repo-a"},
+        )
+
+        _, kwargs = client.query_recall.call_args
+        assert kwargs["scope"] == {"project": {"slug": "repo-a"}}
 
     def test_dispatch_rejects_oversized_query(self):
         client = MagicMock()

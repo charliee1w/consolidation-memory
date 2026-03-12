@@ -87,6 +87,58 @@ class TestSurfaceRecallContract:
 
         assert dispatch_out == mcp_out == rest_out
 
+    def test_recall_scope_string_path_auto_coerces_across_surfaces(self):
+        from consolidation_memory.rest import create_app
+        from consolidation_memory.server import memory_recall
+
+        scope = r"C:\\Users\\gore\\consolidation-memory"
+        expected = RecallResult(
+            episodes=[],
+            knowledge=[],
+            records=[],
+            claims=[],
+            total_episodes=0,
+            total_knowledge_topics=0,
+        )
+        expected_scope = {"project": {"root_uri": scope}}
+        expected_args = {
+            "query": "hello",
+            "n_results": 10,
+            "include_knowledge": True,
+            "content_types": None,
+            "tags": None,
+            "after": None,
+            "before": None,
+            "include_expired": False,
+            "as_of": None,
+            "scope": expected_scope,
+        }
+
+        dispatch_client = MagicMock()
+        dispatch_client.query_recall.return_value = expected
+        dispatch_out = dispatch_tool_call(
+            dispatch_client,
+            "memory_recall",
+            {"query": "hello", "scope": scope},
+        )
+        dispatch_client.query_recall.assert_called_once_with(**expected_args)
+
+        mcp_client = MagicMock()
+        mcp_client.query_recall.return_value = expected
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
+            mcp_out = json.loads(asyncio.run(memory_recall(query="hello", scope=scope)))
+        assert _normalize_server_recall_call(mcp_client) == expected_args
+
+        with patch("consolidation_memory.client.MemoryClient.query_recall", return_value=expected) as rest_call:
+            app = create_app()
+            with TestClient(app) as client:
+                rest_resp = client.post("/memory/recall", json={"query": "hello", "scope": scope})
+            rest_out = rest_resp.json()
+        assert rest_resp.status_code == 200
+        rest_call.assert_called_once_with(**expected_args)
+
+        assert dispatch_out == mcp_out == rest_out
+
 
 class TestSurfaceClaimSearchContract:
     def test_claim_search_defaults_and_output_match_across_surfaces(self):

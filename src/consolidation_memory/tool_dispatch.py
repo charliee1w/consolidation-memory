@@ -21,6 +21,8 @@ _MAX_PATH_LENGTH = 4096
 _MAX_TAGS = 100
 _MAX_TAG_LENGTH = 100
 _UNSAFE_FILENAME_RE = re.compile(r"[/\\]|\.\.")
+_WINDOWS_ABS_PATH_RE = re.compile(r"^[a-zA-Z]:[/\\]")
+_URI_PREFIX_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 _VALID_CONTENT_TYPES = frozenset(content_type.value for content_type in ContentType)
 
 
@@ -139,8 +141,26 @@ def _validate_scope(value: object) -> ScopeEnvelope | dict[str, object] | None:
     if isinstance(value, ScopeEnvelope):
         coerce_scope_envelope(value)
         return value
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("scope string must not be empty")
+
+        project_scope: dict[str, str] = {"slug": cleaned}
+        if (
+            _WINDOWS_ABS_PATH_RE.match(cleaned)
+            or cleaned.startswith(("/", "\\\\", "./", "../"))
+            or "/" in cleaned
+            or "\\" in cleaned
+            or _URI_PREFIX_RE.match(cleaned)
+        ):
+            project_scope = {"root_uri": cleaned}
+
+        normalized_from_string: dict[str, object] = {"project": project_scope}
+        coerce_scope_envelope(normalized_from_string)
+        return normalized_from_string
     if not isinstance(value, Mapping):
-        raise ValueError("scope must be an object")
+        raise ValueError("scope must be an object or string")
 
     normalized: dict[str, object] = {}
     for key, item in value.items():

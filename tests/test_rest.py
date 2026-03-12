@@ -143,6 +143,36 @@ class TestRecallEndpoint:
         assert resp.json()["total_episodes"] == 0
         mock_query_recall.assert_called_once()
 
+    def test_recall_accepts_scope_string_path_and_auto_coerces(self, api_client):
+        from consolidation_memory.types import RecallResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.query_recall",
+            return_value=RecallResult(episodes=[], knowledge=[], total_episodes=0, total_knowledge_topics=0),
+        ) as mock_query_recall:
+            resp = api_client.post(
+                "/memory/recall",
+                json={
+                    "query": "scope",
+                    "scope": r"C:\\Users\\gore\\consolidation-memory",
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["total_episodes"] == 0
+        mock_query_recall.assert_called_once_with(
+            query="scope",
+            n_results=10,
+            include_knowledge=True,
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            include_expired=False,
+            as_of=None,
+            scope={"project": {"root_uri": r"C:\\Users\\gore\\consolidation-memory"}},
+        )
+
     def test_recall_timeout_falls_back_to_episodes_only(self):
         from consolidation_memory.rest import create_app
         from consolidation_memory.types import RecallResult, SearchResult

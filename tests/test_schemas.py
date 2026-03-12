@@ -212,6 +212,30 @@ class TestDispatch:
             scope={"project": {"slug": "repo-a"}},
         )
 
+    def test_dispatch_recall_accepts_project_string_scope_shorthand(self):
+        client = MagicMock()
+        client.query_recall.return_value = RecallResult(episodes=[], knowledge=[])
+
+        result = dispatch_tool_call(
+            client,
+            "memory_recall",
+            {"query": "test", "scope": {"project": "repo-a"}},
+        )
+
+        assert "episodes" in result
+        client.query_recall.assert_called_once_with(
+            query="test",
+            n_results=10,
+            include_knowledge=True,
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            include_expired=False,
+            as_of=None,
+            scope={"project": "repo-a"},
+        )
+
     def test_dispatch_status(self):
         client = MagicMock()
         client.status.return_value = StatusResult(version="0.1.0", embedding_backend="fastembed")
@@ -340,6 +364,36 @@ class TestDispatch:
             before=None,
             limit=20,
             scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_dispatch_search_accepts_flat_scope_row(self):
+        client = MagicMock()
+        client.query_search.return_value = SearchResult(
+            episodes=[],
+            total_matches=0,
+            query="test",
+        )
+
+        flat_scope = {
+            "namespace_slug": "team-a",
+            "app_client_name": "desktop",
+            "app_client_type": "mcp",
+            "project_slug": "repo-a",
+        }
+        result = dispatch_tool_call(
+            client,
+            "memory_search",
+            {"query": "test", "scope": flat_scope},
+        )
+        assert result["total_matches"] == 0
+        client.query_search.assert_called_once_with(
+            query="test",
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            limit=20,
+            scope=flat_scope,
         )
 
     def test_dispatch_claim_browse(self):

@@ -353,6 +353,7 @@ class TestSearchKnowledgeAsOf:
 
         with (
             patch("consolidation_memory.context_assembler.topic_cache") as mock_tc,
+            patch("consolidation_memory.context_assembler.backends.encode_documents", return_value=np.stack([query_vec])),
             patch("consolidation_memory.context_assembler.increment_topic_access"),
             patch("consolidation_memory.context_assembler._apply_evolving_topic_signals"),
         ):
@@ -422,6 +423,89 @@ class TestSearchKnowledgeAsOf:
                 "test", query_vec, as_of="2024-01-01T00:00:00+00:00",
             )
             assert topics == []
+
+    def test_as_of_returns_historical_topic_revision(self, tmp_data_dir):
+        """Topics updated after as_of should use the archived revision."""
+        from consolidation_memory.consolidation.engine import _version_knowledge_file
+        from consolidation_memory.context_assembler import _search_knowledge
+        from consolidation_memory.database import ensure_schema, upsert_knowledge_topic
+        from consolidation_memory.knowledge_paths import resolve_topic_path
+
+        ensure_schema()
+        query_vec = np.ones(384, dtype=np.float32)
+        query_vec = query_vec / np.linalg.norm(query_vec)
+
+        from consolidation_memory.config import get_config
+        cfg = get_config()
+
+        old_content = (
+            "---\n"
+            "title: Topic\n"
+            "summary: old summary\n"
+            "confidence: 0.8\n"
+            "---\n\n"
+            "old content\n"
+        )
+        new_content = (
+            "---\n"
+            "title: Topic\n"
+            "summary: new summary\n"
+            "confidence: 0.8\n"
+            "---\n\n"
+            "new content\n"
+        )
+
+        topic_id = upsert_knowledge_topic(
+            filename="topic.md",
+            title="Topic",
+            summary="old summary",
+            source_episodes=[],
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+        topic_row = {
+            "id": topic_id,
+            "title": "Topic",
+            "filename": "topic.md",
+            "summary": "new summary",
+            "confidence": 0.8,
+            "source_episodes": "[]",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-02-01T00:00:00+00:00",
+        }
+
+        filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic_row)
+        filepath.write_text(old_content, encoding="utf-8")
+        _version_knowledge_file(filepath)
+        filepath.write_text(new_content, encoding="utf-8")
+        upsert_knowledge_topic(
+            filename="topic.md",
+            title="Topic",
+            summary="new summary",
+            source_episodes=[],
+            topic_id=topic_id,
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-02-01T00:00:00+00:00",
+        )
+
+        with (
+            patch("consolidation_memory.context_assembler.topic_cache") as mock_tc,
+            patch("consolidation_memory.context_assembler.backends.encode_documents", return_value=np.stack([query_vec])),
+            patch("consolidation_memory.context_assembler.increment_topic_access"),
+            patch("consolidation_memory.context_assembler._apply_evolving_topic_signals"),
+        ):
+            mock_tc.get_topic_vecs.return_value = ([topic_row], np.stack([query_vec]))
+
+            topics, warnings = _search_knowledge(
+                "topic",
+                query_vec,
+                as_of="2026-01-15T00:00:00+00:00",
+            )
+
+        assert len(topics) == 1
+        assert topics[0]["summary"] == "old summary"
+        assert "old content" in topics[0]["content"]
+        assert "new content" not in topics[0]["content"]
 
 
 # ── Context assembler: recall with as_of ─────────────────────────────────

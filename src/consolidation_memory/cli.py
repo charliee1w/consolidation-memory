@@ -23,6 +23,8 @@ import tempfile
 from consolidation_memory import __version__
 from consolidation_memory.utils import parse_json_list
 
+_RECOMMENDED_MCP_IDLE_TIMEOUT_SECONDS = "900"
+
 _EXPORTED_SCOPE_KEYS: tuple[str, ...] = (
     "namespace_slug",
     "namespace_sharing_mode",
@@ -56,7 +58,7 @@ def _recommended_mcp_server_config(project: str) -> dict[str, object]:
         "args": ["-m", "consolidation_memory", "--project", project, "serve"],
         "env": {
             "PYTHONUNBUFFERED": "1",
-            "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "0",
+            "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": _RECOMMENDED_MCP_IDLE_TIMEOUT_SECONDS,
         },
     }
 

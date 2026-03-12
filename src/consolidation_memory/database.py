@@ -2480,20 +2480,26 @@ def get_claims_as_of(
     params.extend([bounded_limit, bounded_offset])
     query = f"""SELECT c.*,
                    CASE
-                       WHEN c.status = 'expired' THEN 'active'
                        WHEN c.status = 'challenged'
-                            AND COALESCE(
-                                (
-                                    SELECT MIN(julianday(ce.created_at))
-                                    FROM claim_events ce
-                                    WHERE ce.claim_id = c.id
-                                      AND ce.event_type = 'challenged'
-                                ),
-                                julianday(c.updated_at)
-                            ) > julianday(?) THEN 'active'
+                            AND COALESCE(ch.first_challenged_at, julianday(c.updated_at)) > julianday(?)
+                           THEN 'active'
+                       WHEN c.status = 'challenged'
+                           THEN 'challenged'
+                       WHEN c.status = 'expired'
+                            AND ch.first_challenged_at IS NOT NULL
+                            AND ch.first_challenged_at <= julianday(?)
+                           THEN 'challenged'
+                       WHEN c.status = 'expired'
+                           THEN 'active'
                        ELSE c.status
                    END AS snapshot_status
             FROM claims c
+            LEFT JOIN (
+                SELECT claim_id, MIN(julianday(created_at)) AS first_challenged_at
+                FROM claim_events
+                WHERE event_type = 'challenged'
+                GROUP BY claim_id
+            ) ch ON ch.claim_id = c.id
             WHERE {where}
             ORDER BY c.updated_at DESC, c.id ASC
             LIMIT ? OFFSET ?"""  # nosec B608
@@ -2501,7 +2507,7 @@ def get_claims_as_of(
     with get_connection() as conn:
         rows = conn.execute(
             query,
-            [as_of_utc, *params],
+            [as_of_utc, as_of_utc, *params],
         ).fetchall()
     claims = [dict(r) for r in rows]
     for claim in claims:

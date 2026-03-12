@@ -250,7 +250,7 @@ class TestMCPConfigRecommendation:
             "args": ["-m", "consolidation_memory", "--project", "default", "serve"],
             "env": {
                 "PYTHONUNBUFFERED": "1",
-                "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "0",
+                "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "900",
             },
         }
 

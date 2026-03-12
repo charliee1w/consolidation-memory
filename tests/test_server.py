@@ -344,6 +344,84 @@ class TestMCPServerLifecycle:
                 with patch("consolidation_memory.server._WARMUP_START_DELAY_SECONDS", 0.0):
                     asyncio.run(server._warm_client_background())
 
+    def test_run_server_acquires_and_releases_stdio_singleton_guard(self):
+        import consolidation_memory.server as server
+
+        guard = MagicMock()
+        with (
+            patch("consolidation_memory.config.get_active_project", return_value="default"),
+            patch(
+                "consolidation_memory.server._acquire_parent_scoped_stdio_singleton_guard",
+                return_value=guard,
+            ) as mock_acquire,
+            patch.object(server.mcp, "run") as mock_run,
+        ):
+            server.run_server()
+
+        mock_acquire.assert_called_once_with("default")
+        mock_run.assert_called_once_with(transport="stdio")
+        guard.release.assert_called_once_with()
+
+    def test_run_server_releases_stdio_singleton_guard_on_transport_error(self):
+        import consolidation_memory.server as server
+
+        guard = MagicMock()
+        with (
+            patch("consolidation_memory.config.get_active_project", return_value="default"),
+            patch(
+                "consolidation_memory.server._acquire_parent_scoped_stdio_singleton_guard",
+                return_value=guard,
+            ),
+            patch.object(server.mcp, "run", side_effect=RuntimeError("transport boom")),
+        ):
+            try:
+                server.run_server()
+                assert False, "Expected stdio transport failure to propagate"
+            except RuntimeError as exc:
+                assert "transport boom" in str(exc)
+
+        guard.release.assert_called_once_with()
+
+    def test_stdio_singleton_guard_terminates_prior_same_parent_server(self):
+        import consolidation_memory.server as server
+
+        stale_handle = MagicMock()
+        active_handle = MagicMock()
+        with (
+            patch("consolidation_memory.server.os.getpid", return_value=222),
+            patch("consolidation_memory.server.os.getppid", return_value=111),
+            patch(
+                "consolidation_memory.server._open_singleton_lock_handle",
+                side_effect=[stale_handle, active_handle],
+            ),
+            patch(
+                "consolidation_memory.server._try_lock_singleton_handle",
+                side_effect=[False, True],
+            ),
+            patch(
+                "consolidation_memory.server._read_singleton_metadata",
+                return_value={"pid": 333, "parent_pid": 111, "project": "default"},
+            ),
+            patch(
+                "consolidation_memory.server._process_exists",
+                side_effect=[True, False],
+            ),
+            patch("consolidation_memory.server._terminate_process") as mock_terminate,
+            patch(
+                "consolidation_memory.server._write_singleton_metadata",
+            ) as mock_write_metadata,
+            patch("consolidation_memory.server._unlock_singleton_handle") as mock_unlock,
+        ):
+            guard = server._acquire_parent_scoped_stdio_singleton_guard("default")
+            assert guard is not None
+            guard.release()
+
+        mock_terminate.assert_called_once_with(333)
+        stale_handle.close.assert_called_once_with()
+        mock_write_metadata.assert_called_once()
+        mock_unlock.assert_called_once_with(active_handle)
+        active_handle.close.assert_called_once_with()
+
 
 class TestMCPRecallTool:
     def test_memory_recall_calls_canonical_query_service(self):
@@ -389,6 +467,36 @@ class TestMCPRecallTool:
         data = json.loads(output)
         assert "error" in data
         assert "client init failed" in data["error"]
+
+    def test_memory_recall_accepts_project_string_scope_shorthand(self):
+        from consolidation_memory.server import memory_recall
+        from consolidation_memory.types import RecallResult
+
+        mock_client = MagicMock()
+        mock_client.query_recall.return_value = RecallResult()
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(
+                memory_recall(
+                    query="python runtime",
+                    scope={"project": "repo-a"},
+                )
+            )
+
+        data = json.loads(output)
+        assert data["total_episodes"] == 0
+        mock_client.query_recall.assert_called_once_with(
+            query="python runtime",
+            n_results=10,
+            include_knowledge=True,
+            content_types=None,
+            tags=None,
+            after=None,
+            before=None,
+            include_expired=False,
+            as_of=None,
+            scope={"project": "repo-a"},
+        )
 
     def test_memory_store_rejects_invalid_scope_enum(self):
         from consolidation_memory.server import memory_store
@@ -511,6 +619,25 @@ class TestMCPScopeForwarding:
         mock_client.browse.assert_called_once_with(scope=scope)
         mock_client.read_topic.assert_called_once_with(filename="topic.md", scope=scope)
         mock_client.timeline.assert_called_once_with(topic="python", scope=scope)
+
+    def test_memory_browse_accepts_flat_scope_row(self):
+        from consolidation_memory.server import memory_browse
+        from consolidation_memory.types import BrowseResult
+
+        flat_scope = {
+            "namespace_slug": "team-a",
+            "app_client_name": "desktop",
+            "app_client_type": "mcp",
+            "project_slug": "repo-a",
+        }
+        mock_client = MagicMock()
+        mock_client.browse.return_value = BrowseResult(topics=[], total=0)
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            browse_output = asyncio.run(memory_browse(scope=flat_scope))
+
+        assert json.loads(browse_output)["total"] == 0
+        mock_client.browse.assert_called_once_with(scope=flat_scope)
 
     def test_memory_recall_timeout_falls_back_to_episodes_only(self):
         from consolidation_memory.server import memory_recall

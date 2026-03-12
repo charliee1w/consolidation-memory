@@ -10,6 +10,7 @@ from consolidation_memory.database import (
     ensure_schema,
     insert_claim_event,
     insert_episode,
+    insert_claim_sources,
     upsert_claim,
 )
 from consolidation_memory.vector_store import VectorStore
@@ -127,6 +128,66 @@ class TestClaimSearch:
         assert "claim-old" in early_ids
         assert "claim-new" not in early_ids
         assert "claim-new" in late_ids
+
+    def test_search_claims_pages_until_scoped_matches_are_found(self, tmp_data_dir):
+        ensure_schema()
+        visible_episode_id = insert_episode(
+            content="visible provenance",
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "visible-client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        hidden_episode_id = insert_episode(
+            content="hidden provenance",
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "hidden-client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        upsert_claim(
+            claim_id="claim-visible",
+            claim_type="fact",
+            canonical_text="shared claim text",
+            payload={"subject": "visible"},
+            confidence=0.9,
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources("claim-visible", [{"source_episode_id": visible_episode_id}])
+
+        for i in range(260):
+            claim_id = f"claim-hidden-{i:03d}"
+            upsert_claim(
+                claim_id=claim_id,
+                claim_type="fact",
+                canonical_text="shared claim text",
+                payload={"subject": f"hidden-{i}"},
+                confidence=0.9,
+                valid_from="2026-01-01T00:00:00+00:00",
+            )
+            insert_claim_sources(claim_id, [{"source_episode_id": hidden_episode_id}])
+
+        query_vec = mock_encode(["shared claim text"])[0]
+        with patch(
+            "consolidation_memory.context_assembler.backends.encode_documents",
+            side_effect=lambda texts: np.stack([query_vec for _ in texts]),
+        ):
+            claims, _warnings = _search_claims(
+                "shared claim text",
+                query_vec,
+                scope={
+                    "namespace_slug": "default",
+                    "project_slug": "default",
+                    "app_client_name": "visible-client",
+                    "app_client_type": "python_sdk",
+                },
+            )
+
+        assert [claim["id"] for claim in claims] == ["claim-visible"]
 
 
 class TestRecallClaimsIntegration:

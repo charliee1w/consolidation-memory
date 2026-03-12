@@ -793,6 +793,38 @@ class TestClientClaims:
         finally:
             client.close()
 
+    def test_scoped_claim_queries_exclude_unsourced_legacy_claims_outside_default_scope(self):
+        from consolidation_memory.database import ensure_schema, upsert_claim
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-unsourced",
+            claim_type="fact",
+            canonical_text="orphaned legacy claim",
+            payload={"subject": "orphaned"},
+            valid_from="2025-01-01T00:00:00+00:00",
+        )
+
+        scoped_query = {
+            "namespace": {"slug": "tenant-a"},
+            "project": {"slug": "project-a"},
+        }
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            browse_result = client.query_browse_claims(scope=scoped_query)
+            assert browse_result.claims == []
+
+            search_result = client.query_search_claims(
+                query="orphaned",
+                claim_type="fact",
+                scope=scoped_query,
+            )
+            assert search_result.claims == []
+        finally:
+            client.close()
+
 
 class TestClientDrift:
     def test_detect_drift_delegates_to_drift_module(self):

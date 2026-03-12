@@ -124,6 +124,25 @@ class TestRecallEndpoint:
         assert resp.json()["total_episodes"] == 0
         assert mock_query_recall.call_count == 1
 
+    def test_recall_accepts_project_string_scope_shorthand(self, api_client):
+        from consolidation_memory.types import RecallResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.query_recall",
+            return_value=RecallResult(episodes=[], knowledge=[], total_episodes=0, total_knowledge_topics=0),
+        ) as mock_query_recall:
+            resp = api_client.post(
+                "/memory/recall",
+                json={
+                    "query": "scope",
+                    "scope": {"project": "repo-a"},
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["total_episodes"] == 0
+        mock_query_recall.assert_called_once()
+
     def test_recall_timeout_falls_back_to_episodes_only(self):
         from consolidation_memory.rest import create_app
         from consolidation_memory.types import RecallResult, SearchResult
@@ -256,6 +275,31 @@ class TestSearchEndpoint:
         assert resp.status_code == 200
         assert resp.json()["total_matches"] == 0
         assert mock_query_search.call_count == 1
+
+    def test_search_accepts_flat_scope_row(self, api_client):
+        from consolidation_memory.types import SearchResult
+
+        flat_scope = {
+            "namespace_slug": "team-a",
+            "app_client_name": "desktop",
+            "app_client_type": "mcp",
+            "project_slug": "repo-a",
+        }
+        with patch(
+            "consolidation_memory.client.MemoryClient.query_search",
+            return_value=SearchResult(episodes=[], total_matches=0, query="scope"),
+        ) as mock_query_search:
+            resp = api_client.post(
+                "/memory/search",
+                json={
+                    "query": "scope",
+                    "scope": flat_scope,
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["total_matches"] == 0
+        mock_query_search.assert_called_once()
 
 
 class TestForgetEndpoint:

@@ -139,7 +139,7 @@ dashboard        Launch Textual dashboard
       "args": ["-m", "consolidation_memory", "--project", "default", "serve"],
       "env": {
         "PYTHONUNBUFFERED": "1",
-        "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "0"
+        "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "900"
       }
     }
   }
@@ -148,7 +148,7 @@ dashboard        Launch Textual dashboard
 
 Prefer an exact Python interpreter over the `consolidation-memory` console script. It avoids PATH and env drift and is more reliable on Windows when MCP hosts restart the server.
 
-For long-lived MCP hosts, keep `CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS=0` unless you explicitly want the server to auto-exit when idle.
+The stdio MCP server now enforces one live server per parent process and project, and the recommended idle timeout is 900 seconds so leaked hosts self-clean instead of accumulating indefinitely. Set `CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS=0` only if you explicitly need a never-exit server.
 
 MCP tools exposed by `server.py`:
 

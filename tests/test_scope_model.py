@@ -51,6 +51,34 @@ class TestScopeEnvelopeCoercion:
         assert scope.policy is not None and scope.policy.read_visibility == "namespace"
         assert scope.policy is not None and scope.policy.write_mode == "deny"
 
+    def test_mapping_scope_coerces_project_string_shorthand(self):
+        scope = coerce_scope_envelope({"project": "repo-c"})
+        assert scope is not None
+        assert scope.project is not None and scope.project.slug == "repo-c"
+
+    def test_mapping_scope_coerces_flat_persisted_scope_row(self):
+        scope = coerce_scope_envelope(
+            {
+                "namespace_slug": "team-d",
+                "namespace_sharing_mode": "team",
+                "app_client_name": "desktop",
+                "app_client_type": "mcp",
+                "project_slug": "repo-d",
+                "project_default_branch": "main",
+                "read_visibility": "project",
+                "write_mode": "deny",
+            }
+        )
+        assert scope is not None
+        assert scope.namespace.slug == "team-d"
+        assert scope.namespace.sharing_mode == "team"
+        assert scope.app_client.name == "desktop"
+        assert scope.app_client.app_type == "mcp"
+        assert scope.project is not None and scope.project.slug == "repo-d"
+        assert scope.project is not None and scope.project.default_branch == "main"
+        assert scope.policy is not None and scope.policy.read_visibility == "project"
+        assert scope.policy is not None and scope.policy.write_mode == "deny"
+
     def test_mapping_scope_invalid_policy_values_raise(self):
         with pytest.raises(ValueError, match=r"scope\.policy\.read_visibility must be one of"):
             coerce_scope_envelope(

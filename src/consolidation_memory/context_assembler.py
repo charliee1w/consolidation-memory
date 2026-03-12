@@ -9,6 +9,7 @@ import logging
 import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 
@@ -54,6 +55,7 @@ _RECENTLY_CONTRADICTED_CLAIM_WARNING = (
 )
 
 logger = logging.getLogger(__name__)
+_TOPIC_VERSION_TIMESTAMP_FORMAT = "%Y-%m-%dT%H-%M-%S-%f"
 
 
 def invalidate_topic_cache() -> None:
@@ -368,6 +370,35 @@ def _recently_contradicted_claim_ids(
     return {row["claim_id"] for row in rows}
 
 
+def _get_claim_search_candidates(
+    *,
+    fetch_limit: int,
+    as_of: str | None = None,
+    scope: dict[str, str | None] | None = None,
+) -> list[dict]:
+    """Fetch claim candidates, paging until scoped windows are satisfied."""
+    if not scope:
+        if as_of:
+            return get_claims_as_of(as_of, limit=fetch_limit)
+        return get_active_claims(limit=fetch_limit)
+
+    page_size = min(max(fetch_limit * 5, 50), 1000)
+    collected: list[dict] = []
+    offset = 0
+    while len(collected) < fetch_limit:
+        if as_of:
+            rows = get_claims_as_of(as_of, limit=page_size, offset=offset)
+        else:
+            rows = get_active_claims(limit=page_size, offset=offset)
+        if not rows:
+            break
+        collected.extend(_filter_claims_for_scope(rows, scope))
+        offset += len(rows)
+        if len(rows) < page_size:
+            break
+    return collected[:fetch_limit]
+
+
 def _search_claims(
     query: str,
     query_vec: np.ndarray | None = None,
@@ -380,10 +411,11 @@ def _search_claims(
     warnings: list[str] = []
 
     fetch_limit = max(cfg.RECORDS_MAX_RESULTS * 10, cfg.RECALL_MAX_N * 5)
-    if as_of:
-        claims = get_claims_as_of(as_of, limit=fetch_limit)
-    else:
-        claims = get_active_claims(limit=fetch_limit)
+    claims = _get_claim_search_candidates(
+        fetch_limit=fetch_limit,
+        as_of=as_of,
+        scope=scope,
+    )
 
     if not claims:
         return [], warnings
@@ -445,9 +477,7 @@ def _search_claims(
     )
 
     scored_claims.sort(key=lambda x: x["relevance"], reverse=True)
-    top_claims = scored_claims[:cfg.RECORDS_MAX_RESULTS]
-
-    scoped_claims = _filter_claims_for_scope(top_claims, scope)
+    scoped_claims = scored_claims[:cfg.RECORDS_MAX_RESULTS]
     claim_ids = [str(claim.get("id", "")) for claim in scoped_claims]
     contradicted_ids = _recently_contradicted_claim_ids(claim_ids, as_of=as_of)
     low_conf_count = 0
@@ -487,6 +517,111 @@ def _search_claims(
         )
 
     return scoped_claims, warnings
+
+
+def _parse_topic_version_timestamp(version_path: Path, stem: str) -> datetime | None:
+    """Parse the timestamp embedded in a versioned topic filename."""
+    prefix = f"{stem}."
+    suffix = version_path.suffix
+    name = version_path.name
+    if not name.startswith(prefix) or suffix != ".md":
+        return None
+    token = name[len(prefix):-len(suffix)]
+    try:
+        return datetime.strptime(token, _TOPIC_VERSION_TIMESTAMP_FORMAT).replace(
+            tzinfo=timezone.utc,
+        )
+    except ValueError:
+        return None
+
+
+def _topic_requires_historical_snapshot(topic: dict, as_of_dt: datetime) -> bool:
+    """Return True when the current topic row is newer than the requested time."""
+    updated_at = topic.get("updated_at")
+    if not updated_at:
+        return False
+    try:
+        return parse_datetime(str(updated_at)) > as_of_dt
+    except (TypeError, ValueError):
+        return False
+
+
+def _select_versioned_topic_snapshot(filepath: Path, as_of_dt: datetime) -> Path | None:
+    """Return the version file whose update superseded the requested point in time."""
+    cfg = get_config()
+    selected_path: Path | None = None
+    selected_dt: datetime | None = None
+    for version_path in cfg.KNOWLEDGE_VERSIONS_DIR.glob(f"{filepath.stem}.*.md"):
+        version_dt = _parse_topic_version_timestamp(version_path, filepath.stem)
+        if version_dt is None or version_dt <= as_of_dt:
+            continue
+        if selected_dt is None or version_dt < selected_dt:
+            selected_dt = version_dt
+            selected_path = version_path
+    return selected_path
+
+
+def _coerce_topic_confidence(raw_confidence: object, default: float) -> float:
+    """Normalize topic confidence values into a bounded float."""
+    try:
+        return max(0.0, min(1.0, float(raw_confidence)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _build_topic_snapshot_from_content(
+    topic: dict,
+    content: str,
+    *,
+    allow_current_summary_fallback: bool,
+) -> dict:
+    """Overlay parsed frontmatter metadata onto a topic row."""
+    from consolidation_memory.consolidation.prompting import _parse_frontmatter
+
+    parsed = _parse_frontmatter(content)
+    meta = parsed.get("meta", {}) if isinstance(parsed, dict) else {}
+    snapshot = dict(topic)
+    snapshot["title"] = str(
+        meta.get("title")
+        or topic.get("title")
+        or Path(str(topic.get("filename") or "topic.md")).stem,
+    )
+    if "summary" in meta:
+        snapshot["summary"] = str(meta.get("summary") or "")
+    elif allow_current_summary_fallback:
+        snapshot["summary"] = str(topic.get("summary") or "")
+    else:
+        snapshot["summary"] = ""
+    snapshot["confidence"] = _coerce_topic_confidence(
+        meta.get("confidence", topic.get("confidence", 0.8)),
+        _coerce_topic_confidence(topic.get("confidence", 0.8), 0.8),
+    )
+    snapshot["content"] = content
+    return snapshot
+
+
+def _load_topic_snapshot_as_of(topic: dict, as_of_dt: datetime) -> dict | None:
+    """Load the best historical topic snapshot for an as_of query."""
+    cfg = get_config()
+    try:
+        filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic, prefer_existing=True)
+    except ValueError:
+        return None
+
+    snapshot_path = _select_versioned_topic_snapshot(filepath, as_of_dt)
+    if snapshot_path is None or not snapshot_path.exists():
+        return None
+
+    try:
+        content = snapshot_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    return _build_topic_snapshot_from_content(
+        topic,
+        content,
+        allow_current_summary_fallback=False,
+    )
 
 
 # ── Main retrieval ────────────────────────────────────────────────────────────
@@ -691,6 +826,7 @@ def _search_knowledge(
     if not topics:
         return [], warnings
 
+    reembed_topic_texts: list[str] | None = None
     if scope:
         scope_indices = [i for i, topic in enumerate(topics) if _matches_scope_filter(topic, scope)]
         topics = [topics[i] for i in scope_indices]
@@ -702,25 +838,47 @@ def _search_knowledge(
     # Temporal belief query: filter topics to those that existed at as_of
     if as_of:
         as_of_dt = parse_datetime(as_of)
-        filtered_indices = []
+        filtered_topics: list[dict] = []
+        filtered_indices: list[int] = []
+        missing_snapshot_count = 0
         for i, t in enumerate(topics):
             topic_created = t.get("created_at", "")
             if not topic_created:
                 continue
             try:
-                if parse_datetime(topic_created) <= as_of_dt:
-                    filtered_indices.append(i)
+                if parse_datetime(str(topic_created)) > as_of_dt:
+                    continue
             except (ValueError, TypeError):
                 continue
-        topics = [topics[i] for i in filtered_indices]
-        if summary_vecs is not None and len(filtered_indices) < len(summary_vecs):
+
+            if _topic_requires_historical_snapshot(t, as_of_dt):
+                snapshot = _load_topic_snapshot_as_of(t, as_of_dt)
+                if snapshot is None:
+                    missing_snapshot_count += 1
+                    continue
+                filtered_topics.append(snapshot)
+            else:
+                filtered_topics.append(dict(t))
+                filtered_indices.append(i)
+        topics = filtered_topics
+        if any("content" in topic for topic in topics):
+            reembed_topic_texts = [f"{t['title']}. {t['summary']}" for t in topics]
+            summary_vecs = None
+        elif summary_vecs is not None and len(filtered_indices) < len(summary_vecs):
             summary_vecs = summary_vecs[filtered_indices] if filtered_indices else None
         if not topics:
             return [], warnings
+        if missing_snapshot_count:
+            warnings.append(
+                f"{missing_snapshot_count} historical topic snapshot"
+                f"{'s were' if missing_snapshot_count != 1 else ' was'} unavailable for as_of={as_of}"
+            )
 
     try:
         if query_vec is None:
             query_vec = backends.encode_query(query)
+        if reembed_topic_texts is not None:
+            summary_vecs = backends.encode_documents(reembed_topic_texts) if reembed_topic_texts else None
         if summary_vecs is not None:
             sims = (query_vec @ summary_vecs.T).flatten()
         else:
@@ -758,14 +916,15 @@ def _search_knowledge(
         if relevance < cfg.KNOWLEDGE_RELEVANCE_THRESHOLD:
             continue
 
-        content = ""
-        try:
-            filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic, prefer_existing=True)
-            if filepath.exists():
-                content = filepath.read_text(encoding="utf-8")
-        except ValueError:
-            # Keep recall robust when malformed filenames are encountered.
-            content = ""
+        content = str(topic.get("content") or "")
+        if not content:
+            try:
+                filepath = resolve_topic_path(cfg.KNOWLEDGE_DIR, topic, prefer_existing=True)
+                if filepath.exists():
+                    content = filepath.read_text(encoding="utf-8")
+            except ValueError:
+                # Keep recall robust when malformed filenames are encountered.
+                content = ""
 
         # Parse source_episodes for traceability
         topic_src_eps: list[str] = parse_json_list(topic.get("source_episodes"))

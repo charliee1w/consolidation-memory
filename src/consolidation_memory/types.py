@@ -157,12 +157,95 @@ class ScopeResolver(Protocol):
         """Resolve scope input into a stable envelope."""
 
 
+_NAMESPACE_SCOPE_FLAT_KEYS: dict[str, str] = {
+    "namespace_id": "id",
+    "namespace_slug": "slug",
+    "namespace_display_name": "display_name",
+    "namespace_sharing_mode": "sharing_mode",
+}
+_APP_CLIENT_SCOPE_FLAT_KEYS: dict[str, str] = {
+    "app_client_id": "id",
+    "app_client_type": "app_type",
+    "app_client_name": "name",
+    "app_client_provider": "provider",
+    "app_client_external_key": "external_key",
+}
+_AGENT_SCOPE_FLAT_KEYS: dict[str, str] = {
+    "agent_id": "id",
+    "agent_name": "name",
+    "agent_external_key": "external_key",
+    "agent_model_provider": "model_provider",
+    "agent_model_name": "model_name",
+}
+_SESSION_SCOPE_FLAT_KEYS: dict[str, str] = {
+    "session_id": "id",
+    "session_external_key": "external_key",
+    "session_kind": "session_kind",
+}
+_PROJECT_SCOPE_FLAT_KEYS: dict[str, str] = {
+    "project_id": "id",
+    "project_slug": "slug",
+    "project_display_name": "display_name",
+    "project_root_uri": "root_uri",
+    "project_repo_remote": "repo_remote",
+    "project_default_branch": "default_branch",
+}
+_POLICY_SCOPE_FLAT_KEYS: dict[str, str] = {
+    "read_visibility": "read_visibility",
+    "write_mode": "write_mode",
+}
+
+
 def _as_mapping(value: object, *, field_name: str) -> Mapping[str, Any]:
     if value is None:
         return {}
     if isinstance(value, Mapping):
         return value
     raise TypeError(f"scope.{field_name} must be an object when provided")
+
+
+def _normalize_scope_mapping(scope: Mapping[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for key, value in scope.items():
+        if not isinstance(key, str):
+            raise TypeError("scope keys must be strings")
+        normalized[key] = value
+    return normalized
+
+
+def _merge_scope_section(
+    scope: Mapping[str, Any],
+    *,
+    canonical_key: str,
+    alias_key: str | None = None,
+    flat_keys: Mapping[str, str] | None = None,
+    string_field: str | None = None,
+) -> object:
+    raw = scope.get(canonical_key)
+    if raw is None and alias_key is not None:
+        raw = scope.get(alias_key)
+
+    if raw is not None and not isinstance(raw, (Mapping, str)):
+        return raw
+
+    merged: dict[str, Any] = {}
+    if flat_keys is not None:
+        for flat_key, nested_key in flat_keys.items():
+            value = scope.get(flat_key)
+            if value is not None:
+                merged[nested_key] = value
+
+    if isinstance(raw, str):
+        if string_field is None:
+            return raw
+        merged.setdefault(string_field, raw)
+    elif isinstance(raw, Mapping):
+        for key, value in raw.items():
+            if not isinstance(key, str):
+                raise TypeError(f"scope.{canonical_key} keys must be strings")
+            merged[key] = value
+
+    return merged or raw
 
 
 def _coerce_optional_str(value: object, *, field_name: str) -> str | None:
@@ -274,12 +357,16 @@ def coerce_scope_envelope(
         return scope
     if not isinstance(scope, Mapping):
         raise TypeError("scope must be a ScopeEnvelope, mapping, or None")
+    normalized_scope = _normalize_scope_mapping(scope)
 
-    namespace_raw = scope.get("namespace")
+    namespace_raw = _merge_scope_section(
+        normalized_scope,
+        canonical_key="namespace",
+        flat_keys=_NAMESPACE_SCOPE_FLAT_KEYS,
+        string_field="slug",
+    )
     if isinstance(namespace_raw, NamespaceScope):
         namespace = namespace_raw
-    elif isinstance(namespace_raw, str):
-        namespace = NamespaceScope(slug=namespace_raw)
     else:
         ns = _as_mapping(namespace_raw, field_name="namespace")
         namespace = NamespaceScope(
@@ -291,11 +378,15 @@ def coerce_scope_envelope(
             sharing_mode=_coerce_namespace_sharing_mode(ns.get("sharing_mode")),
         )
 
-    app_raw = scope.get("app_client", scope.get("app"))
+    app_raw = _merge_scope_section(
+        normalized_scope,
+        canonical_key="app_client",
+        alias_key="app",
+        flat_keys=_APP_CLIENT_SCOPE_FLAT_KEYS,
+        string_field="name",
+    )
     if isinstance(app_raw, AppClientScope):
         app_client = app_raw
-    elif isinstance(app_raw, str):
-        app_client = AppClientScope(name=app_raw)
     else:
         app = _as_mapping(app_raw, field_name="app_client")
         app_client = AppClientScope(
@@ -310,7 +401,12 @@ def coerce_scope_envelope(
             ),
         )
 
-    agent_raw = scope.get("agent")
+    agent_raw = _merge_scope_section(
+        normalized_scope,
+        canonical_key="agent",
+        flat_keys=_AGENT_SCOPE_FLAT_KEYS,
+        string_field="name",
+    )
     if isinstance(agent_raw, AgentScope):
         agent = agent_raw
     else:
@@ -331,7 +427,12 @@ def coerce_scope_envelope(
                 ),
             )
 
-    session_raw = scope.get("session")
+    session_raw = _merge_scope_section(
+        normalized_scope,
+        canonical_key="session",
+        flat_keys=_SESSION_SCOPE_FLAT_KEYS,
+        string_field="external_key",
+    )
     if isinstance(session_raw, SessionScope):
         session = session_raw
     else:
@@ -346,7 +447,13 @@ def coerce_scope_envelope(
                 session_kind=_coerce_session_kind(session_map.get("session_kind")),
             )
 
-    project_raw = scope.get("project", scope.get("project_repo"))
+    project_raw = _merge_scope_section(
+        normalized_scope,
+        canonical_key="project",
+        alias_key="project_repo",
+        flat_keys=_PROJECT_SCOPE_FLAT_KEYS,
+        string_field="slug",
+    )
     if isinstance(project_raw, ProjectRepoScope):
         project = project_raw
     else:
@@ -370,7 +477,11 @@ def coerce_scope_envelope(
                 ),
             )
 
-    policy_raw = scope.get("policy")
+    policy_raw = _merge_scope_section(
+        normalized_scope,
+        canonical_key="policy",
+        flat_keys=_POLICY_SCOPE_FLAT_KEYS,
+    )
     if isinstance(policy_raw, PolicyScope):
         policy = policy_raw
     else:

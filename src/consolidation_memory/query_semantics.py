@@ -7,6 +7,8 @@ from collections.abc import Mapping, Sequence
 
 _LEGACY_DEFAULT_APP_NAME = "legacy_client"
 _LEGACY_DEFAULT_APP_TYPE = "python_sdk"
+_LEGACY_DEFAULT_NAMESPACE = "default"
+_LEGACY_DEFAULT_PROJECT = "default"
 
 
 def parse_claim_payload(payload_raw: object) -> dict[str, object]:
@@ -59,7 +61,9 @@ def filter_claims_for_scope(
         rows = source_rows.get(claim_id, [])
         if not rows:
             if (
-                scope_filter.get("app_client_name") == _LEGACY_DEFAULT_APP_NAME
+                scope_filter.get("namespace_slug") == _LEGACY_DEFAULT_NAMESPACE
+                and scope_filter.get("project_slug") == _LEGACY_DEFAULT_PROJECT
+                and scope_filter.get("app_client_name") == _LEGACY_DEFAULT_APP_NAME
                 and scope_filter.get("app_client_type") == _LEGACY_DEFAULT_APP_TYPE
                 and not scope_filter.get("app_client_provider")
                 and not scope_filter.get("app_client_external_key")

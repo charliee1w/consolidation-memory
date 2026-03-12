@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import json
 import logging
 import os
+import signal
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -57,7 +60,7 @@ _WARMUP_ON_START = os.environ.get(
     "1",
 ).strip().lower() not in {"0", "false", "no", "off"}
 _IDLE_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS", "0")
+    os.environ.get("CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS", "900")
 )
 _IDLE_CHECK_INTERVAL_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_IDLE_CHECK_INTERVAL_SECONDS", "15")
@@ -73,6 +76,13 @@ _PRELOAD_NUMERIC_BACKENDS_ON_START = os.environ.get(
 _WARMUP_START_DELAY_SECONDS = float(
     os.environ.get("CONSOLIDATION_MEMORY_WARMUP_START_DELAY_SECONDS", "0.25")
 )
+_STDIO_SINGLETON_ENABLED = os.environ.get(
+    "CONSOLIDATION_MEMORY_STDIO_SINGLETON",
+    "1",
+).strip().lower() not in {"0", "false", "no", "off"}
+_STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS = float(
+    os.environ.get("CONSOLIDATION_MEMORY_STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS", "10")
+)
 
 _runtime = MemoryRuntime(max_workers=_MCP_BLOCKING_WORKERS)
 _warmup_task: asyncio.Task | None = None
@@ -82,6 +92,12 @@ _last_activity_monotonic = time.monotonic()
 _runtime_started = False
 _startup_error: Exception | None = None
 _runtime_start_lock = threading.Lock()
+_stdio_singleton_guard = None
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 def _drift_timeout_seconds() -> float:
@@ -121,6 +137,11 @@ def _idle_timeout_seconds() -> float:
 def _idle_check_interval_seconds() -> float:
     configured = _IDLE_CHECK_INTERVAL_SECONDS
     return configured if configured > 0 else 15.0
+
+
+def _stdio_singleton_takeover_timeout_seconds() -> float:
+    configured = _STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS
+    return configured if configured > 0 else 10.0
 
 
 def _touch_activity() -> None:
@@ -201,6 +222,212 @@ def _format_thread_stacks() -> str:
             continue
         chunks.extend(traceback.format_stack(frame))
     return "\n".join(chunks)
+
+
+class _StdioSingletonGuard:
+    """Hold a parent-scoped inter-process lock for stdio MCP servers."""
+
+    def __init__(
+        self,
+        *,
+        path: str,
+        handle,
+        metadata: dict[str, object],
+    ) -> None:
+        self.path = path
+        self._handle = handle
+        self.metadata = metadata
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        try:
+            _unlock_singleton_handle(self._handle)
+        finally:
+            self._handle.close()
+
+
+def _safe_process_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        try:
+            return int(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _singleton_lock_path(*, project: str, parent_pid: int) -> str:
+    safe_project = "".join(
+        ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
+        for ch in project
+    ).strip("._")
+    if not safe_project:
+        safe_project = "default"
+    safe_project = safe_project[:48]
+    fingerprint = hashlib.sha256(f"{project}:{parent_pid}".encode("utf-8")).hexdigest()[:12]
+    filename = (
+        f"consolidation_memory_stdio_{safe_project}_{parent_pid}_{fingerprint}.lock"
+    )
+    return os.path.join(tempfile.gettempdir(), filename)
+
+
+def _open_singleton_lock_handle(path: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return open(path, "a+", encoding="utf-8")
+
+
+def _try_lock_singleton_handle(handle) -> bool:
+    handle.seek(0, os.SEEK_SET)
+    try:
+        if os.name == "nt":
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(" ")
+                handle.flush()
+            handle.seek(0, os.SEEK_SET)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock_singleton_handle(handle) -> None:
+    handle.seek(0, os.SEEK_SET)
+    if os.name == "nt":
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            return
+    else:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _read_singleton_metadata(handle) -> dict[str, object]:
+    handle.seek(0, os.SEEK_SET)
+    raw = handle.read().strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_singleton_metadata(handle, metadata: dict[str, object]) -> None:
+    handle.seek(0, os.SEEK_SET)
+    handle.truncate()
+    handle.write(json.dumps(metadata, sort_keys=True))
+    handle.flush()
+    try:
+        os.fsync(handle.fileno())
+    except OSError:
+        pass
+
+
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_process(pid: int) -> None:
+    if pid <= 0 or pid == os.getpid():
+        return
+    os.kill(pid, signal.SIGTERM)
+
+
+def _wait_for_process_exit(pid: int, *, timeout: float) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if not _process_exists(pid):
+            return True
+        time.sleep(0.1)
+    return not _process_exists(pid)
+
+
+def _acquire_parent_scoped_stdio_singleton_guard(project: str) -> _StdioSingletonGuard | None:
+    """Ensure a parent process owns at most one stdio MCP server per project."""
+    if not _STDIO_SINGLETON_ENABLED:
+        return None
+
+    parent_pid = os.getppid()
+    lock_path = _singleton_lock_path(project=project, parent_pid=parent_pid)
+    deadline = time.monotonic() + _stdio_singleton_takeover_timeout_seconds()
+
+    while True:
+        handle = _open_singleton_lock_handle(lock_path)
+        if _try_lock_singleton_handle(handle):
+            metadata = {
+                "pid": os.getpid(),
+                "parent_pid": parent_pid,
+                "project": project,
+                "acquired_at": time.time(),
+            }
+            _write_singleton_metadata(handle, metadata)
+            return _StdioSingletonGuard(path=lock_path, handle=handle, metadata=metadata)
+
+        owner = _read_singleton_metadata(handle)
+        handle.close()
+
+        owner_pid = _safe_process_int(owner.get("pid"))
+        owner_parent_pid = _safe_process_int(owner.get("parent_pid"))
+        owner_project = owner.get("project")
+
+        if owner_pid is None or not _process_exists(owner_pid):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Timed out recovering stale stdio singleton lock at {lock_path}."
+                )
+            time.sleep(0.05)
+            continue
+
+        if owner_parent_pid != parent_pid or owner_project != project:
+            raise RuntimeError(
+                "Found a conflicting stdio singleton lock with mismatched owner metadata."
+            )
+
+        logger.warning(
+            "Detected duplicate MCP stdio server pid=%s for parent pid=%s project=%s; "
+            "terminating older instance",
+            owner_pid,
+            parent_pid,
+            project,
+        )
+        try:
+            _terminate_process(owner_pid)
+        except ProcessLookupError:
+            pass
+
+        if _wait_for_process_exit(
+            owner_pid,
+            timeout=max(0.1, deadline - time.monotonic()),
+        ):
+            continue
+
+        raise RuntimeError(
+            "Timed out waiting for the previous MCP stdio server process to exit. "
+            "Set CONSOLIDATION_MEMORY_STDIO_SINGLETON=0 to disable takeover if needed."
+        )
 
 
 async def _get_client_with_timeout():
@@ -759,7 +986,19 @@ async def memory_read_topic(
 
 def run_server() -> None:
     """Run the MCP server on stdio transport."""
-    mcp.run(transport="stdio")
+    from consolidation_memory.config import get_active_project
+
+    global _stdio_singleton_guard
+
+    project = get_active_project()
+    _stdio_singleton_guard = _acquire_parent_scoped_stdio_singleton_guard(project)
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        guard = _stdio_singleton_guard
+        _stdio_singleton_guard = None
+        if guard is not None:
+            guard.release()
 
 
 if __name__ == "__main__":

@@ -145,6 +145,34 @@ class TestClaimGraphMethods:
         assert before["claim-history"]["status"] == "active"
         assert after["claim-history"]["status"] == "challenged"
 
+    def test_claims_as_of_preserves_challenged_status_before_expiry(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-expired-history",
+            claim_type="fact",
+            canonical_text="claim with challenge then expiry",
+            payload={"k": "v"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+
+        challenged_ids = mark_claims_challenged_by_ids(
+            ["claim-expired-history"],
+            challenged_at="2026-02-01T00:00:00+00:00",
+        )
+
+        assert challenged_ids == ["claim-expired-history"]
+        assert expire_claim(
+            "claim-expired-history",
+            valid_until="2026-02-10T00:00:00+00:00",
+        )
+
+        midpoint = {
+            row["id"]: row
+            for row in get_claims_as_of("2026-02-05T00:00:00+00:00", claim_type="fact")
+        }
+
+        assert midpoint["claim-expired-history"]["status"] == "challenged"
+
     def test_mark_claims_challenged_by_anchors_skips_future_claims(self, tmp_data_dir):
         ensure_schema()
         episode_id = insert_episode("future claim episode")

@@ -62,3 +62,14 @@ class TestMemoryRuntimeLifecycle:
         release.set()
         time.sleep(0.05)
         mock_client.close.assert_called_once()
+
+    def test_factory_returning_none_raises_clear_error(self):
+        from consolidation_memory.runtime import MemoryRuntime
+
+        runtime = MemoryRuntime(client_factory=lambda: None)
+        runtime.startup()
+        try:
+            with pytest.raises(RuntimeError, match="factory returned None"):
+                runtime.get_client(wait_timeout=0.5)
+        finally:
+            runtime.shutdown()

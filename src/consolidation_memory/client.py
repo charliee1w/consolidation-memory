@@ -61,6 +61,7 @@ from consolidation_memory.policy_engine import (
 )
 from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.types import (
+    RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_RUNNING,
     AppClientScope,
@@ -2356,13 +2357,79 @@ class MemoryClient:
         Returns:
             Dict with consolidation results or ``{"status": "already_running"}``.
         """
+        from consolidation_memory.config import get_config
+        from consolidation_memory.consolidation import run_consolidation
+        from consolidation_memory.database import (
+            mark_consolidation_scheduler_finished,
+            mark_consolidation_scheduler_started,
+            release_consolidation_lease,
+            try_acquire_consolidation_lease,
+        )
+
         self._ensure_open()
         if not self._consolidation_lock.acquire(blocking=False):
             return {"status": "already_running"}
+        cfg = get_config()
+        lease_seconds = cfg.CONSOLIDATION_MAX_DURATION + 60
+        lease_acquired = False
+        scheduler_finished = False
         try:
-            from consolidation_memory.consolidation import run_consolidation
-            return run_consolidation(vector_store=self._vector_store)
+            lease_acquired = try_acquire_consolidation_lease(
+                owner=self._scheduler_owner,
+                lease_seconds=lease_seconds,
+            )
+            if not lease_acquired:
+                return {
+                    "status": "already_running",
+                    "message": "A consolidation run is already in progress.",
+                }
+
+            mark_consolidation_scheduler_started(
+                owner=self._scheduler_owner,
+                trigger_reason="manual",
+                utility_score=None,
+            )
+
+            report = run_consolidation(vector_store=self._vector_store)
+            run_status = report.get("status") if isinstance(report, dict) else None
+            scheduler_status = (
+                RUN_STATUS_FAILED if run_status == RUN_STATUS_FAILED else RUN_STATUS_COMPLETED
+            )
+            error_message = None
+            if scheduler_status == RUN_STATUS_FAILED and isinstance(report, dict):
+                error_message = str(
+                    report.get("error_message")
+                    or report.get("message")
+                    or "consolidation failed"
+                )
+
+            mark_consolidation_scheduler_finished(
+                owner=self._scheduler_owner,
+                status=scheduler_status,
+                interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
+                error_message=error_message,
+            )
+            scheduler_finished = True
+            return report
+        except Exception as exc:
+            if lease_acquired:
+                try:
+                    mark_consolidation_scheduler_finished(
+                        owner=self._scheduler_owner,
+                        status=RUN_STATUS_FAILED,
+                        interval_hours=cfg.CONSOLIDATION_INTERVAL_HOURS,
+                        error_message=str(exc),
+                    )
+                    scheduler_finished = True
+                except Exception:
+                    logger.exception("Failed to persist manual consolidation failure state")
+            raise
         finally:
+            if lease_acquired and not scheduler_finished:
+                try:
+                    release_consolidation_lease(self._scheduler_owner)
+                except Exception:
+                    logger.exception("Failed to release scheduler lease after manual consolidation")
             self._consolidation_lock.release()
 
     def compact(self) -> CompactResult:

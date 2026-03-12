@@ -196,8 +196,18 @@ def check_embedding_backend(client: RuntimeClient) -> None:
             headers={"Content-Type": "application/json"},
         )
         with urlopen(req, timeout=5) as resp:  # nosec B310
-            body = json.loads(resp.read())
-        model_ids = [m.get("id", "") for m in body.get("data", [])]
+            body_raw = resp.read()
+        body = json.loads(body_raw)
+        if not isinstance(body, Mapping):
+            raise ValueError("response body must be a JSON object")
+        models = body.get("data", [])
+        if not isinstance(models, list):
+            raise ValueError("response field 'data' must be a list")
+        model_ids = [
+            str(model.get("id", ""))
+            for model in models
+            if isinstance(model, Mapping)
+        ]
         if cfg.EMBEDDING_MODEL_NAME not in model_ids:
             logger.warning(
                 "Embedding model '%s' not found. Loaded: %s",
@@ -209,6 +219,13 @@ def check_embedding_backend(client: RuntimeClient) -> None:
         logger.warning(
             "%s not reachable at %s: %s. Store/recall will fail until available.",
             cfg.EMBEDDING_BACKEND, cfg.EMBEDDING_API_BASE, exc,
+        )
+    except Exception as exc:
+        logger.warning(
+            "%s health check returned malformed payload from %s: %s",
+            cfg.EMBEDDING_BACKEND,
+            cfg.EMBEDDING_API_BASE,
+            exc,
         )
 
 
@@ -669,19 +686,23 @@ def consolidation_loop(
         if client._consolidation_pool is None:
             break
         current_monotonic = now_monotonic()
-        _triage_stale_challenged_claims()
-        utility_state = client._compute_consolidation_utility(now_monotonic=current_monotonic)
-        score_value = utility_state.get("score")
-        utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
-        raw_signals = utility_state.get("raw_signals")
-        signal_map = raw_signals if isinstance(raw_signals, Mapping) else None
-        should_run, trigger_reason = client._should_trigger_consolidation(
-            now_monotonic=current_monotonic,
-            last_run_monotonic=last_run_monotonic,
-            interval_seconds=interval,
-            utility_score=utility_score,
-            raw_signals=signal_map,
-        )
+        try:
+            _triage_stale_challenged_claims()
+            utility_state = client._compute_consolidation_utility(now_monotonic=current_monotonic)
+            score_value = utility_state.get("score")
+            utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
+            raw_signals = utility_state.get("raw_signals")
+            signal_map = raw_signals if isinstance(raw_signals, Mapping) else None
+            should_run, trigger_reason = client._should_trigger_consolidation(
+                now_monotonic=current_monotonic,
+                last_run_monotonic=last_run_monotonic,
+                interval_seconds=interval,
+                utility_score=utility_score,
+                raw_signals=signal_map,
+            )
+        except Exception:
+            logger.exception("Background consolidation preflight failed")
+            continue
         if not should_run:
             continue
         if not client._consolidation_lock.acquire(blocking=False):

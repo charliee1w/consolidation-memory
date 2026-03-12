@@ -218,6 +218,8 @@ class MemoryRuntime:
         init_error: Exception | None = None
         try:
             initialized_client = self._client_factory()
+            if initialized_client is None:
+                init_error = RuntimeError("MemoryClient factory returned None")
         except Exception as exc:
             init_error = exc
 

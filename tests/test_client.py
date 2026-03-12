@@ -57,6 +57,35 @@ class TestClientLifecycle:
             c2.close()
             assert mock_close.call_count == 1
 
+    def test_construct_with_malformed_embedding_health_payload(self):
+        from consolidation_memory.config import override_config
+        from consolidation_memory.database import ensure_schema
+
+        ensure_schema()
+
+        from consolidation_memory.client import MemoryClient
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                del exc_type, exc, tb
+                return None
+
+            def read(self):
+                return b"not-json"
+
+        with (
+            override_config(
+                EMBEDDING_BACKEND="openai",
+                EMBEDDING_API_BASE="http://127.0.0.1:1/v1",
+            ),
+            patch("urllib.request.urlopen", return_value=_FakeResponse()),
+        ):
+            client = MemoryClient(auto_consolidate=False)
+        client.close()
+
 
 class TestClientScopeModel:
     def test_resolve_scope_defaults_to_legacy_single_project(self):
@@ -1257,6 +1286,48 @@ class TestClientConsolidate:
 
         client._consolidation_lock.release()
         client.close()
+
+    def test_consolidate_respects_scheduler_lease(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with (
+                patch(
+                    "consolidation_memory.database.try_acquire_consolidation_lease",
+                    return_value=False,
+                ),
+                patch("consolidation_memory.consolidation.run_consolidation") as mock_run,
+            ):
+                result = client.consolidate()
+
+            assert result["status"] == "already_running"
+            assert "already in progress" in str(result.get("message", ""))
+            mock_run.assert_not_called()
+        finally:
+            client.close()
+
+    def test_consolidate_updates_scheduler_status_on_failed_report(self):
+        from consolidation_memory.database import ensure_schema, get_consolidation_scheduler_state
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch(
+                "consolidation_memory.consolidation.run_consolidation",
+                return_value={"status": "failed", "error_message": "boom"},
+            ):
+                result = client.consolidate()
+
+            assert result["status"] == "failed"
+            state = get_consolidation_scheduler_state()
+            assert state["last_status"] == "failed"
+            assert "boom" in str(state["last_error"])
+        finally:
+            client.close()
 
 
 class TestClientCorrect:

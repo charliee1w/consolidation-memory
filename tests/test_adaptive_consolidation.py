@@ -130,6 +130,39 @@ class TestAdaptiveConsolidationLoop:
         finally:
             client.close()
 
+    def test_preflight_error_does_not_kill_background_loop(self):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import override_config
+        from consolidation_memory.database import ensure_schema
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            fake_pool = _FakePool()
+            client._consolidation_pool = fake_pool
+
+            with (
+                override_config(
+                    CONSOLIDATION_INTERVAL_HOURS=24.0,
+                    CONSOLIDATION_UTILITY_THRESHOLD=0.7,
+                ),
+                patch(
+                    "consolidation_memory.client_runtime._triage_stale_challenged_claims",
+                    return_value={"expired_count": 0},
+                ),
+                patch.object(
+                    client,
+                    "_compute_consolidation_utility",
+                    side_effect=[RuntimeError("db busy"), _utility_state(0.9)],
+                ),
+                patch.object(client._consolidation_stop, "wait", side_effect=[False, False, True]),
+            ):
+                client._consolidation_loop()
+
+            assert len(fake_pool.submissions) == 1
+        finally:
+            client.close()
+
 
 class TestStatusSchedulerState:
     def test_status_output_exposes_utility_scheduler_state(self):

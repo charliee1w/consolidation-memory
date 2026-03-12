@@ -451,6 +451,41 @@ class TestClientStore:
 
         client.close()
 
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_store_keeps_episode_hidden_until_vector_persists(self, mock_embed):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, get_connection
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            vec = _make_normalized_vec(seed=7)
+            mock_embed.return_value = vec.reshape(1, -1)
+            original_add = client._vector_store.add
+
+            def _checked_add(episode_id, embedding):
+                with get_connection() as conn:
+                    row = conn.execute(
+                        "SELECT indexed FROM episodes WHERE id = ?",
+                        (episode_id,),
+                    ).fetchone()
+                assert row is not None
+                assert row["indexed"] == 0
+                return original_add(episode_id, embedding)
+
+            with patch.object(client._vector_store, "add", side_effect=_checked_add):
+                result = client.store("staged visibility", content_type="fact")
+
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT indexed FROM episodes WHERE id = ?",
+                    (result.id,),
+                ).fetchone()
+            assert row is not None
+            assert row["indexed"] == 1
+        finally:
+            client.close()
+
 
 class TestClientAutoConsolidation:
     @patch("consolidation_memory.backends.encode_documents")
@@ -631,6 +666,48 @@ class TestClientRecall:
 
             assert get_all_episodes(include_deleted=False) == []
             mock_add_batch.assert_not_called()
+        finally:
+            client.close()
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_store_batch_keeps_episodes_hidden_until_batch_vector_persists(self, mock_embed):
+        import numpy as np
+
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, get_connection
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            vec_a = _make_normalized_vec(seed=11)
+            vec_b = _make_normalized_vec(seed=12)
+            emb_matrix = np.stack([vec_a, vec_b])
+            mock_embed.return_value = emb_matrix
+            original_add_batch = client._vector_store.add_batch
+
+            def _checked_add_batch(episode_ids, embeddings):
+                del embeddings
+                with get_connection() as conn:
+                    rows = conn.execute(
+                        "SELECT id, indexed FROM episodes WHERE id IN (?, ?)",
+                        tuple(episode_ids),
+                    ).fetchall()
+                assert len(rows) == 2
+                assert {row["indexed"] for row in rows} == {0}
+                return original_add_batch(episode_ids, emb_matrix)
+
+            with patch.object(client._vector_store, "add_batch", side_effect=_checked_add_batch):
+                result = client.store_batch([{"content": "first"}, {"content": "second"}])
+
+            assert result.stored == 2
+            stored_ids = [res["id"] for res in result.results if res.get("status") == "stored"]
+            with get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT indexed FROM episodes WHERE id IN (?, ?)",
+                    tuple(stored_ids),
+                ).fetchall()
+            assert len(rows) == 2
+            assert {row["indexed"] for row in rows} == {1}
         finally:
             client.close()
 
@@ -849,7 +926,11 @@ class TestClientDrift:
             with patch("consolidation_memory.drift.detect_code_drift", return_value=expected) as mock_detect:
                 result = client.detect_drift(base_ref="origin/main", repo_path="C:/repo")
             assert result == expected
-            mock_detect.assert_called_once_with(base_ref="origin/main", repo_path="C:/repo")
+            mock_detect.assert_called_once_with(
+                base_ref="origin/main",
+                repo_path="C:/repo",
+                scope={"namespace_slug": "default", "project_slug": "default"},
+            )
         finally:
             client.close()
 

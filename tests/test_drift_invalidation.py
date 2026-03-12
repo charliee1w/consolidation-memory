@@ -169,7 +169,11 @@ class TestDriftDetection:
         monkeypatch.setattr(
             drift,
             "map_changed_files_to_claims",
-            lambda changed_files, repo_path=None: (checked_anchors, claim_rows, matched),
+            lambda changed_files, repo_path=None, scope=None: (
+                checked_anchors,
+                claim_rows,
+                matched,
+            ),
         )
         monkeypatch.setattr(
             drift,
@@ -229,7 +233,7 @@ class TestDriftDetection:
         monkeypatch.setattr(
             drift,
             "map_changed_files_to_claims",
-            lambda changed_files, repo_path=None: (
+            lambda changed_files, repo_path=None, scope=None: (
                 [{"anchor_type": "path", "anchor_value": "src/app.py"}],
                 {},
                 {},
@@ -264,3 +268,78 @@ class TestDriftDetection:
         assert call_count == 1
         assert len(results) == 2
         assert results[0] == results[1]
+
+    def test_detect_code_drift_does_not_share_singleflight_across_scopes(
+        self,
+        monkeypatch,
+        tmp_data_dir,
+    ):
+        from consolidation_memory import drift
+
+        call_count = 0
+        mapped_scopes: list[dict[str, str] | None] = []
+        call_lock = threading.Lock()
+        first_call_entered = threading.Event()
+        release_calls = threading.Event()
+
+        def fake_get_changed_files(base_ref=None, repo_path=None):
+            del base_ref, repo_path
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+                call_index = call_count
+            if call_index == 1:
+                first_call_entered.set()
+                assert release_calls.wait(timeout=2.0)
+            return ["src/app.py"]
+
+        def fake_map_changed_files_to_claims(changed_files, repo_path=None, scope=None):
+            del changed_files, repo_path
+            with call_lock:
+                mapped_scopes.append(dict(scope) if scope is not None else None)
+            return ([{"anchor_type": "path", "anchor_value": "src/app.py"}], {}, {})
+
+        monkeypatch.setattr(drift, "get_changed_files", fake_get_changed_files)
+        monkeypatch.setattr(drift, "map_changed_files_to_claims", fake_map_changed_files_to_claims)
+
+        results: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+
+        def _run_detect(scope: dict[str, str]) -> None:
+            try:
+                results.append(
+                    drift.detect_code_drift(
+                        base_ref="origin/main",
+                        repo_path=tmp_data_dir,
+                        scope=scope,
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - defensive capture
+                errors.append(exc)
+
+        first = threading.Thread(
+            target=_run_detect,
+            args=({"namespace_slug": "default", "project_slug": "repo-a"},),
+        )
+        second = threading.Thread(
+            target=_run_detect,
+            args=({"namespace_slug": "default", "project_slug": "repo-b"},),
+        )
+        first.start()
+        assert first_call_entered.wait(timeout=2.0)
+        second.start()
+        time.sleep(0.05)
+        release_calls.set()
+
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert not errors
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert call_count == 2
+        assert len(results) == 2
+        assert sorted(mapped_scopes, key=lambda scope: scope["project_slug"]) == [
+            {"namespace_slug": "default", "project_slug": "repo-a"},
+            {"namespace_slug": "default", "project_slug": "repo-b"},
+        ]

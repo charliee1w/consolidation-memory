@@ -260,6 +260,11 @@ class VectorStore:
             try:
                 with os.fdopen(map_fd, "w") as f:
                     json.dump(self._id_map, f)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
             except Exception:
                 os.unlink(idx_tmp)
                 os.unlink(map_tmp)
@@ -280,6 +285,11 @@ class VectorStore:
             try:
                 with os.fdopen(fd, "w") as f:
                     json.dump(list(self._tombstones), f)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
             except Exception:
                 os.unlink(tmp)
                 raise

@@ -412,6 +412,29 @@ def _wait_for_process_exit(pid: int, *, timeout: float) -> bool:
     return not _process_exists(pid)
 
 
+def _runtime_has_background_activity() -> bool:
+    if _warmup_task is not None and not _warmup_task.done():
+        return True
+    if _runtime.client_initializing:
+        return True
+    client = _runtime.client
+    if client is None:
+        return False
+
+    future = getattr(client, "_consolidation_future", None)
+    if future is not None and not future.done():
+        return True
+
+    consolidation_lock = getattr(client, "_consolidation_lock", None)
+    if consolidation_lock is not None and hasattr(consolidation_lock, "locked"):
+        try:
+            if consolidation_lock.locked():
+                return True
+        except Exception:
+            return True
+    return False
+
+
 def _acquire_parent_scoped_stdio_singleton_guard(project: str) -> _StdioSingletonGuard | None:
     """Ensure a parent process owns at most one stdio MCP server per project."""
     if not _STDIO_SINGLETON_ENABLED:
@@ -453,27 +476,10 @@ def _acquire_parent_scoped_stdio_singleton_guard(project: str) -> _StdioSingleto
                 "Found a conflicting stdio singleton lock with mismatched owner metadata."
             )
 
-        logger.warning(
-            "Detected duplicate MCP stdio server pid=%s for parent pid=%s project=%s; "
-            "terminating older instance",
-            owner_pid,
-            parent_pid,
-            project,
-        )
-        try:
-            _terminate_process(owner_pid)
-        except ProcessLookupError:
-            pass
-
-        if _wait_for_process_exit(
-            owner_pid,
-            timeout=max(0.1, deadline - time.monotonic()),
-        ):
-            continue
-
         raise RuntimeError(
-            "Timed out waiting for the previous MCP stdio server process to exit. "
-            "Set CONSOLIDATION_MEMORY_STDIO_SINGLETON=0 to disable takeover if needed."
+            "Another MCP stdio server is already running for this parent process and project. "
+            "Wait for it to exit, or set CONSOLIDATION_MEMORY_STDIO_SINGLETON=0 to disable "
+            "the singleton guard."
         )
 
 
@@ -525,6 +531,8 @@ async def _idle_shutdown_monitor() -> None:
     while True:
         await asyncio.sleep(check_seconds)
         if _active_tool_calls > 0:
+            continue
+        if _runtime_has_background_activity():
             continue
         idle_for = time.monotonic() - _last_activity_monotonic
         if idle_for < timeout_seconds:

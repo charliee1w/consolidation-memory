@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from consolidation_memory.query_service import (
@@ -11,7 +12,6 @@ from consolidation_memory.query_service import (
     DriftQuery,
     RecallQuery,
 )
-from consolidation_memory.types import ClaimBrowseResult
 
 
 class TestCanonicalQueryServiceRecall:
@@ -95,36 +95,56 @@ class TestCanonicalQueryServiceClaims:
         assert result.total == 0
         mock_scope_filter.assert_called_once()
 
-    def test_search_claims_ranks_from_browse_snapshot(self):
+    def test_search_claims_ranks_full_claim_pages(self):
         service = CanonicalQueryService(vector_store=MagicMock())
-        browse_result = ClaimBrowseResult(
-            claims=[
-                {
-                    "id": "claim-strong",
-                    "canonical_text": "start api with uvicorn main:app",
-                    "payload": {"trigger": "run api", "steps": "uvicorn main:app"},
-                    "confidence": 0.95,
-                    "updated_at": "2026-01-01T00:00:00+00:00",
-                },
-                {
-                    "id": "claim-weak",
-                    "canonical_text": "run server",
-                    "payload": {"steps": "python app.py"},
-                    "confidence": 0.6,
-                    "updated_at": "2025-01-01T00:00:00+00:00",
-                },
-            ],
-            total=2,
-            claim_type="procedure",
-            as_of="2026-02-01T00:00:00+00:00",
-        )
+        first_page = [{
+            "id": f"claim-new-{i}",
+            "claim_type": "procedure",
+            "canonical_text": f"new claim {i}",
+            "payload": "{}",
+            "status": "active",
+            "confidence": 0.5,
+            "valid_from": "2025-01-01T00:00:00+00:00",
+            "valid_until": None,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat(),
+        } for i in range(250)]
+        second_page = [
+            {
+                "id": "claim-strong",
+                "claim_type": "procedure",
+                "canonical_text": "start api with uvicorn main:app",
+                "payload": "{\"trigger\": \"run api\", \"steps\": \"uvicorn main:app\"}",
+                "status": "active",
+                "confidence": 0.95,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:00+00:00",
+            },
+            {
+                "id": "claim-weak",
+                "claim_type": "procedure",
+                "canonical_text": "run server",
+                "payload": "{\"steps\": \"python app.py\"}",
+                "status": "active",
+                "confidence": 0.6,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-02T00:00:00+00:00",
+            },
+        ]
 
-        with patch.object(service, "browse_claims", return_value=browse_result) as mock_browse:
+        with patch(
+            "consolidation_memory.database.get_active_claims",
+            side_effect=[first_page, second_page, []],
+        ) as mock_get_active_claims:
             result = service.search_claims(
                 ClaimSearchQuery(
                     query="uvicorn",
                     claim_type="procedure",
-                    as_of="2026-02-01T00:00:00+00:00",
+                    as_of=None,
                     limit=1,
                 )
             )
@@ -132,7 +152,8 @@ class TestCanonicalQueryServiceClaims:
         assert result.total_matches == 1
         assert result.claims[0]["id"] == "claim-strong"
         assert result.claims[0]["relevance"] > 0
-        mock_browse.assert_called_once()
+        assert mock_get_active_claims.call_args_list[0].kwargs["offset"] == 0
+        assert mock_get_active_claims.call_args_list[1].kwargs["offset"] == 250
 
     def test_browse_claims_pages_until_scoped_limit_is_satisfied(self):
         service = CanonicalQueryService(vector_store=MagicMock())
@@ -205,8 +226,16 @@ class TestCanonicalQueryServiceDrift:
 
         with patch("consolidation_memory.drift.detect_code_drift", return_value=expected) as mock_detect:
             result = service.detect_drift(
-                DriftQuery(base_ref="origin/main", repo_path="C:/repo")
+                DriftQuery(
+                    base_ref="origin/main",
+                    repo_path="C:/repo",
+                    scope={"namespace_slug": "default", "project_slug": "repo-a"},
+                )
             )
 
         assert result == expected
-        mock_detect.assert_called_once_with(base_ref="origin/main", repo_path="C:/repo")
+        mock_detect.assert_called_once_with(
+            base_ref="origin/main",
+            repo_path="C:/repo",
+            scope={"namespace_slug": "default", "project_slug": "repo-a"},
+        )

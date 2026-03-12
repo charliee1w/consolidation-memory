@@ -28,6 +28,12 @@ REQUIRED_SECTION_FIELDS = (
 )
 
 
+def _parse_required_bool(field_name: str, raw: Any) -> tuple[bool, str | None]:
+    if isinstance(raw, bool):
+        return raw, None
+    return False, f"{field_name} must be a boolean"
+
+
 def _parse_timestamp(raw: Any) -> datetime | None:
     if not isinstance(raw, str) or not raw.strip():
         return None
@@ -56,7 +62,11 @@ def _section_statuses(sections: Any) -> tuple[dict[str, bool], list[str]]:
             errors.append(f"section '{name}' missing required fields: {', '.join(missing)}")
             continue
 
-        statuses[str(name)] = bool(section["pass"])
+        section_pass, error = _parse_required_bool(f"section '{name}'.pass", section["pass"])
+        if error is not None:
+            errors.append(error)
+            continue
+        statuses[str(name)] = section_pass
     return statuses, errors
 
 
@@ -99,7 +109,12 @@ def evaluate_release_gates(
     section_statuses, section_errors = _section_statuses(novelty_results.get("sections"))
     errors.extend(section_errors)
 
-    overall_pass_flag = bool(novelty_results.get("overall_pass"))
+    overall_pass_flag, overall_pass_error = _parse_required_bool(
+        "overall_pass",
+        novelty_results.get("overall_pass"),
+    )
+    if overall_pass_error is not None:
+        errors.append(overall_pass_error)
     metrics_gate_pass = bool(section_statuses) and overall_pass_flag and all(section_statuses.values())
     if not metrics_gate_pass:
         errors.append("metric threshold gate failed (overall_pass false or a section failed)")

@@ -95,3 +95,22 @@ def test_release_gates_fail_on_missing_section_fields():
 
     assert report["overall_pass"] is False
     assert report["gates"]["evidence_completeness_gate"]["pass"] is False
+
+
+def test_release_gates_fail_closed_on_string_booleans():
+    results = _base_novelty_results()
+    results["overall_pass"] = "false"
+    results["sections"]["belief_freshness_after_code_drift"]["pass"] = "false"
+
+    report = evaluate_release_gates(
+        novelty_results=results,
+        max_age_days=7,
+        required_mode="full",
+        scope_alignment_pass=True,
+        scope_alignment_note="matched wedge use-case",
+        now=datetime(2026, 3, 7, tzinfo=timezone.utc),
+    )
+
+    assert report["overall_pass"] is False
+    assert report["gates"]["metric_threshold_gate"]["pass"] is False
+    assert any("must be a boolean" in error for error in report["errors"])

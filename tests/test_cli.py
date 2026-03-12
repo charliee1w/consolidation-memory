@@ -254,6 +254,11 @@ class TestMCPConfigRecommendation:
             },
         }
 
+    def test_toml_basic_string_escapes_quotes_and_newlines(self):
+        from consolidation_memory.cli import _toml_basic_string
+
+        assert _toml_basic_string('key"\nvalue') == '"key\\"\\nvalue"'
+
 
 class TestDetectDriftCommand:
     def test_cmd_detect_drift_prints_json(self, capsys):

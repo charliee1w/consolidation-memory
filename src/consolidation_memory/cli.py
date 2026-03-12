@@ -50,6 +50,11 @@ def _scope_from_export_row(row: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in scope.items() if value is not None}
 
 
+def _toml_basic_string(value: str) -> str:
+    """Escape a string for safe TOML inline usage."""
+    return json.dumps(value)
+
+
 def _recommended_mcp_server_config(project: str) -> dict[str, object]:
     """Return the most stable MCP launch configuration for the current interpreter."""
     command = sys.executable or "python"
@@ -112,7 +117,7 @@ def cmd_init():
     backends = {"1": "fastembed", "2": "lmstudio", "3": "openai", "4": "ollama"}
     embed_backend = backends.get(choice, "fastembed")
 
-    embed_config = f'backend = "{embed_backend}"'
+    embed_config = f"backend = {_toml_basic_string(embed_backend)}"
     if embed_backend == "fastembed":
         try:
             import fastembed  # noqa: F401
@@ -123,52 +128,52 @@ def cmd_init():
     elif embed_backend == "lmstudio":
         api_base = input("LM Studio API base [http://127.0.0.1:1234/v1]: ").strip()
         if api_base:
-            embed_config += f'\napi_base = "{api_base}"'
+            embed_config += f"\napi_base = {_toml_basic_string(api_base)}"
         model = input("Embedding model name [text-embedding-nomic-embed-text-v1.5]: ").strip()
         if model:
-            embed_config += f'\nmodel = "{model}"'
+            embed_config += f"\nmodel = {_toml_basic_string(model)}"
         embed_config += '\ndimension = 768'
     elif embed_backend == "openai":
         api_key = input("OpenAI API key: ").strip()
-        embed_config += f'\napi_key = "{api_key}"'
+        embed_config += f"\napi_key = {_toml_basic_string(api_key)}"
     elif embed_backend == "ollama":
         api_base = input("Ollama API base [http://localhost:11434]: ").strip()
         if api_base:
-            embed_config += f'\napi_base = "{api_base}"'
+            embed_config += f"\napi_base = {_toml_basic_string(api_base)}"
 
     # LLM backend
     print("\n--- LLM Backend (for consolidation) ---")
-    print("1. lmstudio (recommended if you have LM Studio)")
+    print("1. lmstudio")
     print("2. openai")
     print("3. ollama")
-    print("4. disabled (store/recall only, no consolidation)")
+    print("4. disabled (recommended for first run)")
 
-    llm_choice = input("\nChoice [1]: ").strip() or "1"
+    llm_choice = input("\nChoice [4]: ").strip() or "4"
     llm_backends = {"1": "lmstudio", "2": "openai", "3": "ollama", "4": "disabled"}
     llm_backend = llm_backends.get(llm_choice, "lmstudio")
 
-    llm_config = f'backend = "{llm_backend}"'
+    llm_config = f"backend = {_toml_basic_string(llm_backend)}"
     if llm_backend == "lmstudio":
         api_base = input("LM Studio API base [http://localhost:1234/v1]: ").strip()
         if api_base:
-            llm_config += f'\napi_base = "{api_base}"'
+            llm_config += f"\napi_base = {_toml_basic_string(api_base)}"
         model = input("LLM model [qwen2.5-7b-instruct]: ").strip()
         if model:
-            llm_config += f'\nmodel = "{model}"'
+            llm_config += f"\nmodel = {_toml_basic_string(model)}"
     elif llm_backend == "openai":
         if embed_backend != "openai":
             api_key = input("OpenAI API key: ").strip()
-            llm_config += f'\napi_key = "{api_key}"'
+            llm_config += f"\napi_key = {_toml_basic_string(api_key)}"
         model = input("LLM model [gpt-4o-mini]: ").strip()
         if model:
-            llm_config += f'\nmodel = "{model}"'
+            llm_config += f"\nmodel = {_toml_basic_string(model)}"
     elif llm_backend == "ollama":
         api_base = input("Ollama API base [http://localhost:11434]: ").strip()
         if api_base:
-            llm_config += f'\napi_base = "{api_base}"'
+            llm_config += f"\napi_base = {_toml_basic_string(api_base)}"
         model = input("LLM model [qwen2.5:7b]: ").strip()
         if model:
-            llm_config += f'\nmodel = "{model}"'
+            llm_config += f"\nmodel = {_toml_basic_string(model)}"
 
     # Write config
     config_dir = get_default_config_dir()
@@ -225,7 +230,12 @@ def cmd_test():
     """Verify installation works end-to-end."""
     import uuid
     from consolidation_memory.config import get_config
-    from consolidation_memory.database import ensure_schema, insert_episode, soft_delete_episode
+    from consolidation_memory.database import (
+        ensure_schema,
+        insert_episode,
+        mark_episode_indexed,
+        soft_delete_episode,
+    )
 
     cfg = get_config()
 
@@ -277,6 +287,7 @@ def cmd_test():
                 content_type="fact",
                 tags=["_test"],
                 surprise_score=0.0,
+                indexed=False,
             )
             report("Store test episode", True, test_episode_id[:8])
         except Exception as e:
@@ -298,6 +309,7 @@ def cmd_test():
                 from consolidation_memory.vector_store import VectorStore
                 vs = VectorStore()
                 vs.add(test_episode_id, embedding[0])
+                mark_episode_indexed([test_episode_id])
 
                 query_vec = encode_query(test_content)
                 search_results = vs.search(query_vec, k=5)
@@ -573,7 +585,7 @@ def cmd_import(path: str):
     from pathlib import Path
     from consolidation_memory.database import (
         ensure_schema, insert_episode, upsert_knowledge_topic, get_episode,
-        insert_knowledge_records, hard_delete_episode,
+        insert_knowledge_records, hard_delete_episode, mark_episode_indexed,
         import_claim_graph_snapshot, get_connection,
     )
     from consolidation_memory.backends import encode_documents
@@ -676,6 +688,7 @@ def cmd_import(path: str):
                     consolidation_attempts=ep.get("consolidation_attempts"),
                     last_consolidation_attempt=ep.get("last_consolidation_attempt"),
                     protected=ep.get("protected"),
+                    indexed=False,
                 )
             except Exception as e:
                 print(f"  Warning: Failed to insert episode {ep.get('id', '?')}: {e}")
@@ -689,6 +702,7 @@ def cmd_import(path: str):
 
         try:
             vs.add_batch(inserted_ids, embeddings[inserted_positions])
+            mark_episode_indexed(inserted_ids)
             imported += len(inserted_ids)
         except Exception as e:
             print(f"  Warning: Failed to index episode batch {i}-{i + len(batch)}: {e}")
@@ -893,7 +907,12 @@ def cmd_reindex():
     map_fd, map_tmp = tempfile.mkstemp(dir=parent, suffix=".json.tmp")
     try:
         with os.fdopen(map_fd, "w") as f:
-            json.dump(all_ids, f)
+                    json.dump(all_ids, f)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
     except Exception:
         os.unlink(idx_tmp)
         os.unlink(map_tmp)
@@ -903,7 +922,12 @@ def cmd_reindex():
     tomb_fd, tomb_tmp = tempfile.mkstemp(dir=parent, suffix=".json.tmp")
     try:
         with os.fdopen(tomb_fd, "w") as f:
-            json.dump([], f)
+                    json.dump([], f)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
     except Exception:
         os.unlink(idx_tmp)
         os.unlink(map_tmp)
@@ -912,8 +936,8 @@ def cmd_reindex():
         return
 
     # All writes succeeded — atomic swap
-    os.replace(idx_tmp, str(cfg.FAISS_INDEX_PATH))
     os.replace(map_tmp, str(cfg.FAISS_ID_MAP_PATH))
+    os.replace(idx_tmp, str(cfg.FAISS_INDEX_PATH))
     os.replace(tomb_tmp, str(cfg.FAISS_TOMBSTONE_PATH))
 
     VectorStore.signal_reload()

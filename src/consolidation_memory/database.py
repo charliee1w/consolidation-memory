@@ -1319,9 +1319,9 @@ def mark_episode_indexed(
     with get_connection() as conn:
         cursor = conn.execute(
             f"""UPDATE episodes
-                SET indexed = ?, updated_at = ?
+                SET indexed = ?
                 WHERE id IN ({placeholders})""",  # nosec B608
-            [1 if indexed else 0, _now(), *episode_ids],
+            [1 if indexed else 0, *episode_ids],
         )
     return int(cursor.rowcount or 0)
 
@@ -2895,6 +2895,7 @@ def get_claims_by_anchor_values(
     anchor_type: str,
     anchor_values: Sequence[str],
     include_expired: bool = False,
+    scope: Mapping[str, Any] | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch claims linked to episodes matching any anchor value for one anchor type."""
@@ -2917,6 +2918,7 @@ def get_claims_by_anchor_values(
     max_results = limit if limit is None else max(1, int(limit))
     params_prefix: list[Any] = [anchor_type_token]
     common_conditions = ["ea.anchor_type = ?"]
+    _apply_scope_filters(common_conditions, params_prefix, scope, table_alias="e")
     if not include_expired:
         now = _now()
         common_conditions.extend(
@@ -2945,6 +2947,7 @@ def get_claims_by_anchor_values(
                     FROM claims c
                     JOIN claim_sources cs ON cs.claim_id = c.id
                     JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
+                    JOIN episodes e ON e.id = ea.episode_id
                     WHERE {where}
                     ORDER BY c.updated_at DESC, c.id ASC"""  # nosec B608
             if remaining is not None:

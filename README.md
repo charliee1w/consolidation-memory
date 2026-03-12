@@ -20,6 +20,8 @@ consolidation-memory test
 consolidation-memory serve
 ```
 
+Pick `disabled` for the LLM step unless you already have LM Studio, Ollama, or OpenAI configured. That gives you a clean first-run path with local storage, recall, and MCP serving.
+
 What that gives you immediately:
 
 - Durable local storage with SQLite + FAISS
@@ -97,6 +99,7 @@ pip install "consolidation-memory[fastembed]"
 Common extras:
 
 - `consolidation-memory[rest]` for FastAPI endpoints
+- `consolidation-memory[fastembed,rest]` for the default local REST setup
 - `consolidation-memory[dashboard]` for the Textual dashboard
 - `consolidation-memory[openai]` for the OpenAI SDK backend
 - `consolidation-memory[all,dev]` for full local development
@@ -199,7 +202,7 @@ with MemoryClient(auto_consolidate=False) as mem:
 Run:
 
 ```bash
-pip install "consolidation-memory[rest]"
+pip install "consolidation-memory[fastembed,rest]"
 consolidation-memory serve --rest --host 127.0.0.1 --port 8080
 ```
 
@@ -207,6 +210,11 @@ For non-loopback binds (for example `--host 0.0.0.0`), set auth first:
 
 ```bash
 export CONSOLIDATION_MEMORY_REST_AUTH_TOKEN="change-me"
+consolidation-memory serve --rest --host 0.0.0.0 --port 8080
+```
+
+```powershell
+$env:CONSOLIDATION_MEMORY_REST_AUTH_TOKEN = "change-me"
 consolidation-memory serve --rest --host 0.0.0.0 --port 8080
 ```
 

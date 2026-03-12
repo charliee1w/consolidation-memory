@@ -12,6 +12,8 @@ import time
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 @contextmanager
 def _patched_server_runtime():
@@ -413,21 +415,20 @@ class TestMCPServerLifecycle:
 
         guard.release.assert_called_once_with()
 
-    def test_stdio_singleton_guard_terminates_prior_same_parent_server(self):
+    def test_stdio_singleton_guard_rejects_duplicate_same_parent_server(self):
         import consolidation_memory.server as server
 
-        stale_handle = MagicMock()
-        active_handle = MagicMock()
+        locked_handle = MagicMock()
         with (
             patch("consolidation_memory.server.os.getpid", return_value=222),
             patch("consolidation_memory.server.os.getppid", return_value=111),
             patch(
                 "consolidation_memory.server._open_singleton_lock_handle",
-                side_effect=[stale_handle, active_handle],
+                return_value=locked_handle,
             ),
             patch(
                 "consolidation_memory.server._try_lock_singleton_handle",
-                side_effect=[False, True],
+                return_value=False,
             ),
             patch(
                 "consolidation_memory.server._read_singleton_metadata",
@@ -435,23 +436,13 @@ class TestMCPServerLifecycle:
             ),
             patch(
                 "consolidation_memory.server._process_exists",
-                side_effect=[True, False],
+                return_value=True,
             ),
-            patch("consolidation_memory.server._terminate_process") as mock_terminate,
-            patch(
-                "consolidation_memory.server._write_singleton_metadata",
-            ) as mock_write_metadata,
-            patch("consolidation_memory.server._unlock_singleton_handle") as mock_unlock,
         ):
-            guard = server._acquire_parent_scoped_stdio_singleton_guard("default")
-            assert guard is not None
-            guard.release()
+            with pytest.raises(RuntimeError, match="already running"):
+                server._acquire_parent_scoped_stdio_singleton_guard("default")
 
-        mock_terminate.assert_called_once_with(333)
-        stale_handle.close.assert_called_once_with()
-        mock_write_metadata.assert_called_once()
-        mock_unlock.assert_called_once_with(active_handle)
-        active_handle.close.assert_called_once_with()
+        locked_handle.close.assert_called_once_with()
 
     def test_safe_process_int_rejects_non_pid_values(self):
         import consolidation_memory.server as server
@@ -479,6 +470,38 @@ class TestMCPServerLifecycle:
             server._terminate_process(99)
 
         mock_kill.assert_called_once_with(99, server.signal.SIGTERM)
+
+    def test_runtime_has_background_activity_detects_consolidation_future(self):
+        import consolidation_memory.server as server
+
+        client = MagicMock()
+        future = MagicMock()
+        future.done.return_value = False
+        client._consolidation_future = future
+        client._consolidation_lock = threading.Lock()
+
+        with (
+            patch.object(server, "_warmup_task", None),
+            patch.object(server._runtime, "_client", client),
+            patch.object(server._runtime, "_client_initializing", False),
+        ):
+            assert server._runtime_has_background_activity() is True
+
+    def test_runtime_has_background_activity_returns_false_when_idle(self):
+        import consolidation_memory.server as server
+
+        client = MagicMock()
+        future = MagicMock()
+        future.done.return_value = True
+        client._consolidation_future = future
+        client._consolidation_lock = threading.Lock()
+
+        with (
+            patch.object(server, "_warmup_task", None),
+            patch.object(server._runtime, "_client", client),
+            patch.object(server._runtime, "_client_initializing", False),
+        ):
+            assert server._runtime_has_background_activity() is False
 
 
 class TestMCPRecallTool:

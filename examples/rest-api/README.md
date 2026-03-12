@@ -16,6 +16,10 @@ the client:
 export CONSOLIDATION_MEMORY_REST_AUTH_TOKEN="change-me"
 ```
 
+```powershell
+$env:CONSOLIDATION_MEMORY_REST_AUTH_TOKEN = "change-me"
+```
+
 Then run:
 
 ```bash

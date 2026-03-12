@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import json
 import logging
 import posixpath
 import subprocess  # nosec B404
 import threading
+from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -18,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 _GIT_COMMAND_TIMEOUT_SECONDS = 15.0
 _MAX_CHANGED_FILES = 2000
-_DriftRunKey = tuple[str, str]
+_DriftRunKey = tuple[str, str, str]
 _drift_singleflight_lock = threading.Lock()
 _drift_singleflight: dict[_DriftRunKey, concurrent.futures.Future[DriftOutput]] = {}
 
@@ -137,16 +139,31 @@ def _to_path_anchors(paths: Iterable[str]) -> list[DriftAnchor]:
     return anchors
 
 
-def _drift_run_key(repo_dir: Path, base_ref: str | None) -> _DriftRunKey:
-    return (repo_dir.as_posix(), (base_ref or "").strip())
+def _scope_fingerprint(scope: Mapping[str, Any] | None) -> str:
+    if scope is None:
+        return ""
+    normalized = {
+        str(key): None if value is None else str(value)
+        for key, value in sorted(scope.items(), key=lambda item: str(item[0]))
+    }
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+
+def _drift_run_key(
+    repo_dir: Path,
+    base_ref: str | None,
+    scope: Mapping[str, Any] | None,
+) -> _DriftRunKey:
+    return (repo_dir.as_posix(), (base_ref or "").strip(), _scope_fingerprint(scope))
 
 
 def _acquire_drift_future(
     *,
     repo_dir: Path,
     base_ref: str | None,
+    scope: Mapping[str, Any] | None,
 ) -> tuple[concurrent.futures.Future[DriftOutput], bool]:
-    key = _drift_run_key(repo_dir, base_ref)
+    key = _drift_run_key(repo_dir, base_ref, scope)
     with _drift_singleflight_lock:
         existing = _drift_singleflight.get(key)
         if existing is not None:
@@ -160,9 +177,10 @@ def _release_drift_future(
     *,
     repo_dir: Path,
     base_ref: str | None,
+    scope: Mapping[str, Any] | None,
     future: concurrent.futures.Future[DriftOutput],
 ) -> None:
-    key = _drift_run_key(repo_dir, base_ref)
+    key = _drift_run_key(repo_dir, base_ref, scope)
     with _drift_singleflight_lock:
         current = _drift_singleflight.get(key)
         if current is future:
@@ -176,6 +194,7 @@ def _copy_drift_output(result: DriftOutput) -> DriftOutput:
 def map_changed_files_to_claims(
     changed_files: Sequence[str],
     repo_path: str | PathLike[str] | None = None,
+    scope: Mapping[str, Any] | None = None,
 ) -> tuple[list[DriftAnchor], dict[str, dict[str, Any]], dict[str, set[tuple[str, str]]]]:
     """Map changed file paths to claims linked through path anchors."""
     from consolidation_memory.database import get_claims_by_anchor_values
@@ -208,6 +227,7 @@ def map_changed_files_to_claims(
             anchor_type="path",
             anchor_values=chunk,
             include_expired=False,
+            scope=scope,
         )
         for row in rows:
             claim_id = str(row.get("id") or "")
@@ -227,6 +247,7 @@ def _detect_code_drift_once(
     *,
     base_ref: str | None,
     repo_dir: Path,
+    scope: Mapping[str, Any] | None,
 ) -> DriftOutput:
     from consolidation_memory.database import insert_claim_events, mark_claims_challenged_by_ids
 
@@ -235,6 +256,7 @@ def _detect_code_drift_once(
     checked_anchors, claim_rows, matched_anchor_pairs = map_changed_files_to_claims(
         changed_files=changed_files,
         repo_path=repo_dir,
+        scope=scope,
     )
 
     impacted_claim_ids = sorted(claim_rows.keys())
@@ -304,14 +326,29 @@ def _detect_code_drift_once(
 def detect_code_drift(
     base_ref: str | None = None,
     repo_path: str | PathLike[str] | None = None,
+    scope: Mapping[str, Any] | None = None,
 ) -> DriftOutput:
     """Detect code drift and challenge impacted claims.
 
-    Calls for the same `(repo_path, base_ref)` share a single in-flight run so
-    concurrent agents do not duplicate expensive git and DB work.
+    Calls for the same `(repo_path, base_ref, scope)` share a single in-flight
+    run so concurrent agents do not duplicate expensive git and DB work.
     """
     repo_dir = _resolve_repo_dir(repo_path)
-    run_future, is_owner = _acquire_drift_future(repo_dir=repo_dir, base_ref=base_ref)
+    effective_scope: Mapping[str, Any]
+    if scope is None:
+        from consolidation_memory.config import get_active_project
+
+        effective_scope = {
+            "namespace_slug": "default",
+            "project_slug": get_active_project(),
+        }
+    else:
+        effective_scope = scope
+    run_future, is_owner = _acquire_drift_future(
+        repo_dir=repo_dir,
+        base_ref=base_ref,
+        scope=effective_scope,
+    )
 
     if not is_owner:
         logger.info(
@@ -322,7 +359,7 @@ def detect_code_drift(
         return _copy_drift_output(run_future.result())
 
     try:
-        result = _detect_code_drift_once(base_ref=base_ref, repo_dir=repo_dir)
+        result = _detect_code_drift_once(base_ref=base_ref, repo_dir=repo_dir, scope=effective_scope)
     except Exception as exc:
         run_future.set_exception(exc)
         raise
@@ -333,6 +370,7 @@ def detect_code_drift(
         _release_drift_future(
             repo_dir=repo_dir,
             base_ref=base_ref,
+            scope=effective_scope,
             future=run_future,
         )
 

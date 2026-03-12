@@ -710,7 +710,12 @@ class MemoryClient:
         resolved_scope: ResolvedScopeEnvelope,
     ) -> StoreResult:
         """Store a memory episode with resolved canonical scope."""
-        from consolidation_memory.database import insert_episode, get_episode, hard_delete_episode
+        from consolidation_memory.database import (
+            get_episode,
+            hard_delete_episode,
+            insert_episode,
+            mark_episode_indexed,
+        )
         from consolidation_memory.backends import encode_documents
         from consolidation_memory.config import get_config
 
@@ -773,10 +778,12 @@ class MemoryClient:
             tags=tags,
             surprise_score=max(0.0, min(1.0, surprise)),
             scope=scope_row,
+            indexed=False,
         )
 
         try:
             self._vector_store.add(episode_id, embedding)
+            mark_episode_indexed([episode_id])
         except Exception as e:
             # Hard-delete (not soft-delete) so dedup checks don't still find this orphan
             hard_delete_episode(episode_id)
@@ -854,7 +861,12 @@ class MemoryClient:
         Returns:
             BatchStoreResult with per-episode status.
         """
-        from consolidation_memory.database import insert_episode, get_episode, hard_delete_episode
+        from consolidation_memory.database import (
+            get_episode,
+            hard_delete_episode,
+            insert_episode,
+            mark_episode_indexed,
+        )
         from consolidation_memory.backends import encode_documents
         from consolidation_memory.config import get_config
         import numpy as np
@@ -972,6 +984,7 @@ class MemoryClient:
                 tags=item["tags"],
                 surprise_score=item["surprise"],
                 scope=scope_row,
+                indexed=False,
             )
 
             pending_ids.append(episode_id)
@@ -991,6 +1004,7 @@ class MemoryClient:
             try:
                 emb_matrix = np.stack(pending_embs)
                 self._vector_store.add_batch(pending_ids, emb_matrix)
+                mark_episode_indexed(pending_ids)
                 batch_add_succeeded = True
             except Exception as e:
                 # Rollback all DB inserts from this batch
@@ -1291,10 +1305,15 @@ class MemoryClient:
     ) -> DriftOutput:
         """Canonical drift detection/challenge entrypoint for all adapters."""
         self._ensure_open()
+        resolved_scope = self.resolve_scope()
         result = self._query_service.detect_drift(
             DriftQuery(
                 base_ref=base_ref,
                 repo_path=repo_path,
+                scope={
+                    "namespace_slug": resolved_scope.namespace.slug,
+                    "project_slug": resolved_scope.project.slug,
+                },
             )
         )
         logger.info(

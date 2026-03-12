@@ -318,7 +318,18 @@ class CanonicalQueryService:
                 continue
 
             term_score = (term_hits / len(query_terms)) if query_terms else 0.0
-            confidence = float(claim.get("confidence", 0.8) or 0.8)
+            raw_confidence = claim.get("confidence", 0.8)
+            if isinstance(raw_confidence, bool):
+                confidence = 0.8
+            elif isinstance(raw_confidence, (int, float)):
+                confidence = float(raw_confidence)
+            elif isinstance(raw_confidence, str):
+                try:
+                    confidence = float(raw_confidence)
+                except ValueError:
+                    confidence = 0.8
+            else:
+                confidence = 0.8
             relevance = (phrase_hit + term_score) * (0.5 + 0.5 * confidence)
 
             ranked = dict(claim)

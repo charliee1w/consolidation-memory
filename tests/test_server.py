@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import importlib
 import inspect
 import json
 import threading
@@ -23,6 +24,36 @@ def _patched_server_runtime():
             yield server, runtime
         finally:
             runtime.shutdown()
+
+
+class TestServerEnvParsing:
+    def test_server_module_uses_defaults_when_numeric_env_values_are_invalid(self, monkeypatch):
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "nan")
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS", "not-a-float")
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", "inf")
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "")
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_MCP_BLOCKING_WORKERS", "many")
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS", "nan")
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_IDLE_CHECK_INTERVAL_SECONDS", "inf")
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_WARMUP_START_DELAY_SECONDS", "whoops")
+        monkeypatch.setenv(
+            "CONSOLIDATION_MEMORY_STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS",
+            "",
+        )
+
+        import consolidation_memory.server as server
+
+        server = importlib.reload(server)
+
+        assert server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS == 90.0
+        assert server._MEMORY_RECALL_TIMEOUT_SECONDS == 45.0
+        assert server._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS == 10.0
+        assert server._CLIENT_INIT_TIMEOUT_SECONDS == 45.0
+        assert server._MCP_BLOCKING_WORKERS == 16
+        assert server._IDLE_TIMEOUT_SECONDS == 900.0
+        assert server._IDLE_CHECK_INTERVAL_SECONDS == 15.0
+        assert server._WARMUP_START_DELAY_SECONDS == 0.25
+        assert server._STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS == 10.0
 
 
 class TestMCPDetectDriftTool:
@@ -421,6 +452,33 @@ class TestMCPServerLifecycle:
         mock_write_metadata.assert_called_once()
         mock_unlock.assert_called_once_with(active_handle)
         active_handle.close.assert_called_once_with()
+
+    def test_safe_process_int_rejects_non_pid_values(self):
+        import consolidation_memory.server as server
+
+        assert server._safe_process_int(True) is None
+        assert server._safe_process_int(0) is None
+        assert server._safe_process_int(-5) is None
+        assert server._safe_process_int(12.5) is None
+        assert server._safe_process_int("  ") is None
+        assert server._safe_process_int("12.5") is None
+        assert server._safe_process_int("0") is None
+        assert server._safe_process_int("123") == 123
+
+    def test_terminate_process_skips_reserved_and_parent_pids(self):
+        import consolidation_memory.server as server
+
+        with (
+            patch("consolidation_memory.server.os.getpid", return_value=50),
+            patch("consolidation_memory.server.os.getppid", return_value=40),
+            patch("consolidation_memory.server.os.kill") as mock_kill,
+        ):
+            server._terminate_process(1)
+            server._terminate_process(50)
+            server._terminate_process(40)
+            server._terminate_process(99)
+
+        mock_kill.assert_called_once_with(99, server.signal.SIGTERM)
 
 
 class TestMCPRecallTool:

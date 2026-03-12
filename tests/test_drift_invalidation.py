@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 
 import pytest
 
@@ -186,12 +188,79 @@ class TestDriftDetection:
             "consolidation_memory.database.mark_claims_challenged_by_ids",
             fake_mark_claims_challenged_by_ids,
         )
+        captured_events: dict[str, list[dict[str, object]]] = {}
         monkeypatch.setattr(
-            "consolidation_memory.database.insert_claim_event",
-            lambda **kwargs: "event-id",
+            "consolidation_memory.database.insert_claim_events",
+            lambda events: captured_events.setdefault(
+                "events", [dict(event) for event in events]
+            ),
         )
 
         result = drift.detect_code_drift(base_ref="origin/main", repo_path=tmp_data_dir)
 
         assert called["claim_ids"] == ["claim-a", "claim-b"]
         assert result["challenged_claim_ids"] == ["claim-a"]
+        assert [event["claim_id"] for event in captured_events["events"]] == [
+            "claim-a",
+            "claim-b",
+        ]
+
+    def test_detect_code_drift_singleflights_concurrent_calls(self, monkeypatch, tmp_data_dir):
+        from consolidation_memory import drift
+
+        # Keep only one expensive drift run active for identical scope/base_ref.
+        call_count = 0
+        call_count_lock = threading.Lock()
+        first_call_entered = threading.Event()
+        unblock_first_call = threading.Event()
+
+        def fake_get_changed_files(base_ref=None, repo_path=None):
+            del base_ref, repo_path
+            nonlocal call_count
+            with call_count_lock:
+                call_count += 1
+                call_index = call_count
+            if call_index == 1:
+                first_call_entered.set()
+                assert unblock_first_call.wait(timeout=2.0)
+            return ["src/app.py"]
+
+        monkeypatch.setattr(drift, "get_changed_files", fake_get_changed_files)
+        monkeypatch.setattr(
+            drift,
+            "map_changed_files_to_claims",
+            lambda changed_files, repo_path=None: (
+                [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+                {},
+                {},
+            ),
+        )
+
+        results: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+
+        def _run_detect() -> None:
+            try:
+                results.append(
+                    drift.detect_code_drift(base_ref="origin/main", repo_path=tmp_data_dir)
+                )
+            except BaseException as exc:  # pragma: no cover - defensive capture
+                errors.append(exc)
+
+        first = threading.Thread(target=_run_detect)
+        second = threading.Thread(target=_run_detect)
+        first.start()
+        assert first_call_entered.wait(timeout=2.0)
+        second.start()
+        time.sleep(0.05)
+        unblock_first_call.set()
+
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert not errors
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert call_count == 1
+        assert len(results) == 2
+        assert results[0] == results[1]

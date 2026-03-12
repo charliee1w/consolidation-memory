@@ -93,6 +93,22 @@ def _validate_content_type(value: object, *, field_name: str = "content_type") -
     return value
 
 
+def _validate_content_type_list(field_name: str, value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of strings")
+    validated: list[str] = []
+    for index, item in enumerate(value):
+        validated.append(
+            _validate_content_type(
+                item,
+                field_name=f"{field_name}[{index}]",
+            )
+        )
+    return validated
+
+
 def _validate_tags(value: object) -> list[str] | None:
     if value is None:
         return None
@@ -132,6 +148,12 @@ def _validate_bounded_int(
         raise ValueError(f"{field_name} must be an integer between {minimum} and {maximum}")
     if value < minimum or value > maximum:
         raise ValueError(f"{field_name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _validate_bool(field_name: str, value: object) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
     return value
 
 
@@ -264,12 +286,21 @@ def execute_tool_call(
         recall_result = client.query_recall(
             query=query,
             n_results=n_results,
-            include_knowledge=arguments.get("include_knowledge", True),
-            content_types=arguments.get("content_types"),
+            include_knowledge=_validate_bool(
+                "include_knowledge",
+                arguments.get("include_knowledge", True),
+            ),
+            content_types=_validate_content_type_list(
+                "content_types",
+                arguments.get("content_types"),
+            ),
             tags=_validate_tags(arguments.get("tags")),
             after=_validate_optional_text("after", arguments.get("after"), max_length=64),
             before=_validate_optional_text("before", arguments.get("before"), max_length=64),
-            include_expired=arguments.get("include_expired", False),
+            include_expired=_validate_bool(
+                "include_expired",
+                arguments.get("include_expired", False),
+            ),
             as_of=_validate_optional_text("as_of", arguments.get("as_of"), max_length=64),
             scope=_validate_scope(arguments.get("scope")),
         )
@@ -285,7 +316,10 @@ def execute_tool_call(
                 max_length=_MAX_QUERY_LENGTH,
                 allow_empty=False,
             ),
-            content_types=arguments.get("content_types"),
+            content_types=_validate_content_type_list(
+                "content_types",
+                arguments.get("content_types"),
+            ),
             tags=_validate_tags(arguments.get("tags")),
             after=_validate_optional_text("after", arguments.get("after"), max_length=64),
             before=_validate_optional_text("before", arguments.get("before"), max_length=64),

@@ -2764,6 +2764,47 @@ def insert_claim_event(
     return eid
 
 
+def insert_claim_events(events: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Insert multiple claim lifecycle events in a single transaction."""
+    if not events:
+        return []
+
+    now = _now()
+    normalized_rows: list[tuple[str, str, str, str | None, str]] = []
+    inserted_ids: list[str] = []
+    for event in events:
+        claim_id = str(event.get("claim_id") or "").strip()
+        event_type = str(event.get("event_type") or "").strip()
+        if not claim_id or not event_type:
+            continue
+
+        event_id = str(event.get("id") or uuid.uuid4())
+        details_raw = event.get("details")
+        details_text = (
+            details_raw
+            if isinstance(details_raw, str)
+            else (json.dumps(details_raw) if details_raw is not None else None)
+        )
+        created_at_raw = event.get("created_at")
+        created_at = str(created_at_raw) if created_at_raw is not None else now
+
+        normalized_rows.append((event_id, claim_id, event_type, details_text, created_at))
+        inserted_ids.append(event_id)
+
+    if not normalized_rows:
+        return []
+
+    with get_connection() as conn:
+        conn.executemany(
+            """INSERT INTO claim_events
+               (id, claim_id, event_type, details, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            normalized_rows,
+        )
+
+    return inserted_ids
+
+
 def insert_episode_anchors(episode_id: str, anchors: Sequence[Mapping[str, Any]]) -> list[str]:
     """Insert anchors for an episode. Duplicate anchors are ignored."""
     if not anchors:

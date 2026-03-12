@@ -12,6 +12,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import os
 import signal
 import sys
@@ -39,32 +40,10 @@ logger = logging.getLogger("consolidation_memory")
 _T = TypeVar("_T")
 
 _MAX_BATCH_SIZE = 100
-_MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "90")
-)
-_MEMORY_RECALL_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS", "45")
-)
-_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", "10")
-)
-_CLIENT_INIT_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "45")
-)
-_MCP_BLOCKING_WORKERS = max(
-    1,
-    int(os.environ.get("CONSOLIDATION_MEMORY_MCP_BLOCKING_WORKERS", "16")),
-)
 _WARMUP_ON_START = os.environ.get(
     "CONSOLIDATION_MEMORY_WARMUP_ON_START",
     "1",
 ).strip().lower() not in {"0", "false", "no", "off"}
-_IDLE_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS", "900")
-)
-_IDLE_CHECK_INTERVAL_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_IDLE_CHECK_INTERVAL_SECONDS", "15")
-)
 _DUMP_STACKS_ON_CLIENT_INIT_TIMEOUT = os.environ.get(
     "CONSOLIDATION_MEMORY_DUMP_STACKS_ON_CLIENT_INIT_TIMEOUT",
     "0",
@@ -73,15 +52,74 @@ _PRELOAD_NUMERIC_BACKENDS_ON_START = os.environ.get(
     "CONSOLIDATION_MEMORY_PRELOAD_NUMERIC_BACKENDS_ON_START",
     "1",
 ).strip().lower() not in {"0", "false", "no", "off"}
-_WARMUP_START_DELAY_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_WARMUP_START_DELAY_SECONDS", "0.25")
-)
 _STDIO_SINGLETON_ENABLED = os.environ.get(
     "CONSOLIDATION_MEMORY_STDIO_SINGLETON",
     "1",
 ).strip().lower() not in {"0", "false", "no", "off"}
-_STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS", "10")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    token = raw.strip()
+    if not token:
+        return default
+    try:
+        value = float(token)
+    except ValueError:
+        return default
+    return value if math.isfinite(value) else default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    token = raw.strip()
+    if not token:
+        return default
+    try:
+        return int(token)
+    except ValueError:
+        return default
+
+
+_MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS",
+    90.0,
+)
+_MEMORY_RECALL_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS",
+    45.0,
+)
+_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS",
+    10.0,
+)
+_CLIENT_INIT_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS",
+    45.0,
+)
+_MCP_BLOCKING_WORKERS = max(
+    1,
+    _env_int("CONSOLIDATION_MEMORY_MCP_BLOCKING_WORKERS", 16),
+)
+_IDLE_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS",
+    900.0,
+)
+_IDLE_CHECK_INTERVAL_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_IDLE_CHECK_INTERVAL_SECONDS",
+    15.0,
+)
+_WARMUP_START_DELAY_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_WARMUP_START_DELAY_SECONDS",
+    0.25,
+)
+_STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS",
+    10.0,
 )
 
 _runtime = MemoryRuntime(max_workers=_MCP_BLOCKING_WORKERS)
@@ -259,19 +297,20 @@ class _StdioSingletonGuard:
 
 def _safe_process_int(value: object) -> int | None:
     if isinstance(value, bool):
-        return int(value)
+        return None
     if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
+        return value if value > 0 else None
     if isinstance(value, str):
         cleaned = value.strip()
         if not cleaned:
             return None
+        if not cleaned.isdigit():
+            return None
         try:
-            return int(cleaned)
+            parsed = int(cleaned)
         except ValueError:
             return None
+        return parsed if parsed > 0 else None
     return None
 
 
@@ -359,7 +398,7 @@ def _process_exists(pid: int) -> bool:
 
 
 def _terminate_process(pid: int) -> None:
-    if pid <= 0 or pid == os.getpid():
+    if pid <= 1 or pid in {os.getpid(), os.getppid()}:
         return
     os.kill(pid, signal.SIGTERM)
 

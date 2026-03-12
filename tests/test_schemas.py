@@ -658,3 +658,55 @@ class TestDispatch:
         assert "error" in result
         assert "Maximum is 10000 characters" in result["error"]
         client.query_search_claims.assert_not_called()
+
+    def test_dispatch_recall_rejects_non_boolean_flags(self):
+        client = MagicMock()
+
+        include_knowledge_error = dispatch_tool_call(
+            client,
+            "memory_recall",
+            {"query": "test", "include_knowledge": "true"},
+        )
+        include_expired_error = dispatch_tool_call(
+            client,
+            "memory_recall",
+            {"query": "test", "include_expired": 1},
+        )
+
+        assert include_knowledge_error == {"error": "include_knowledge must be a boolean"}
+        assert include_expired_error == {"error": "include_expired must be a boolean"}
+        client.query_recall.assert_not_called()
+
+    def test_dispatch_recall_rejects_invalid_content_type_filters(self):
+        client = MagicMock()
+
+        not_list = dispatch_tool_call(
+            client,
+            "memory_recall",
+            {"query": "test", "content_types": "fact"},
+        )
+        invalid_entry = dispatch_tool_call(
+            client,
+            "memory_recall",
+            {"query": "test", "content_types": ["fact", "invalid"]},
+        )
+
+        assert not_list == {"error": "content_types must be a list of strings"}
+        assert invalid_entry == {
+            "error": "content_types[1] must be one of: exchange, fact, preference, solution"
+        }
+        client.query_recall.assert_not_called()
+
+    def test_dispatch_search_rejects_invalid_content_type_filters(self):
+        client = MagicMock()
+
+        result = dispatch_tool_call(
+            client,
+            "memory_search",
+            {"content_types": ["exchange", "invalid"]},
+        )
+
+        assert result == {
+            "error": "content_types[1] must be one of: exchange, fact, preference, solution"
+        }
+        client.query_search.assert_not_called()

@@ -1,5 +1,7 @@
 """Security-focused tests for REST host binding and bearer auth."""
 
+import importlib
+
 import pytest
 
 try:
@@ -90,6 +92,51 @@ def test_rest_auth_accepts_valid_bearer_token(monkeypatch):
             headers={"Authorization": "Bearer test-token"},
         )
     assert response.status_code == 200
+
+
+def test_rest_auth_accepts_case_insensitive_bearer_scheme(monkeypatch):
+    from consolidation_memory.rest import create_app
+
+    monkeypatch.setenv("CONSOLIDATION_MEMORY_REST_AUTH_TOKEN", "test-token")
+    monkeypatch.delenv("CONSOLIDATION_MEMORY_REST_ALLOW_PUBLIC_BIND", raising=False)
+
+    with TestClient(create_app()) as client:
+        response = client.get(
+            "/memory/status",
+            headers={"Authorization": "bearer test-token"},
+        )
+    assert response.status_code == 200
+
+
+def test_rest_auth_rejects_malformed_bearer_header(monkeypatch):
+    from consolidation_memory.rest import create_app
+
+    monkeypatch.setenv("CONSOLIDATION_MEMORY_REST_AUTH_TOKEN", "test-token")
+    monkeypatch.delenv("CONSOLIDATION_MEMORY_REST_ALLOW_PUBLIC_BIND", raising=False)
+
+    with TestClient(create_app()) as client:
+        response = client.get(
+            "/memory/status",
+            headers={"Authorization": "Bearer test-token extra"},
+        )
+    assert response.status_code == 401
+    assert response.headers.get("www-authenticate") == "Bearer"
+
+
+def test_rest_module_uses_defaults_when_numeric_env_values_are_invalid(monkeypatch):
+    monkeypatch.setenv("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "nan")
+    monkeypatch.setenv("CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS", "not-a-float")
+    monkeypatch.setenv("CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", "inf")
+    monkeypatch.setenv("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "")
+
+    import consolidation_memory.rest as rest
+
+    rest = importlib.reload(rest)
+
+    assert rest._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS == 180.0
+    assert rest._MEMORY_RECALL_TIMEOUT_SECONDS == 45.0
+    assert rest._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS == 10.0
+    assert rest._CLIENT_INIT_TIMEOUT_SECONDS == 45.0
 
 
 def test_health_remains_open_when_auth_enabled(monkeypatch):

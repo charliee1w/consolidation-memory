@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import math
 import os
 import re
 import secrets
@@ -50,22 +51,42 @@ _MAX_QUERY_LENGTH = 10_000
 _MAX_TOPIC_LENGTH = 500
 _MAX_FILENAME_LENGTH = 255
 _MAX_PATH_LENGTH = 4096
-_MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "180")
-)
-_MEMORY_RECALL_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS", "45")
-)
-_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", "10")
-)
-_CLIENT_INIT_TIMEOUT_SECONDS = float(
-    os.environ.get("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "45")
-)
 _REST_AUTH_TOKEN_ENV = "CONSOLIDATION_MEMORY_REST_AUTH_TOKEN"  # nosec B105
 _REST_ALLOW_PUBLIC_BIND_ENV = "CONSOLIDATION_MEMORY_REST_ALLOW_PUBLIC_BIND"
 _AUTH_EXEMPT_PATHS = frozenset({"/health"})
 _SYNTHETIC_LOOPBACK_HOSTS = frozenset({"testserver"})
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    token = raw.strip()
+    if not token:
+        return default
+    try:
+        value = float(token)
+    except ValueError:
+        return default
+    return value if math.isfinite(value) else default
+
+
+_MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS",
+    180.0,
+)
+_MEMORY_RECALL_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS",
+    45.0,
+)
+_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS",
+    10.0,
+)
+_CLIENT_INIT_TIMEOUT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS",
+    45.0,
+)
 
 
 def _drift_timeout_seconds() -> float:
@@ -163,6 +184,16 @@ def _public_bind_detail() -> str:
 
 # Reject filenames that attempt path traversal or contain path separators.
 _UNSAFE_FILENAME_RE = re.compile(r"[/\\]|\.\.")
+
+
+def _extract_bearer_token(auth_header: str) -> str | None:
+    parts = auth_header.strip().split()
+    if len(parts) != 2:
+        return None
+    scheme, token = parts
+    if scheme.lower() != "bearer":
+        return None
+    return token or None
 
 
 # ── Pydantic request models ─────────────────────────────────────────────────
@@ -324,14 +355,14 @@ def _install_auth_middleware(app: FastAPI) -> None:
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        provided = _extract_bearer_token(auth_header)
+        if provided is None:
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Missing or invalid Authorization header"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        provided = auth_header[len("Bearer ") :].strip()
-        if not provided or not secrets.compare_digest(provided, token):
+        if not secrets.compare_digest(provided, token):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid bearer token"},

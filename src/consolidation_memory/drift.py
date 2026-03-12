@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import copy
 import logging
 import posixpath
 import subprocess  # nosec B404
+import threading
 from os import PathLike
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -15,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 _GIT_COMMAND_TIMEOUT_SECONDS = 15.0
 _MAX_CHANGED_FILES = 2000
+_DriftRunKey = tuple[str, str]
+_drift_singleflight_lock = threading.Lock()
+_drift_singleflight: dict[_DriftRunKey, concurrent.futures.Future[DriftOutput]] = {}
 
 
 def _chunked(values: Sequence[str], size: int) -> Iterable[list[str]]:
@@ -131,6 +137,42 @@ def _to_path_anchors(paths: Iterable[str]) -> list[DriftAnchor]:
     return anchors
 
 
+def _drift_run_key(repo_dir: Path, base_ref: str | None) -> _DriftRunKey:
+    return (repo_dir.as_posix(), (base_ref or "").strip())
+
+
+def _acquire_drift_future(
+    *,
+    repo_dir: Path,
+    base_ref: str | None,
+) -> tuple[concurrent.futures.Future[DriftOutput], bool]:
+    key = _drift_run_key(repo_dir, base_ref)
+    with _drift_singleflight_lock:
+        existing = _drift_singleflight.get(key)
+        if existing is not None:
+            return existing, False
+        future: concurrent.futures.Future[DriftOutput] = concurrent.futures.Future()
+        _drift_singleflight[key] = future
+        return future, True
+
+
+def _release_drift_future(
+    *,
+    repo_dir: Path,
+    base_ref: str | None,
+    future: concurrent.futures.Future[DriftOutput],
+) -> None:
+    key = _drift_run_key(repo_dir, base_ref)
+    with _drift_singleflight_lock:
+        current = _drift_singleflight.get(key)
+        if current is future:
+            _drift_singleflight.pop(key, None)
+
+
+def _copy_drift_output(result: DriftOutput) -> DriftOutput:
+    return copy.deepcopy(result)
+
+
 def map_changed_files_to_claims(
     changed_files: Sequence[str],
     repo_path: str | PathLike[str] | None = None,
@@ -181,14 +223,13 @@ def map_changed_files_to_claims(
     return checked_anchors, claim_rows, matched_anchors
 
 
-def detect_code_drift(
-    base_ref: str | None = None,
-    repo_path: str | PathLike[str] | None = None,
+def _detect_code_drift_once(
+    *,
+    base_ref: str | None,
+    repo_dir: Path,
 ) -> DriftOutput:
-    """Detect code drift and challenge impacted claims."""
-    from consolidation_memory.database import insert_claim_event, mark_claims_challenged_by_ids
+    from consolidation_memory.database import insert_claim_events, mark_claims_challenged_by_ids
 
-    repo_dir = _resolve_repo_dir(repo_path)
     changed_files = get_changed_files(base_ref=base_ref, repo_path=repo_dir)
 
     checked_anchors, claim_rows, matched_anchor_pairs = map_changed_files_to_claims(
@@ -208,6 +249,8 @@ def detect_code_drift(
     challenged_claim_ids = mark_claims_challenged_by_ids(impacted_claim_ids)
     challenged_ids_set = set(challenged_claim_ids)
 
+    changed_anchor_values = [anchor["anchor_value"] for anchor in checked_anchors]
+    drift_events: list[dict[str, Any]] = []
     impacts: list[DriftClaimImpact] = []
     for claim_id in impacted_claim_ids:
         previous_status = str(claim_rows[claim_id].get("status") or "")
@@ -227,17 +270,20 @@ def detect_code_drift(
                 "matched_anchors": matched_anchors,
             }
         )
-
-        insert_claim_event(
-            claim_id=claim_id,
-            event_type="code_drift_detected",
-            details={
-                "base_ref": base_ref,
-                "changed_files": [anchor["anchor_value"] for anchor in checked_anchors],
-                "matched_anchors": matched_anchors,
-                "new_status": new_status,
-            },
+        drift_events.append(
+            {
+                "claim_id": claim_id,
+                "event_type": "code_drift_detected",
+                "details": {
+                    "base_ref": base_ref,
+                    "changed_files": changed_anchor_values,
+                    "matched_anchors": matched_anchors,
+                    "new_status": new_status,
+                },
+            }
         )
+
+    insert_claim_events(drift_events)
 
     logger.info(
         "code drift detected base_ref=%r changed_paths=%d impacted_claims=%d challenged_claims=%d",
@@ -253,6 +299,42 @@ def detect_code_drift(
         "challenged_claim_ids": challenged_claim_ids,
         "impacts": impacts,
     }
+
+
+def detect_code_drift(
+    base_ref: str | None = None,
+    repo_path: str | PathLike[str] | None = None,
+) -> DriftOutput:
+    """Detect code drift and challenge impacted claims.
+
+    Calls for the same `(repo_path, base_ref)` share a single in-flight run so
+    concurrent agents do not duplicate expensive git and DB work.
+    """
+    repo_dir = _resolve_repo_dir(repo_path)
+    run_future, is_owner = _acquire_drift_future(repo_dir=repo_dir, base_ref=base_ref)
+
+    if not is_owner:
+        logger.info(
+            "drift detection already in progress for base_ref=%r repo_path=%s; waiting for shared result",
+            base_ref,
+            repo_dir,
+        )
+        return _copy_drift_output(run_future.result())
+
+    try:
+        result = _detect_code_drift_once(base_ref=base_ref, repo_dir=repo_dir)
+    except Exception as exc:
+        run_future.set_exception(exc)
+        raise
+    else:
+        run_future.set_result(result)
+        return _copy_drift_output(result)
+    finally:
+        _release_drift_future(
+            repo_dir=repo_dir,
+            base_ref=base_ref,
+            future=run_future,
+        )
 
 
 __all__ = [

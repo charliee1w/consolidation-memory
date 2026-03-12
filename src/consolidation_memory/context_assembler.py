@@ -10,6 +10,7 @@ import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import SupportsFloat
 
 import numpy as np
 
@@ -563,10 +564,17 @@ def _select_versioned_topic_snapshot(filepath: Path, as_of_dt: datetime) -> Path
 
 def _coerce_topic_confidence(raw_confidence: object, default: float) -> float:
     """Normalize topic confidence values into a bounded float."""
+    confidence_value: float
     try:
-        return max(0.0, min(1.0, float(raw_confidence)))
+        if isinstance(raw_confidence, str):
+            confidence_value = float(raw_confidence.strip())
+        elif isinstance(raw_confidence, SupportsFloat):
+            confidence_value = float(raw_confidence)
+        else:
+            return default
     except (TypeError, ValueError):
         return default
+    return max(0.0, min(1.0, confidence_value))
 
 
 def _build_topic_snapshot_from_content(

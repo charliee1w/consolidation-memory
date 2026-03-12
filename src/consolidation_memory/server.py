@@ -20,7 +20,7 @@ import threading
 import time
 import traceback
 from contextlib import asynccontextmanager
-from typing import Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 
@@ -96,8 +96,15 @@ _stdio_singleton_guard = None
 
 if os.name == "nt":
     import msvcrt
+    _msvcrt_locking: Callable[[int, int, int], Any] = getattr(msvcrt, "locking")
+    _msvcrt_lk_nblck = int(getattr(msvcrt, "LK_NBLCK"))
+    _msvcrt_lk_unlck = int(getattr(msvcrt, "LK_UNLCK"))
 else:
     import fcntl
+    _fcntl_flock: Callable[[int, int], Any] = getattr(fcntl, "flock")
+    _fcntl_lock_ex = int(getattr(fcntl, "LOCK_EX"))
+    _fcntl_lock_nb = int(getattr(fcntl, "LOCK_NB"))
+    _fcntl_lock_un = int(getattr(fcntl, "LOCK_UN"))
 
 
 def _drift_timeout_seconds() -> float:
@@ -296,9 +303,9 @@ def _try_lock_singleton_handle(handle) -> bool:
                 handle.write(" ")
                 handle.flush()
             handle.seek(0, os.SEEK_SET)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            _msvcrt_locking(handle.fileno(), _msvcrt_lk_nblck, 1)
         else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _fcntl_flock(handle.fileno(), _fcntl_lock_ex | _fcntl_lock_nb)
         return True
     except OSError:
         return False
@@ -308,11 +315,11 @@ def _unlock_singleton_handle(handle) -> None:
     handle.seek(0, os.SEEK_SET)
     if os.name == "nt":
         try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            _msvcrt_locking(handle.fileno(), _msvcrt_lk_unlck, 1)
         except OSError:
             return
     else:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        _fcntl_flock(handle.fileno(), _fcntl_lock_un)
 
 
 def _read_singleton_metadata(handle) -> dict[str, object]:

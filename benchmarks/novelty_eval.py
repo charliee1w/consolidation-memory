@@ -390,7 +390,19 @@ def evaluate_contradiction_evolution(scenario_count: int) -> dict[str, Any]:
 
 def evaluate_temporal_belief_reconstruction(query_limit: int) -> dict[str, Any]:
     from consolidation_memory.client import MemoryClient
-    from consolidation_memory.database import upsert_claim
+    from consolidation_memory.config import get_active_project
+    from consolidation_memory.database import insert_claim_sources, insert_episode, upsert_claim
+
+    benchmark_scope = {
+        "namespace_slug": "default",
+        "project_slug": get_active_project(),
+        "app_client_name": "legacy_client",
+        "app_client_type": "python_sdk",
+    }
+    provenance_episode_id = insert_episode(
+        content="novelty eval temporal belief provenance",
+        scope=benchmark_scope,
+    )
 
     # Seed old/new temporal claim sets.
     old_runtime_ids: set[str] = set()
@@ -411,6 +423,7 @@ def evaluate_temporal_belief_reconstruction(query_limit: int) -> dict[str, Any]:
             valid_from="2025-01-01T00:00:00+00:00",
             valid_until="2025-06-01T00:00:00+00:00",
         )
+        insert_claim_sources(old_id, [{"source_episode_id": provenance_episode_id}])
         upsert_claim(
             claim_id=new_id,
             claim_type="fact",
@@ -418,6 +431,7 @@ def evaluate_temporal_belief_reconstruction(query_limit: int) -> dict[str, Any]:
             payload={"series": "runtime", "era": "new", "idx": i},
             valid_from="2025-07-01T00:00:00+00:00",
         )
+        insert_claim_sources(new_id, [{"source_episode_id": provenance_episode_id}])
 
     for i in range(5):
         old_id = f"temporal-db-old-{i}"
@@ -432,6 +446,7 @@ def evaluate_temporal_belief_reconstruction(query_limit: int) -> dict[str, Any]:
             valid_from="2025-01-01T00:00:00+00:00",
             valid_until="2025-06-01T00:00:00+00:00",
         )
+        insert_claim_sources(old_id, [{"source_episode_id": provenance_episode_id}])
         upsert_claim(
             claim_id=new_id,
             claim_type="fact",
@@ -439,6 +454,7 @@ def evaluate_temporal_belief_reconstruction(query_limit: int) -> dict[str, Any]:
             payload={"series": "db", "era": "new", "idx": i},
             valid_from="2025-07-01T00:00:00+00:00",
         )
+        insert_claim_sources(new_id, [{"source_episode_id": provenance_episode_id}])
 
     all_queries = [
         {

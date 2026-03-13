@@ -157,7 +157,7 @@ class MemoryRuntime:
             return await future
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
+        except asyncio.TimeoutError as exc:
             # If the future is still running (or was cancelled while queued), it can
             # occupy shared pool capacity and cause cascading timeouts.
             if not future.done() or future.cancelled():
@@ -166,7 +166,8 @@ class MemoryRuntime:
                 self._recycle_blocking_executor(
                     reason=f"{func_name} exceeded {timeout_seconds:.3f}s"
                 )
-            raise
+            # Normalize timeout type across Python versions for stable callers/tests.
+            raise TimeoutError() from exc
 
     def get_client(self, *, wait_timeout: float | None = None):
         """Return the process-local client, initializing it lazily once."""

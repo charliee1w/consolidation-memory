@@ -19,6 +19,7 @@ from consolidation_memory.types import DriftAnchor, DriftClaimImpact, DriftOutpu
 logger = logging.getLogger(__name__)
 
 _GIT_COMMAND_TIMEOUT_SECONDS = 15.0
+_GIT_COMMAND_RETRY_TIMEOUT_SECONDS = 45.0
 _MAX_CHANGED_FILES = 2000
 _DriftRunKey = tuple[str, str, str]
 _drift_singleflight_lock = threading.Lock()
@@ -51,19 +52,34 @@ def _resolve_repo_dir(repo_path: str | PathLike[str] | None) -> Path:
 
 def _run_git_lines(repo_dir: Path, git_args: Sequence[str]) -> list[str]:
     cmd = ["git", "-c", f"safe.directory={repo_dir.as_posix()}", *git_args]
-    try:
-        proc = subprocess.run(  # nosec B603
-            cmd,
-            cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"git {' '.join(git_args)} timed out after {_GIT_COMMAND_TIMEOUT_SECONDS:.0f}s"
-        ) from exc
+    proc: subprocess.CompletedProcess[str] | None = None
+    timeouts = (_GIT_COMMAND_TIMEOUT_SECONDS, _GIT_COMMAND_RETRY_TIMEOUT_SECONDS)
+    for idx, timeout_seconds in enumerate(timeouts, start=1):
+        try:
+            proc = subprocess.run(  # nosec B603
+                cmd,
+                cwd=str(repo_dir),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_seconds,
+            )
+            break
+        except subprocess.TimeoutExpired as exc:
+            if idx < len(timeouts):
+                logger.warning(
+                    "git %s timed out after %.0fs (attempt %d/%d); retrying",
+                    " ".join(git_args),
+                    timeout_seconds,
+                    idx,
+                    len(timeouts),
+                )
+                continue
+            raise RuntimeError(
+                f"git {' '.join(git_args)} timed out after {timeout_seconds:.0f}s"
+            ) from exc
+    if proc is None:  # pragma: no cover - defensive
+        raise RuntimeError(f"git {' '.join(git_args)} did not return a process result")
     if proc.returncode != 0:
         details = (proc.stderr or proc.stdout or "").strip()
         if not details:

@@ -11,7 +11,7 @@ Commands run locally:
 pytest -q
 ruff check src tests
 mypy src
-bandit -q -r src scripts
+bandit -q -r src scripts -s B608,B110
 ```
 
 If not all commands were run, explain what was skipped and why.

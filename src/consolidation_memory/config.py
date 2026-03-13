@@ -646,7 +646,7 @@ def set_active_project(name: str | None = None) -> str:
     try:
         from consolidation_memory.database import close_thread_local_connection
         close_thread_local_connection()
-    except Exception:  # nosec B110
+    except Exception:
         # Keep project switching resilient even if DB module isn't initialized.
         pass
     return cfg.active_project
@@ -837,3 +837,4 @@ def _validate_config(c: Config) -> None:
         raise ValueError(
             "Invalid consolidation_memory config:\n  " + "\n  ".join(errors)
         )
+

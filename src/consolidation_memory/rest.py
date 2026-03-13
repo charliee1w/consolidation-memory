@@ -595,7 +595,7 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            fallback_timeout = max(5.0, min(60.0, timeout_seconds))
+            fallback_timeout = max(5.0, min(20.0, timeout_seconds * 0.2))
             if req.base_ref:
                 try:
                     fallback = await runtime.run_blocking(

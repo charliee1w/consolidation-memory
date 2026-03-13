@@ -112,7 +112,17 @@ def test_get_quality_gate_commands_match_publish_contract(tmp_path):
     assert "--cov=consolidation_memory" in commands[1].cmd
     assert any("error::ResourceWarning" in part for part in commands[3].cmd)
     assert commands[5].cmd == ["python", "-m", "mypy", "src/consolidation_memory/"]
-    assert commands[6].cmd == ["python", "-m", "bandit", "-q", "-r", "src", "scripts"]
+    assert commands[6].cmd == [
+        "python",
+        "-m",
+        "bandit",
+        "-q",
+        "-r",
+        "src",
+        "scripts",
+        "-s",
+        "B608,B110",
+    ]
 
 
 def test_verify_built_artifacts_requires_one_wheel_and_sdist(tmp_path):

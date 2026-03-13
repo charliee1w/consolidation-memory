@@ -87,7 +87,7 @@ def _env_int(name: str, default: int) -> int:
 
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS",
-    180.0,
+    90.0,
 )
 _MEMORY_RECALL_TIMEOUT_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS",
@@ -996,7 +996,7 @@ async def memory_detect_drift(
         )
         return json.dumps(result, default=str)
     except asyncio.TimeoutError:
-        fallback_timeout = max(5.0, min(60.0, timeout_seconds))
+        fallback_timeout = max(5.0, min(20.0, timeout_seconds * 0.2))
         if base_ref:
             logger.warning(
                 "memory_detect_drift timed out after %.2fs with base_ref=%r; retrying fallback without base_ref",

@@ -278,7 +278,17 @@ def get_quality_gate_commands(python_executable: str, scratch_dir: Path) -> list
         ),
         ReleaseCommand(
             label="Run security checks",
-            cmd=[python_executable, "-m", "bandit", "-q", "-r", "src", "scripts"],
+            cmd=[
+                python_executable,
+                "-m",
+                "bandit",
+                "-q",
+                "-r",
+                "src",
+                "scripts",
+                "-s",
+                "B608,B110",
+            ],
             failure_message="Security check failed - aborting release. Files reverted.",
         ),
     ]

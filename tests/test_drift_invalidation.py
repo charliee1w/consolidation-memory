@@ -47,6 +47,30 @@ class TestChangedFiles:
         with pytest.raises(RuntimeError, match="timed out"):
             drift._run_git_lines(tmp_path, ["diff", "--name-only"])
 
+    def test_run_git_lines_retries_after_timeout_once(self, monkeypatch, tmp_path):
+        from consolidation_memory import drift
+
+        timeouts_seen: list[float] = []
+
+        def fake_run(*args, **kwargs):
+            del args
+            timeouts_seen.append(float(kwargs["timeout"]))
+            if len(timeouts_seen) == 1:
+                raise subprocess.TimeoutExpired(cmd="git diff --name-only", timeout=1.0)
+            return subprocess.CompletedProcess(
+                args=["git", "diff", "--name-only"],
+                returncode=0,
+                stdout="src/a.py\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(drift.subprocess, "run", fake_run)
+
+        changed = drift._run_git_lines(tmp_path, ["diff", "--name-only"])
+
+        assert changed == ["src/a.py"]
+        assert timeouts_seen == [15.0, 45.0]
+
     def test_get_changed_files_truncates_large_sets(self, monkeypatch, tmp_path):
         from consolidation_memory import drift
 

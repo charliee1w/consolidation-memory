@@ -965,7 +965,7 @@ def _merge_into_existing(
         if non_contradicted_ids:
             placeholders = ",".join("?" for _ in non_contradicted_ids)
             conn.execute(
-                f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",  # nosec B608
+                f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",
                 [now_ts, *non_contradicted_ids],
             )
         inserted_record_ids = insert_knowledge_records(
@@ -1552,3 +1552,4 @@ def _update_index() -> None:
     index_path = get_config().KNOWLEDGE_DIR / "index.md"
     index_path.write_text("\n".join(lines), encoding="utf-8")
     logger.info("Updated index.md with %d topics", len(topics))
+

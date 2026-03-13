@@ -47,7 +47,7 @@ class TestServerEnvParsing:
 
         server = importlib.reload(server)
 
-        assert server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS == 180.0
+        assert server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS == 90.0
         assert server._MEMORY_RECALL_TIMEOUT_SECONDS == 45.0
         assert server._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS == 10.0
         assert server._CLIENT_INIT_TIMEOUT_SECONDS == 45.0

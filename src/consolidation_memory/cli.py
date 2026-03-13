@@ -226,7 +226,7 @@ similarity_threshold = 0.95
     print("\nSetup complete. Run 'consolidation-memory serve' to start.")
 
 
-def cmd_test():
+def cmd_test() -> None:
     """Verify installation works end-to-end."""
     import uuid
     from consolidation_memory.config import get_config
@@ -359,12 +359,12 @@ def cmd_test():
         if test_episode_id and not forgotten:
             try:
                 soft_delete_episode(test_episode_id)
-            except Exception:  # nosec B110
+            except Exception:
                 pass
             if vs:
                 try:
                     vs.remove(test_episode_id)
-                except Exception:  # nosec B110
+                except Exception:
                     pass
 
     # 7. Summary
@@ -772,7 +772,7 @@ def cmd_import(path: str):
             for episode_id in inserted_ids:
                 try:
                     hard_delete_episode(episode_id)
-                except Exception:  # nosec B110
+                except Exception:
                     pass
 
     print(f"\nEpisodes: {imported} imported, {skipped} skipped (already exist), {failed} failed")
@@ -915,7 +915,7 @@ def cmd_import(path: str):
     print("\nImport complete.")
 
 
-def cmd_reindex():
+def cmd_reindex() -> None:
     """Re-embed all episodes with current backend."""
     import logging
     logging.basicConfig(
@@ -1027,7 +1027,7 @@ def cmd_reindex():
     print(f"\nReindex complete: {len(all_ids)} vectors in {dim}-dim index")
 
 
-def cmd_browse():
+def cmd_browse() -> None:
     """List knowledge topics interactively."""
     from consolidation_memory.database import ensure_schema, get_all_knowledge_topics, get_all_active_records
     from consolidation_memory.config import get_config
@@ -1254,3 +1254,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

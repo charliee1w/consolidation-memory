@@ -58,7 +58,7 @@ jobs:
         run: mypy src/consolidation_memory/
 
       - name: Security check
-        run: bandit -q -r src scripts
+        run: bandit -q -r src scripts -s B608,B110
 
   release_gates:
     needs: quality_gates

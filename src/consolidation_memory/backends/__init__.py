@@ -194,7 +194,7 @@ def reset_backends() -> None:
             if backend is not None and hasattr(backend, "close"):
                 try:
                     backend.close()
-                except Exception:  # nosec B110
+                except Exception:
                     pass
         _embedding_backend = None
         _llm_backend = None
@@ -246,3 +246,4 @@ def encode_query(text: str) -> np.ndarray:
 def get_dimension() -> int:
     """Return the embedding dimension."""
     return get_embedding_backend().dimension
+

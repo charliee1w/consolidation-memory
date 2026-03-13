@@ -27,6 +27,7 @@ from collections import deque
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
+from typing import cast
 
 import numpy as np
 
@@ -196,16 +197,8 @@ def _derive_action_key(action_summary: str) -> str:
 
 def _normalize_outcome_type_token(value: str) -> OutcomeType:
     token = str(value or "").strip().lower()
-    if token == "success":
-        return "success"
-    if token == "failure":
-        return "failure"
-    if token == "partial_success":
-        return "partial_success"
-    if token == "reverted":
-        return "reverted"
-    if token == "superseded":
-        return "superseded"
+    if token in OUTCOME_TYPES:
+        return cast(OutcomeType, token)
     raise ValueError(f"outcome_type must be one of: {', '.join(OUTCOME_TYPES)}")
 
 

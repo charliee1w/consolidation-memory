@@ -702,7 +702,7 @@ def get_matching_policy_acl_entries(
         JOIN access_policies p ON p.id = pae.policy_id
         JOIN policy_principals pp ON pp.id = pae.principal_id
         WHERE {where}
-        ORDER BY p.updated_at DESC, pae.updated_at DESC, pae.id ASC"""  # nosec B608
+        ORDER BY p.updated_at DESC, pae.updated_at DESC, pae.id ASC"""
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -720,7 +720,7 @@ def _close_and_untrack_connection(conn: sqlite3.Connection) -> None:
     """Close a cached connection and remove it from global tracking."""
     try:
         conn.close()
-    except Exception:  # nosec B110
+    except Exception:
         pass
     with _conn_list_lock:
         try:
@@ -784,7 +784,7 @@ def close_all_connections() -> None:
         for conn in _all_connections:
             try:
                 conn.close()
-            except Exception:  # nosec B110
+            except Exception:
                 pass
         _all_connections.clear()
     # Also clear this thread's cached reference
@@ -813,7 +813,7 @@ def get_connection():
         if depth == 0:
             try:
                 conn.rollback()
-            except Exception:  # nosec B110
+            except Exception:
                 pass
         raise
     finally:
@@ -1064,7 +1064,7 @@ def _apply_scope_migration(conn: sqlite3.Connection) -> None:
                             THEN ?
                             ELSE project_slug
                         END
-                    )""",  # nosec B608
+                    )""",
             (
                 _DEFAULT_NAMESPACE_SLUG,
                 _DEFAULT_NAMESPACE_SHARING_MODE,
@@ -1353,7 +1353,7 @@ def get_episode(
     where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         row = conn.execute(
-            f"SELECT * FROM episodes WHERE {where_clause}",  # nosec B608
+            f"SELECT * FROM episodes WHERE {where_clause}",
             params,
         ).fetchone()
     return dict(row) if row else None
@@ -1374,7 +1374,7 @@ def get_episodes_batch(
         placeholders = ",".join("?" for _ in episode_ids)
         where_clause = " AND ".join(condition.format(placeholders=placeholders) for condition in conditions)
         rows = conn.execute(
-            f"SELECT * FROM episodes WHERE {where_clause}",  # nosec B608
+            f"SELECT * FROM episodes WHERE {where_clause}",
             episode_ids,
         ).fetchall()
     return {row["id"]: dict(row) for row in rows}
@@ -1406,7 +1406,7 @@ def mark_episode_indexed(
         cursor = conn.execute(
             f"""UPDATE episodes
                 SET indexed = ?
-                WHERE id IN ({placeholders})""",  # nosec B608
+                WHERE id IN ({placeholders})""",
             [1 if indexed else 0, *episode_ids],
         )
     return int(cursor.rowcount or 0)
@@ -1422,7 +1422,7 @@ def get_existing_episode_ids(
     if not episode_ids:
         return set()
     placeholders = ",".join("?" for _ in episode_ids)
-    conditions = [f"id IN ({placeholders})"]  # nosec B608
+    conditions = [f"id IN ({placeholders})"]
     params: list[Any] = list(episode_ids)
     if not include_deleted:
         conditions.append("deleted = 0")
@@ -1430,7 +1430,7 @@ def get_existing_episode_ids(
     where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT id FROM episodes WHERE {where_clause}",  # nosec B608
+            f"SELECT id FROM episodes WHERE {where_clause}",
             params,
         ).fetchall()
     return {str(row["id"]) for row in rows}
@@ -1446,7 +1446,7 @@ def get_existing_record_ids(
     if not record_ids:
         return set()
     placeholders = ",".join("?" for _ in record_ids)
-    conditions = [f"id IN ({placeholders})"]  # nosec B608
+    conditions = [f"id IN ({placeholders})"]
     params: list[Any] = list(record_ids)
     if not include_deleted:
         conditions.append("deleted = 0")
@@ -1454,7 +1454,7 @@ def get_existing_record_ids(
     where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT id FROM knowledge_records WHERE {where_clause}",  # nosec B608
+            f"SELECT id FROM knowledge_records WHERE {where_clause}",
             params,
         ).fetchall()
     return {str(row["id"]) for row in rows}
@@ -1477,7 +1477,7 @@ def increment_access(episode_ids: list[str]) -> None:
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in episode_ids)
         query = f"""UPDATE episodes SET access_count = access_count + 1,
-            updated_at = ? WHERE id IN ({placeholders})"""  # nosec B608
+            updated_at = ? WHERE id IN ({placeholders})"""
         conn.execute(
             query,
             [_now()] + episode_ids,
@@ -1492,7 +1492,7 @@ def mark_consolidated(episode_ids: list[str], topic_filename: str) -> None:
         placeholders = ",".join("?" for _ in episode_ids)
         query = f"""UPDATE episodes SET consolidated = 1,
             consolidated_at = ?, consolidated_to = ?, updated_at = ?
-            WHERE id IN ({placeholders})"""  # nosec B608
+            WHERE id IN ({placeholders})"""
         conn.execute(
             query,
             [now, topic_filename, now] + episode_ids,
@@ -1506,7 +1506,7 @@ def mark_pruned(episode_ids: list[str]) -> None:
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in episode_ids)
         query = f"""UPDATE episodes SET consolidated = 2, updated_at = ?
-            WHERE id IN ({placeholders}) AND consolidated = 1"""  # nosec B608
+            WHERE id IN ({placeholders}) AND consolidated = 1"""
         conn.execute(
             query,
             [now] + episode_ids,
@@ -1524,7 +1524,7 @@ def soft_delete_episode(
     now = _now()
     with get_connection() as conn:
         cursor = conn.execute(
-            f"UPDATE episodes SET deleted = 1, updated_at = ? WHERE {where_clause}",  # nosec B608
+            f"UPDATE episodes SET deleted = 1, updated_at = ? WHERE {where_clause}",
             [now, *params],
         )
         deleted = bool(cursor.rowcount and cursor.rowcount > 0)
@@ -1551,14 +1551,14 @@ def restore_soft_deleted_episode(
     restored = False
     with get_connection() as conn:
         row = conn.execute(
-            f"SELECT content FROM episodes WHERE {where_clause}",  # nosec B608
+            f"SELECT content FROM episodes WHERE {where_clause}",
             params,
         ).fetchone()
         if row is None:
             return False
         content = str(row["content"])
         cursor = conn.execute(
-            f"UPDATE episodes SET deleted = 0, updated_at = ? WHERE {where_clause}",  # nosec B608
+            f"UPDATE episodes SET deleted = 0, updated_at = ? WHERE {where_clause}",
             [now, *params],
         )
         restored = bool(cursor.rowcount and cursor.rowcount > 0)
@@ -1729,7 +1729,7 @@ def protect_episode(
     where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         cursor = conn.execute(
-            f"UPDATE episodes SET protected = 1, updated_at = ? WHERE {where_clause}",  # nosec B608
+            f"UPDATE episodes SET protected = 1, updated_at = ? WHERE {where_clause}",
             [now, *params],
         )
     return bool(cursor.rowcount and cursor.rowcount > 0)
@@ -1757,7 +1757,7 @@ def protect_by_tag(
     with get_connection() as conn:
         cursor = conn.execute(
             "UPDATE episodes SET protected = 1, updated_at = ? "
-            f"WHERE {where_clause}",  # nosec B608
+            f"WHERE {where_clause}",
             [now, *params],
         )
     return cursor.rowcount or 0
@@ -1819,7 +1819,7 @@ def upsert_knowledge_topic(
                     FROM knowledge_topics
                     WHERE {' AND '.join(conditions)}
                     ORDER BY updated_at DESC, id ASC
-                    LIMIT 1""",  # nosec B608
+                    LIMIT 1""",
                 params,
             ).fetchone()
 
@@ -1906,7 +1906,7 @@ def upsert_knowledge_topic(
                         FROM knowledge_topics
                         WHERE {' AND '.join(conditions)}
                         ORDER BY updated_at DESC, id ASC
-                        LIMIT 1""",  # nosec B608
+                        LIMIT 1""",
                     params,
                 ).fetchone()
                 if existing is None:
@@ -1960,7 +1960,7 @@ def get_all_knowledge_topics(
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT * FROM knowledge_topics {where} ORDER BY updated_at DESC",  # nosec B608
+            f"SELECT * FROM knowledge_topics {where} ORDER BY updated_at DESC",
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1976,7 +1976,7 @@ def get_knowledge_topic(
     where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         row = conn.execute(
-            f"SELECT * FROM knowledge_topics WHERE {where_clause}",  # nosec B608
+            f"SELECT * FROM knowledge_topics WHERE {where_clause}",
             params,
         ).fetchone()
     return dict(row) if row else None
@@ -1994,7 +1994,7 @@ def get_knowledge_topics_by_name(
         rows = conn.execute(
             f"""SELECT * FROM knowledge_topics
                 WHERE {where_clause}
-                ORDER BY updated_at DESC, id ASC""",  # nosec B608
+                ORDER BY updated_at DESC, id ASC""",
             params,
         ).fetchall()
     return [dict(row) for row in rows]
@@ -2039,7 +2039,7 @@ def increment_topic_access(
                 f"""UPDATE knowledge_topics
                     SET access_count = access_count + 1,
                         updated_at = ?
-                    WHERE {where_clause}""",  # nosec B608
+                    WHERE {where_clause}""",
                 params,
             )
 
@@ -2050,7 +2050,7 @@ def increment_topic_access_by_ids(topic_ids: list[str]) -> None:
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in topic_ids)
         query = f"""UPDATE knowledge_topics SET access_count = access_count + 1,
-            updated_at = ? WHERE id IN ({placeholders})"""  # nosec B608
+            updated_at = ? WHERE id IN ({placeholders})"""
         conn.execute(
             query,
             [_now()] + topic_ids,
@@ -2313,7 +2313,7 @@ def get_cooccurring_tags(tags: list[str], min_count: int = 2) -> dict[str, int]:
             SELECT tag_a as tag, SUM(count) as total
             FROM tag_cooccurrence
             WHERE tag_b IN ({placeholders_b}) AND count >= ?
-            GROUP BY tag_a"""  # nosec B608
+            GROUP BY tag_a"""
         rows = conn.execute(
             query,
             [*tags, min_count, *tags, min_count],
@@ -2345,7 +2345,7 @@ def get_tag_pairs_in_set(tags: list[str], min_count: int = 2) -> list[tuple[str,
         query = f"""SELECT tag_a, tag_b, count FROM tag_cooccurrence
             WHERE tag_a IN ({placeholders_a})
               AND tag_b IN ({placeholders_b})
-              AND count >= ?"""  # nosec B608
+              AND count >= ?"""
         rows = conn.execute(
             query,
             [*tags, *tags, min_count],
@@ -2374,7 +2374,7 @@ def get_all_active_records(
                FROM knowledge_records kr
                JOIN knowledge_topics kt ON kr.topic_id = kt.id
                WHERE {where_clause}
-               ORDER BY kr.updated_at DESC"""  # nosec B608
+               ORDER BY kr.updated_at DESC"""
             rows = conn.execute(
                 query,
                 base_params,
@@ -2391,7 +2391,7 @@ def get_all_active_records(
                FROM knowledge_records kr
                JOIN knowledge_topics kt ON kr.topic_id = kt.id
                WHERE {where_clause}
-               ORDER BY kr.updated_at DESC"""  # nosec B608
+               ORDER BY kr.updated_at DESC"""
             rows = conn.execute(
                 query,
                 timed_params,
@@ -2431,7 +2431,7 @@ def get_records_as_of(
        FROM knowledge_records kr
        JOIN knowledge_topics kt ON kr.topic_id = kt.id
        WHERE {where_clause}
-       ORDER BY kr.updated_at DESC"""  # nosec B608
+       ORDER BY kr.updated_at DESC"""
     with get_connection() as conn:
         rows = conn.execute(
             query,
@@ -2482,7 +2482,7 @@ def soft_delete_records_by_ids(record_ids: list[str]) -> int:
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in record_ids)
         cursor = conn.execute(
-            f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",  # nosec B608
+            f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",
             [now] + record_ids,
         )
     return int(cursor.rowcount)
@@ -2495,7 +2495,7 @@ def increment_record_access(record_ids: list[str]) -> None:
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in record_ids)
         query = f"""UPDATE knowledge_records SET access_count = access_count + 1,
-            updated_at = ? WHERE id IN ({placeholders})"""  # nosec B608
+            updated_at = ? WHERE id IN ({placeholders})"""
         conn.execute(
             query,
             [_now()] + record_ids,
@@ -2594,7 +2594,7 @@ def get_active_claims(
     query = f"""SELECT * FROM claims
         WHERE {where}
         ORDER BY updated_at DESC, id ASC
-        LIMIT ? OFFSET ?"""  # nosec B608
+        LIMIT ? OFFSET ?"""
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -2650,7 +2650,7 @@ def get_claims_as_of(
             ) ch ON ch.claim_id = c.id
             WHERE {where}
             ORDER BY c.updated_at DESC, c.id ASC
-            LIMIT ? OFFSET ?"""  # nosec B608
+            LIMIT ? OFFSET ?"""
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -2670,7 +2670,7 @@ def get_existing_claim_ids(claim_ids: Sequence[str]) -> set[str]:
     placeholders = ",".join("?" for _ in claim_ids)
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT id FROM claims WHERE id IN ({placeholders})",  # nosec B608
+            f"SELECT id FROM claims WHERE id IN ({placeholders})",
             list(claim_ids),
         ).fetchall()
     return {str(row["id"]) for row in rows}
@@ -2763,7 +2763,7 @@ def get_claim_source_scope_rows(
             LEFT JOIN episodes e ON cs.source_episode_id = e.id
             LEFT JOIN knowledge_records kr ON cs.source_record_id = kr.id
             LEFT JOIN knowledge_topics kt ON cs.source_topic_id = kt.id
-            WHERE cs.claim_id IN ({placeholders})"""  # nosec B608
+            WHERE cs.claim_id IN ({placeholders})"""
     with get_connection() as conn:
         rows = conn.execute(
             query,
@@ -2829,13 +2829,13 @@ def detach_claim_sources_for_episode(episode_id: str) -> list[str]:
             conn.execute(
                 f"""UPDATE claim_sources
                     SET source_episode_id = NULL
-                    WHERE id IN ({placeholders})""",  # nosec B608
+                    WHERE id IN ({placeholders})""",
                 update_ids,
             )
         if delete_ids:
             placeholders = ",".join("?" for _ in delete_ids)
             conn.execute(
-                f"DELETE FROM claim_sources WHERE id IN ({placeholders})",  # nosec B608
+                f"DELETE FROM claim_sources WHERE id IN ({placeholders})",
                 delete_ids,
             )
 
@@ -2861,13 +2861,13 @@ def remove_claim_sources_for_records(record_ids: Sequence[str]) -> list[str]:
             f"""SELECT DISTINCT claim_id
                 FROM claim_sources
                 WHERE source_record_id IN ({placeholders})
-                ORDER BY claim_id ASC""",  # nosec B608
+                ORDER BY claim_id ASC""",
             normalized_ids,
         ).fetchall()
         if not rows:
             return []
         conn.execute(
-            f"DELETE FROM claim_sources WHERE source_record_id IN ({placeholders})",  # nosec B608
+            f"DELETE FROM claim_sources WHERE source_record_id IN ({placeholders})",
             normalized_ids,
         )
 
@@ -2934,7 +2934,7 @@ def expire_claims_without_sources(
                    AND (c.valid_until IS NULL OR julianday(c.valid_until) > julianday(?))
               GROUP BY c.id
                 HAVING COUNT(cs.id) = 0
-              ORDER BY c.id ASC""",  # nosec B608
+              ORDER BY c.id ASC""",
             [*normalized_ids, expired_at, expired_at],
         ).fetchall()
         orphaned_ids = [str(row["id"]) for row in rows]
@@ -2952,7 +2952,7 @@ def expire_claims_without_sources(
                        updated_at = ?
                  WHERE id IN ({orphan_placeholders})
                    AND julianday(valid_from) <= julianday(?)
-                   AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))""",  # nosec B608
+                   AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))""",
             [expired_at, expired_at, expired_at, *orphaned_ids, expired_at, expired_at],
         )
 
@@ -3057,7 +3057,7 @@ def auto_expire_stale_challenged_claims(
                         END,
                         updated_at = ?
                   WHERE id IN ({placeholders})
-                    AND status = 'challenged'""",  # nosec B608
+                    AND status = 'challenged'""",
             [as_of_utc, as_of_utc, as_of_utc, *stale_ids],
         )
 
@@ -3290,7 +3290,7 @@ def get_claims_by_anchor(
             JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
             WHERE {where}
             ORDER BY c.updated_at DESC, c.id ASC
-            LIMIT ?"""  # nosec B608
+            LIMIT ?"""
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -3358,7 +3358,7 @@ def get_claims_by_anchor_values(
                     JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
                     JOIN episodes e ON e.id = ea.episode_id
                     WHERE {where}
-                    ORDER BY c.updated_at DESC, c.id ASC"""  # nosec B608
+                    ORDER BY c.updated_at DESC, c.id ASC"""
             if remaining is not None:
                 sql += " LIMIT ?"
                 query_params.append(remaining)
@@ -3402,7 +3402,7 @@ def mark_claims_challenged_by_ids(
                       AND status = 'active'
                       AND julianday(valid_from) <= julianday(?)
                       AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))
-                    ORDER BY id ASC""",  # nosec B608
+                    ORDER BY id ASC""",
                 [*chunk, challenged_ts, challenged_ts],
             ).fetchall()
             active_ids = [row["id"] for row in active_rows]
@@ -3414,7 +3414,7 @@ def mark_claims_challenged_by_ids(
                 f"""UPDATE claims
                     SET status = 'challenged', updated_at = ?
                     WHERE id IN ({active_placeholders})
-                      AND status = 'active'""",  # nosec B608
+                      AND status = 'active'""",
                 [challenged_ts, *active_ids],
             )
             conn.executemany(
@@ -3475,7 +3475,7 @@ def mark_claims_challenged_by_anchors(
               AND julianday(c.valid_from) <= julianday(?)
               AND (c.valid_until IS NULL OR julianday(c.valid_until) > julianday(?))
               AND ({' OR '.join(anchor_clauses)})
-            ORDER BY c.id ASC"""  # nosec B608
+            ORDER BY c.id ASC"""
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -3491,7 +3491,7 @@ def mark_claims_challenged_by_anchors(
         update_query = f"""UPDATE claims
             SET status = 'challenged', updated_at = ?
             WHERE id IN ({placeholders})
-              AND status = 'active'"""  # nosec B608
+              AND status = 'active'"""
         conn.execute(
             update_query,
             [challenged_ts, *claim_ids],
@@ -4119,7 +4119,7 @@ def get_action_outcomes(
                 {joins}
                 {where_clause}
                 ORDER BY julianday(ao.observed_at) DESC, ao.created_at DESC, ao.id ASC
-                LIMIT ? OFFSET ?""",  # nosec B608
+                LIMIT ? OFFSET ?""",
             [*params, bounded_limit, bounded_offset],
         ).fetchall()
     return [dict(row) for row in rows]
@@ -4137,7 +4137,7 @@ def get_action_outcome_sources_by_outcome_ids(
             f"""SELECT id, outcome_id, source_claim_id, source_record_id, source_episode_id, created_at
                 FROM action_outcome_sources
                 WHERE outcome_id IN ({placeholders})
-                ORDER BY created_at ASC, id ASC""",  # nosec B608
+                ORDER BY created_at ASC, id ASC""",
             list(outcome_ids),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -4155,7 +4155,7 @@ def get_action_outcome_refs_by_outcome_ids(
             f"""SELECT id, outcome_id, ref_type, ref_key, ref_value, created_at
                 FROM action_outcome_refs
                 WHERE outcome_id IN ({placeholders})
-                ORDER BY created_at ASC, id ASC""",  # nosec B608
+                ORDER BY created_at ASC, id ASC""",
             list(outcome_ids),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -4180,7 +4180,7 @@ def get_claim_outcome_evidence(
         return {}
 
     placeholders = ",".join("?" for _ in normalized_ids)
-    outcome_conditions = [f"aos.source_claim_id IN ({placeholders})"]  # nosec B608
+    outcome_conditions = [f"aos.source_claim_id IN ({placeholders})"]
     outcome_params: list[Any] = [*normalized_ids]
     _apply_scope_filters(outcome_conditions, outcome_params, scope, table_alias="ao")
     if as_of is not None:
@@ -4189,7 +4189,7 @@ def get_claim_outcome_evidence(
         outcome_params.append(as_of_utc)
 
     outcome_where = " AND ".join(outcome_conditions)
-    event_conditions = [f"claim_id IN ({placeholders})"]  # nosec B608
+    event_conditions = [f"claim_id IN ({placeholders})"]
     event_params: list[Any] = [*normalized_ids]
     if as_of is not None:
         as_of_utc = _normalize_utc_timestamp(as_of)
@@ -4209,7 +4209,7 @@ def get_claim_outcome_evidence(
                 FROM action_outcome_sources aos
                 JOIN action_outcomes ao ON ao.id = aos.outcome_id
                 WHERE {outcome_where}
-                GROUP BY aos.source_claim_id""",  # nosec B608
+                GROUP BY aos.source_claim_id""",
             outcome_params,
         ).fetchall()
         event_rows = conn.execute(
@@ -4219,7 +4219,7 @@ def get_claim_outcome_evidence(
                     SUM(CASE WHEN event_type = 'challenged' THEN 1 ELSE 0 END) AS challenged_count
                 FROM claim_events
                 WHERE {event_where}
-                GROUP BY claim_id""",  # nosec B608
+                GROUP BY claim_id""",
             event_params,
         ).fetchall()
 
@@ -4270,7 +4270,7 @@ def get_all_episodes(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT * FROM episodes {where_clause} ORDER BY created_at",  # nosec B608
+            f"SELECT * FROM episodes {where_clause} ORDER BY created_at",
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -4286,7 +4286,7 @@ def get_all_claims(
         if not claim_ids:
             return []
         placeholders = ",".join("?" for _ in claim_ids)
-        conditions.append(f"id IN ({placeholders})")  # nosec B608
+        conditions.append(f"id IN ({placeholders})")
         params.extend(claim_ids)
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
@@ -4295,7 +4295,7 @@ def get_all_claims(
                       valid_from, valid_until, created_at, updated_at
                FROM claims
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -4311,9 +4311,9 @@ def get_all_claim_edges(
         if not claim_ids:
             return []
         placeholders = ",".join("?" for _ in claim_ids)
-        conditions.append(f"from_claim_id IN ({placeholders})")  # nosec B608
+        conditions.append(f"from_claim_id IN ({placeholders})")
         params.extend(claim_ids)
-        conditions.append(f"to_claim_id IN ({placeholders})")  # nosec B608
+        conditions.append(f"to_claim_id IN ({placeholders})")
         params.extend(claim_ids)
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
@@ -4321,7 +4321,7 @@ def get_all_claim_edges(
             """SELECT id, from_claim_id, to_claim_id, edge_type, confidence, details, created_at
                FROM claim_edges
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -4337,7 +4337,7 @@ def get_all_claim_sources(
         if not claim_ids:
             return []
         placeholders = ",".join("?" for _ in claim_ids)
-        conditions.append(f"claim_id IN ({placeholders})")  # nosec B608
+        conditions.append(f"claim_id IN ({placeholders})")
         params.extend(claim_ids)
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
@@ -4345,7 +4345,7 @@ def get_all_claim_sources(
             """SELECT id, claim_id, source_episode_id, source_topic_id, source_record_id, created_at
                FROM claim_sources
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -4361,7 +4361,7 @@ def get_all_claim_events(
         if not claim_ids:
             return []
         placeholders = ",".join("?" for _ in claim_ids)
-        conditions.append(f"claim_id IN ({placeholders})")  # nosec B608
+        conditions.append(f"claim_id IN ({placeholders})")
         params.extend(claim_ids)
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
@@ -4369,7 +4369,7 @@ def get_all_claim_events(
             """SELECT id, claim_id, event_type, details, created_at
                FROM claim_events
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -4385,7 +4385,7 @@ def get_all_episode_anchors(
         if not episode_ids:
             return []
         placeholders = ",".join("?" for _ in episode_ids)
-        conditions.append(f"episode_id IN ({placeholders})")  # nosec B608
+        conditions.append(f"episode_id IN ({placeholders})")
         params.extend(episode_ids)
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
@@ -4393,7 +4393,7 @@ def get_all_episode_anchors(
             """SELECT id, episode_id, anchor_type, anchor_value, created_at
                FROM episode_anchors
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -4410,7 +4410,7 @@ def get_all_action_outcomes(
         if not outcome_ids:
             return []
         placeholders = ",".join("?" for _ in outcome_ids)
-        conditions.append(f"id IN ({placeholders})")  # nosec B608
+        conditions.append(f"id IN ({placeholders})")
         params.extend(outcome_ids)
     _apply_scope_filters(conditions, params, scope)
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -4426,7 +4426,7 @@ def get_all_action_outcomes(
                       project_repo_remote, project_default_branch
                FROM action_outcomes
                {where_clause}
-               ORDER BY observed_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+               ORDER BY observed_at ASC, id ASC""".format(where_clause=where_clause),
             params,
         ).fetchall()
     return [dict(row) for row in rows]
@@ -4442,7 +4442,7 @@ def get_all_action_outcome_sources(
         if not outcome_ids:
             return []
         placeholders = ",".join("?" for _ in outcome_ids)
-        conditions.append(f"outcome_id IN ({placeholders})")  # nosec B608
+        conditions.append(f"outcome_id IN ({placeholders})")
         params.extend(outcome_ids)
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
@@ -4450,7 +4450,7 @@ def get_all_action_outcome_sources(
             """SELECT id, outcome_id, source_claim_id, source_record_id, source_episode_id, created_at
                FROM action_outcome_sources
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
             params,
         ).fetchall()
     return [dict(row) for row in rows]
@@ -4466,7 +4466,7 @@ def get_all_action_outcome_refs(
         if not outcome_ids:
             return []
         placeholders = ",".join("?" for _ in outcome_ids)
-        conditions.append(f"outcome_id IN ({placeholders})")  # nosec B608
+        conditions.append(f"outcome_id IN ({placeholders})")
         params.extend(outcome_ids)
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
@@ -4474,7 +4474,7 @@ def get_all_action_outcome_refs(
             """SELECT id, outcome_id, ref_type, ref_key, ref_value, created_at
                FROM action_outcome_refs
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
             params,
         ).fetchall()
     return [dict(row) for row in rows]
@@ -4841,7 +4841,7 @@ def get_stats(scope: Mapping[str, Any] | None = None) -> StatsDict:
                  COUNT(*) FILTER (WHERE consolidated = 0 AND deleted = 0) as pending,
                  COUNT(*) FILTER (WHERE consolidated = 1 AND deleted = 0) as consolidated,
                  COUNT(*) FILTER (WHERE consolidated = 2 OR deleted = 1) as pruned
-               FROM episodes {episode_where}""",  # nosec B608
+               FROM episodes {episode_where}""",
             episode_params,
         ).fetchone()
         topic_conditions: list[str] = []
@@ -4851,7 +4851,7 @@ def get_stats(scope: Mapping[str, Any] | None = None) -> StatsDict:
         kt_counts = conn.execute(
             f"""SELECT COUNT(*) as total_topics,
                       COALESCE(SUM(fact_count), 0) as total_facts
-               FROM knowledge_topics {topic_where}""",  # nosec B608
+               FROM knowledge_topics {topic_where}""",
             topic_params,
         ).fetchone()
         record_conditions: list[str] = []
@@ -4866,7 +4866,7 @@ def get_stats(scope: Mapping[str, Any] | None = None) -> StatsDict:
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'preference') as preferences,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'procedure') as procedures,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'strategy') as strategies
-               FROM knowledge_records {record_where}""",  # nosec B608
+               FROM knowledge_records {record_where}""",
             record_params,
         ).fetchone()
 
@@ -4902,7 +4902,7 @@ def increment_consolidation_attempts(episode_ids: list[str]) -> None:
     with get_connection() as conn:
         placeholders = ",".join("?" for _ in episode_ids)
         conn.execute(
-            f"UPDATE episodes SET consolidation_attempts = consolidation_attempts + 1, "  # nosec B608
+            f"UPDATE episodes SET consolidation_attempts = consolidation_attempts + 1, "
             f"last_consolidation_attempt = ? WHERE id IN ({placeholders})",
             [now] + episode_ids,
         )
@@ -5032,12 +5032,12 @@ def search_episodes(
         return []
 
     where = " AND ".join(conditions)
-    base_sql = f"SELECT * FROM episodes WHERE {where} ORDER BY created_at DESC"  # nosec B608
+    base_sql = f"SELECT * FROM episodes WHERE {where} ORDER BY created_at DESC"
 
     if not tags:
         with get_connection() as conn:
             rows = conn.execute(
-                f"{base_sql} LIMIT ?",  # nosec B608
+                f"{base_sql} LIMIT ?",
                 [*params, limit],
             ).fetchall()
         return [dict(row) for row in rows]
@@ -5046,7 +5046,7 @@ def search_episodes(
     results: list[dict[str, Any]] = []
     offset = 0
     page_size = min(max(limit * 5, 50), 500)
-    paged_sql = f"{base_sql} LIMIT ? OFFSET ?"  # nosec B608
+    paged_sql = f"{base_sql} LIMIT ? OFFSET ?"
 
     with get_connection() as conn:
         while len(results) < limit:
@@ -5081,3 +5081,4 @@ def get_consolidation_metrics(limit: int = 20) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+

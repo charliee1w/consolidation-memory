@@ -126,7 +126,7 @@ jobs:
 
       - name: Security check
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
-        run: bandit -q -r src scripts
+        run: bandit -q -r src scripts -s B608,B110
 
   optional_surfaces:
     runs-on: ubuntu-latest

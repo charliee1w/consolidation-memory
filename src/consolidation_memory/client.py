@@ -781,13 +781,56 @@ class MemoryClient:
             indexed=False,
         )
 
+        vector_added = False
         try:
             self._vector_store.add(episode_id, embedding)
+            vector_added = True
             mark_episode_indexed([episode_id])
         except Exception as e:
-            # Hard-delete (not soft-delete) so dedup checks don't still find this orphan
-            hard_delete_episode(episode_id)
-            logger.error("FAISS add failed for %s, rolled back DB insert: %s", episode_id, e)
+            vector_rollback_ok = True
+            if vector_added:
+                try:
+                    removed = self._vector_store.remove(episode_id)
+                    if not removed:
+                        vector_rollback_ok = False
+                        logger.error(
+                            "Store rollback could not tombstone vector for %s",
+                            episode_id,
+                        )
+                except Exception:
+                    vector_rollback_ok = False
+                    logger.exception(
+                        "Store rollback failed while tombstoning vector for %s",
+                        episode_id,
+                    )
+
+            db_rollback_ok = True
+            if not vector_added or vector_rollback_ok:
+                try:
+                    if not hard_delete_episode(episode_id):
+                        db_rollback_ok = False
+                        logger.error(
+                            "Store rollback could not hard-delete episode row for %s",
+                            episode_id,
+                        )
+                except Exception:
+                    db_rollback_ok = False
+                    logger.exception(
+                        "Store rollback failed while hard-deleting episode row for %s",
+                        episode_id,
+                    )
+            else:
+                db_rollback_ok = False
+                logger.error(
+                    "Skipped hard-delete rollback for %s because vector rollback failed",
+                    episode_id,
+                )
+
+            logger.error("Store failed for %s and triggered rollback: %s", episode_id, e)
+            if not vector_rollback_ok or not db_rollback_ok:
+                raise RuntimeError(
+                    f"Store rollback incomplete for {episode_id}; manual reconciliation may be required."
+                ) from e
             raise
 
         self._persist_episode_anchors(episode_id=episode_id, content=content)
@@ -1001,17 +1044,55 @@ class MemoryClient:
         # Single FAISS batch add instead of per-item add()
         batch_add_succeeded = False
         if pending_ids:
+            vectors_added = False
             try:
                 emb_matrix = np.stack(pending_embs)
                 self._vector_store.add_batch(pending_ids, emb_matrix)
+                vectors_added = True
                 mark_episode_indexed(pending_ids)
                 batch_add_succeeded = True
             except Exception as e:
-                # Rollback all DB inserts from this batch
-                for eid in pending_ids:
-                    hard_delete_episode(eid)
-                logger.error("FAISS batch add failed, rolled back %d DB inserts: %s",
-                             len(pending_ids), e)
+                db_rollback_safe = True
+                if vectors_added:
+                    try:
+                        removed_count = self._vector_store.remove_batch(pending_ids)
+                        if removed_count != len(pending_ids):
+                            db_rollback_safe = False
+                            logger.error(
+                                "Batch store rollback tombstoned %d/%d vectors",
+                                removed_count,
+                                len(pending_ids),
+                            )
+                    except Exception:
+                        db_rollback_safe = False
+                        logger.exception(
+                            "Batch store rollback failed while tombstoning vectors",
+                        )
+
+                rollback_failures: list[str] = []
+                if db_rollback_safe:
+                    for eid in pending_ids:
+                        try:
+                            if not hard_delete_episode(eid):
+                                rollback_failures.append(eid)
+                        except Exception:
+                            rollback_failures.append(eid)
+                    if rollback_failures:
+                        logger.error(
+                            "Batch store rollback failed to hard-delete %d/%d rows",
+                            len(rollback_failures),
+                            len(pending_ids),
+                        )
+                else:
+                    logger.error(
+                        "Skipped DB hard-delete rollback for batch because vector rollback failed"
+                    )
+
+                logger.error(
+                    "Batch store failed and triggered rollback for %d episodes: %s",
+                    len(pending_ids),
+                    e,
+                )
                 stored = 0
                 results = [r for r in results if r.get("status") != "stored"]
                 results.append({"status": "error", "message": str(e)})
@@ -1508,7 +1589,7 @@ class MemoryClient:
         Returns:
             ForgetResult with status 'forgotten' or 'not_found'.
         """
-        from consolidation_memory.database import soft_delete_episode
+        from consolidation_memory.database import restore_soft_deleted_episode, soft_delete_episode
 
         self._ensure_open()
         resolved_scope = self.resolve_scope(scope)
@@ -1519,7 +1600,33 @@ class MemoryClient:
         mutation_filter = _resolved_scope_to_mutation_filter(resolved_scope)
         deleted = soft_delete_episode(episode_id, scope=mutation_filter)
         if deleted:
-            self._vector_store.remove(episode_id)
+            try:
+                self._vector_store.remove(episode_id)
+            except Exception:
+                restored = False
+                try:
+                    restored = restore_soft_deleted_episode(episode_id, scope=mutation_filter)
+                except Exception:
+                    logger.exception(
+                        "Forget rollback failed while restoring DB row for %s",
+                        episode_id,
+                    )
+                    raise RuntimeError(
+                        f"Forget failed for {episode_id} and DB restore also failed."
+                    )
+                if not restored:
+                    logger.error(
+                        "Forget failed for %s and DB restore did not find row",
+                        episode_id,
+                    )
+                    raise RuntimeError(
+                        f"Forget failed for {episode_id}; unable to confirm DB rollback."
+                    )
+                logger.error(
+                    "Forget vector tombstone failed for %s; restored SQLite deletion",
+                    episode_id,
+                )
+                raise
             logger.info("Forgot episode %s", episode_id)
 
             from consolidation_memory.plugins import get_plugin_manager

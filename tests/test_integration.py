@@ -5,12 +5,13 @@ vector store, and client methods end-to-end.
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
 
 from consolidation_memory.client import MemoryClient
-from consolidation_memory.database import ensure_schema, fts_search, search_episodes
+from consolidation_memory.database import ensure_schema, fts_search, insert_episode, search_episodes
 from tests.helpers import mock_encode as _mock_encode
 
 
@@ -170,6 +171,36 @@ class TestSearchDB:
         for r in results:
             ep_tags = json.loads(r["tags"]) if isinstance(r["tags"], str) else r["tags"]
             assert "a" in ep_tags
+
+    def test_search_episodes_tag_filter_paginates_past_newer_non_matches(self, client):
+        """Tagged matches should be found even when many newer rows do not match tags."""
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        for i in range(12):
+            ts = (base + timedelta(minutes=i)).isoformat()
+            insert_episode(
+                content=f"older tagged {i}",
+                content_type="fact",
+                tags=["target"],
+                created_at=ts,
+                updated_at=ts,
+            )
+
+        for i in range(120):
+            ts = (base + timedelta(days=1, minutes=i)).isoformat()
+            insert_episode(
+                content=f"newer non-match {i}",
+                content_type="fact",
+                tags=["noise"],
+                created_at=ts,
+                updated_at=ts,
+            )
+
+        results = search_episodes(tags=["target"], limit=10)
+        assert len(results) == 10
+        for row in results:
+            ep_tags = json.loads(row["tags"]) if isinstance(row["tags"], str) else row["tags"]
+            assert "target" in ep_tags
 
 
 # ── Forget ───────────────────────────────────────────────────────────────────

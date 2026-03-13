@@ -486,6 +486,30 @@ class TestClientStore:
         finally:
             client.close()
 
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_store_rolls_back_vector_when_mark_indexed_fails(self, mock_embed):
+        from consolidation_memory.database import ensure_schema, get_all_episodes
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            vec = _make_normalized_vec(seed=101)
+            mock_embed.return_value = vec.reshape(1, -1)
+
+            with patch(
+                "consolidation_memory.database.mark_episode_indexed",
+                side_effect=RuntimeError("mark failed"),
+            ):
+                with pytest.raises(RuntimeError, match="mark failed"):
+                    client.store("rollback single-store path")
+
+            assert get_all_episodes(include_deleted=True) == []
+            assert client._vector_store.size == 0
+            assert client._vector_store.search(vec, k=5) == []
+        finally:
+            client.close()
+
 
 class TestClientAutoConsolidation:
     @patch("consolidation_memory.backends.encode_documents")
@@ -708,6 +732,36 @@ class TestClientRecall:
                 ).fetchall()
             assert len(rows) == 2
             assert {row["indexed"] for row in rows} == {1}
+        finally:
+            client.close()
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_store_batch_rolls_back_vectors_when_mark_indexed_fails(self, mock_embed):
+        import numpy as np
+
+        from consolidation_memory.database import ensure_schema, get_all_episodes
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            vec_a = _make_normalized_vec(seed=201)
+            vec_b = _make_normalized_vec(seed=202)
+            mock_embed.return_value = np.stack([vec_a, vec_b])
+
+            with patch(
+                "consolidation_memory.database.mark_episode_indexed",
+                side_effect=RuntimeError("mark failed"),
+            ):
+                result = client.store_batch([{"content": "first"}, {"content": "second"}])
+
+            assert result.stored == 0
+            assert result.duplicates == 0
+            assert any(r.get("status") == "error" for r in result.results)
+            assert get_all_episodes(include_deleted=True) == []
+            assert client._vector_store.size == 0
+            assert client._vector_store.search(vec_a, k=10) == []
+            assert client._vector_store.search(vec_b, k=10) == []
         finally:
             client.close()
 
@@ -1000,6 +1054,39 @@ class TestClientForget:
 
             hidden = client.forget(hidden_id)
             assert hidden.status == "not_found"
+        finally:
+            client.close()
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_forget_rolls_back_sqlite_when_vector_tombstone_fails(self, mock_embed):
+        from consolidation_memory.database import ensure_schema, get_connection
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            vec = _make_normalized_vec(seed=303)
+            mock_embed.return_value = vec.reshape(1, -1)
+            stored = client.store("forget rollback content")
+
+            with patch.object(
+                client._vector_store,
+                "remove",
+                side_effect=RuntimeError("vector tombstone failed"),
+            ):
+                with pytest.raises(RuntimeError, match="vector tombstone failed"):
+                    client.forget(stored.id)
+
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT deleted, indexed FROM episodes WHERE id = ?",
+                    (stored.id,),
+                ).fetchone()
+            assert row is not None
+            assert row["deleted"] == 0
+            assert row["indexed"] == 1
+            assert any(match_id == stored.id for match_id, _ in client._vector_store.search(vec, k=5))
+            assert any(ep["id"] == stored.id for ep in client.search(query="forget rollback").episodes)
         finally:
             client.close()
 

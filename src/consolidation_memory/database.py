@@ -1420,6 +1420,41 @@ def soft_delete_episode(
     return deleted
 
 
+def restore_soft_deleted_episode(
+    episode_id: str,
+    scope: Mapping[str, Any] | None = None,
+) -> bool:
+    """Restore a soft-deleted episode.
+
+    Used as a compensating action when vector tombstoning fails during forget().
+    """
+    conditions = ["id = ?", "deleted = 1", "indexed = 1"]
+    params: list[Any] = [episode_id]
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
+    now = _now()
+
+    content: str | None = None
+    restored = False
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT content FROM episodes WHERE {where_clause}",  # nosec B608
+            params,
+        ).fetchone()
+        if row is None:
+            return False
+        content = str(row["content"])
+        cursor = conn.execute(
+            f"UPDATE episodes SET deleted = 0, updated_at = ? WHERE {where_clause}",  # nosec B608
+            [now, *params],
+        )
+        restored = bool(cursor.rowcount and cursor.rowcount > 0)
+
+    if restored and content is not None:
+        fts_insert(episode_id, content)
+    return restored
+
+
 def hard_delete_episode(episode_id: str) -> bool:
     """Permanently delete an episode from the database.
 
@@ -4003,27 +4038,47 @@ def search_episodes(
         conditions.append("created_at < ?")
         params.append(before)
 
+    if limit <= 0:
+        return []
+
     where = " AND ".join(conditions)
-    # Over-fetch when tag filtering is needed, since tags are stored as JSON
-    # and filtered in Python after the SQL query.
-    fetch_limit = limit * 5 if tags else limit
-    sql = f"SELECT * FROM episodes WHERE {where} ORDER BY created_at DESC LIMIT ?"  # nosec B608
-    params.append(fetch_limit)
+    base_sql = f"SELECT * FROM episodes WHERE {where} ORDER BY created_at DESC"  # nosec B608
+
+    if not tags:
+        with get_connection() as conn:
+            rows = conn.execute(
+                f"{base_sql} LIMIT ?",  # nosec B608
+                [*params, limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    requested_tags = set(tags)
+    results: list[dict[str, Any]] = []
+    offset = 0
+    page_size = min(max(limit * 5, 50), 500)
+    paged_sql = f"{base_sql} LIMIT ? OFFSET ?"  # nosec B608
 
     with get_connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
+        while len(results) < limit:
+            rows = conn.execute(
+                paged_sql,
+                [*params, page_size, offset],
+            ).fetchall()
+            if not rows:
+                break
 
-    results = []
-    for row in rows:
-        ep = dict(row)
-        # Tag filtering in Python since tags are stored as JSON array string
-        if tags:
-            ep_tags = parse_json_list(ep["tags"])
-            if not set(tags).intersection(ep_tags):
-                continue
-        results.append(ep)
-        if len(results) >= limit:
-            break
+            offset += len(rows)
+            for row in rows:
+                ep = dict(row)
+                ep_tags = parse_json_list(ep["tags"])
+                if not requested_tags.intersection(ep_tags):
+                    continue
+                results.append(ep)
+                if len(results) >= limit:
+                    break
+
+            if len(rows) < page_size:
+                break
 
     return results
 

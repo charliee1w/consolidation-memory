@@ -397,9 +397,10 @@ class CanonicalQueryService:
                 default=1.0,
             )
             if ranked.get("claim_type") == "strategy":
-                ranked["strategy_evidence"] = strategy_reuse_profile(evidence_payload)
+                strategy_profile = strategy_reuse_profile(evidence_payload)
+                ranked["strategy_evidence"] = strategy_profile
                 relevance *= coerce_numeric_float(
-                    ranked["strategy_evidence"].get("reuse_multiplier"),
+                    strategy_profile.get("reuse_multiplier"),
                     default=1.0,
                 )
             ranked["relevance"] = round(relevance, 3)

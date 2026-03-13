@@ -640,17 +640,13 @@ async def lifespan(server: FastMCP):
 
     logger.info("Starting consolidation_memory MCP server v%s...", __version__)
     logger.info("Active project: %s", get_active_project())
-    try:
-        _ensure_runtime_started()
-    except RuntimeError as exc:
-        logger.exception(
-            "MCP runtime startup failed during server boot; continuing in degraded mode"
-        )
-        logger.error("%s", exc)
-
     _preload_numeric_backends()
-    if _warmup_on_start() and _startup_error is None:
+    if _warmup_on_start() and _runtime_started and _startup_error is None:
         _warmup_task = asyncio.create_task(_warm_client_background())
+    elif _warmup_on_start():
+        logger.debug(
+            "Deferring MemoryClient warmup until the first tool call so MCP initialize stays lazy"
+        )
     if _idle_timeout_seconds() > 0:
         _idle_task = asyncio.create_task(_idle_shutdown_monitor())
 

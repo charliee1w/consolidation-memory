@@ -236,9 +236,27 @@ class TestMCPServerLifecycle:
 
             with (
                 patch("consolidation_memory.server._WARMUP_ON_START", False),
+                patch.object(runtime, "startup") as mock_startup,
                 patch("consolidation_memory.client.MemoryClient") as mock_ctor,
             ):
                 asyncio.run(_enter_and_exit_lifespan())
+                mock_startup.assert_not_called()
+                mock_ctor.assert_not_called()
+
+    def test_lifespan_with_warmup_enabled_still_keeps_runtime_lazy(self):
+        with _patched_server_runtime() as (server, runtime):
+            async def _enter_and_exit_lifespan():
+                async with server.lifespan(server.mcp):
+                    assert runtime.client is None
+                    assert server._warmup_task is None
+
+            with (
+                patch("consolidation_memory.server._WARMUP_ON_START", True),
+                patch.object(runtime, "startup") as mock_startup,
+                patch("consolidation_memory.client.MemoryClient") as mock_ctor,
+            ):
+                asyncio.run(_enter_and_exit_lifespan())
+                mock_startup.assert_not_called()
                 mock_ctor.assert_not_called()
 
     def test_lifespan_closes_connections_and_blocking_executor(self):

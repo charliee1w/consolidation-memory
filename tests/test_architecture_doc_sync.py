@@ -30,7 +30,9 @@ def test_architecture_doc_mentions_scheduler_and_claim_tables():
         "`claim_sources`",
         "`claim_events`",
         "`episode_anchors`",
+        "`action_outcomes`",
+        "`action_outcome_sources`",
+        "`action_outcome_refs`",
         "`consolidation_scheduler`",
     ):
         assert table_name in doc
-

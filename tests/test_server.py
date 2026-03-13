@@ -899,6 +899,77 @@ class TestMCPClaimTools:
         )
 
 
+class TestMCPOutcomeTools:
+    def test_memory_outcome_record_calls_canonical_client_method(self):
+        from consolidation_memory.server import memory_outcome_record
+        from consolidation_memory.types import OutcomeRecordResult
+
+        mock_client = MagicMock()
+        mock_client.record_outcome.return_value = OutcomeRecordResult(
+            status="recorded",
+            id="outcome-1",
+            action_key="act_abc",
+            outcome_type="success",
+        )
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(
+                memory_outcome_record(
+                    action_summary="Run targeted pytest",
+                    outcome_type="success",
+                    source_claim_ids=["claim-1"],
+                    scope={"project": {"slug": "repo-a"}},
+                )
+            )
+
+        assert json.loads(output)["status"] == "recorded"
+        mock_client.record_outcome.assert_called_once_with(
+            action_summary="Run targeted pytest",
+            outcome_type="success",
+            source_claim_ids=["claim-1"],
+            source_record_ids=None,
+            source_episode_ids=None,
+            code_anchors=None,
+            issue_ids=None,
+            pr_ids=None,
+            action_key=None,
+            summary=None,
+            details=None,
+            confidence=0.8,
+            provenance=None,
+            observed_at=None,
+            scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_memory_outcome_browse_calls_canonical_query_service(self):
+        from consolidation_memory.server import memory_outcome_browse
+        from consolidation_memory.types import OutcomeBrowseResult
+
+        mock_client = MagicMock()
+        mock_client.query_browse_outcomes.return_value = OutcomeBrowseResult(outcomes=[], total=0)
+
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
+            output = asyncio.run(
+                memory_outcome_browse(
+                    outcome_type="failure",
+                    source_claim_id="claim-1",
+                    scope={"namespace": {"slug": "team-a"}},
+                )
+            )
+
+        assert json.loads(output)["total"] == 0
+        mock_client.query_browse_outcomes.assert_called_once_with(
+            outcome_type="failure",
+            action_key=None,
+            source_claim_id="claim-1",
+            source_record_id=None,
+            source_episode_id=None,
+            as_of=None,
+            limit=50,
+            scope={"namespace": {"slug": "team-a"}},
+        )
+
+
 class TestMCPConsolidateTool:
     def test_memory_consolidate_passthrough_status(self):
         from consolidation_memory.server import memory_consolidate

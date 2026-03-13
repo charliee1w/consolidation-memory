@@ -76,7 +76,7 @@ flowchart TD
 
 ## Persistence Model
 
-`database.py` uses `CURRENT_SCHEMA_VERSION = 16`.
+`database.py` uses `CURRENT_SCHEMA_VERSION = 17`.
 
 Primary tables:
 
@@ -91,6 +91,9 @@ Primary tables:
 - `claim_edges`
 - `claim_events`
 - `episode_anchors`
+- `action_outcomes`
+- `action_outcome_sources`
+- `action_outcome_refs`
 - `contradiction_log`
 - `consolidation_runs`
 - `consolidation_metrics`
@@ -122,7 +125,7 @@ Key points:
 
 The retrieval bias is deliberate: prefer reusable claims with provenance and uncertainty signals, while keeping episodes available as raw supporting evidence.
 
-`query_service.py` wraps this behavior into canonical envelopes (`RecallQuery`, `EpisodeSearchQuery`, `ClaimBrowseQuery`, `ClaimSearchQuery`, `DriftQuery`) so all external adapters use the same semantics.
+`query_service.py` wraps this behavior into canonical envelopes (`RecallQuery`, `EpisodeSearchQuery`, `ClaimBrowseQuery`, `ClaimSearchQuery`, `OutcomeBrowseQuery`, `DriftQuery`) so all external adapters use the same semantics.
 
 ## Vector Store Behavior
 

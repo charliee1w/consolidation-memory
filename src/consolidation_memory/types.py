@@ -33,6 +33,23 @@ class RecordType(str, Enum):
     PROCEDURE = "procedure"
 
 
+OutcomeType = Literal[
+    "success",
+    "failure",
+    "partial_success",
+    "reverted",
+    "superseded",
+]
+
+OUTCOME_TYPES: tuple[OutcomeType, ...] = (
+    "success",
+    "failure",
+    "partial_success",
+    "reverted",
+    "superseded",
+)
+
+
 # ── Canonical domain-model scope skeleton ────────────────────────────────────
 
 NamespaceSharingMode = Literal["private", "shared", "team", "managed"]
@@ -692,6 +709,9 @@ class ExportResult:
     claim_sources: int = 0
     claim_events: int = 0
     episode_anchors: int = 0
+    action_outcomes: int = 0
+    action_outcome_sources: int = 0
+    action_outcome_refs: int = 0
 
 
 @dataclass
@@ -733,6 +753,33 @@ class ClaimSearchResult:
     total_matches: int = 0
     query: str | None = None
     claim_type: str | None = None
+    as_of: str | None = None
+    message: str | None = None
+
+
+@dataclass
+class OutcomeRecordResult:
+    """Result of recording an action outcome observation."""
+
+    status: Literal["recorded", "write_denied"]
+    id: str | None = None
+    action_key: str | None = None
+    outcome_type: OutcomeType | None = None
+    observed_at: str | None = None
+    message: str | None = None
+
+
+@dataclass
+class OutcomeBrowseResult:
+    """Result of browsing outcome observations."""
+
+    outcomes: list[dict[str, Any]] = field(default_factory=list)
+    total: int = 0
+    outcome_type: OutcomeType | None = None
+    action_key: str | None = None
+    source_claim_id: str | None = None
+    source_record_id: str | None = None
+    source_episode_id: str | None = None
     as_of: str | None = None
     message: str | None = None
 

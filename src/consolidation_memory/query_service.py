@@ -16,6 +16,7 @@ from consolidation_memory.types import (
     ClaimBrowseResult,
     ClaimSearchResult,
     DriftOutput,
+    OutcomeBrowseResult,
     RecallResult,
     SearchResult,
 )
@@ -66,6 +67,19 @@ class ClaimSearchQuery:
 
     query: str
     claim_type: str | None = None
+    as_of: str | None = None
+    limit: int = 50
+
+
+@dataclass(frozen=True)
+class OutcomeBrowseQuery:
+    """Canonical outcome-browse envelope."""
+
+    outcome_type: str | None = None
+    action_key: str | None = None
+    source_claim_id: str | None = None
+    source_record_id: str | None = None
+    source_episode_id: str | None = None
     as_of: str | None = None
     limit: int = 50
 
@@ -352,6 +366,147 @@ class CanonicalQueryService:
             as_of=query.as_of,
         )
 
+    def browse_outcomes(
+        self,
+        query: OutcomeBrowseQuery,
+        *,
+        scope_filter: Mapping[str, str | None] | None = None,
+    ) -> OutcomeBrowseResult:
+        """Execute canonical outcome browse semantics with scope and temporal filters."""
+        from consolidation_memory.database import (
+            get_action_outcome_refs_by_outcome_ids,
+            get_action_outcome_sources_by_outcome_ids,
+            get_action_outcomes,
+        )
+
+        bounded_limit = max(1, min(query.limit, 200))
+        rows = get_action_outcomes(
+            outcome_type=query.outcome_type,
+            action_key=query.action_key,
+            source_claim_id=query.source_claim_id,
+            source_record_id=query.source_record_id,
+            source_episode_id=query.source_episode_id,
+            as_of=query.as_of,
+            limit=bounded_limit,
+            offset=0,
+            scope=scope_filter,
+        )
+        outcome_ids = [str(row.get("id")) for row in rows if row.get("id")]
+        source_rows = get_action_outcome_sources_by_outcome_ids(outcome_ids)
+        ref_rows = get_action_outcome_refs_by_outcome_ids(outcome_ids)
+
+        sources_by_outcome: dict[str, dict[str, list[str]]] = {}
+        for source_row in source_rows:
+            outcome_id = str(source_row.get("outcome_id") or "")
+            if not outcome_id:
+                continue
+            slot = sources_by_outcome.setdefault(
+                outcome_id,
+                {
+                    "source_claim_ids": [],
+                    "source_record_ids": [],
+                    "source_episode_ids": [],
+                },
+            )
+            claim_id = source_row.get("source_claim_id")
+            record_id = source_row.get("source_record_id")
+            episode_id = source_row.get("source_episode_id")
+            if claim_id is not None:
+                token = str(claim_id)
+                if token not in slot["source_claim_ids"]:
+                    slot["source_claim_ids"].append(token)
+            if record_id is not None:
+                token = str(record_id)
+                if token not in slot["source_record_ids"]:
+                    slot["source_record_ids"].append(token)
+            if episode_id is not None:
+                token = str(episode_id)
+                if token not in slot["source_episode_ids"]:
+                    slot["source_episode_ids"].append(token)
+
+        anchors_by_outcome: dict[str, list[dict[str, str]]] = {}
+        issues_by_outcome: dict[str, list[str]] = {}
+        prs_by_outcome: dict[str, list[str]] = {}
+        for ref_row in ref_rows:
+            outcome_id = str(ref_row.get("outcome_id") or "")
+            if not outcome_id:
+                continue
+            ref_type = str(ref_row.get("ref_type") or "").strip()
+            ref_key = str(ref_row.get("ref_key") or "").strip()
+            ref_value = str(ref_row.get("ref_value") or "").strip()
+            if not ref_type or not ref_value:
+                continue
+            if ref_type == "code_anchor":
+                anchors = anchors_by_outcome.setdefault(outcome_id, [])
+                anchor = {"anchor_type": ref_key, "anchor_value": ref_value}
+                if anchor not in anchors:
+                    anchors.append(anchor)
+            elif ref_type == "issue":
+                issue_ids = issues_by_outcome.setdefault(outcome_id, [])
+                if ref_value not in issue_ids:
+                    issue_ids.append(ref_value)
+            elif ref_type == "pr":
+                pr_ids = prs_by_outcome.setdefault(outcome_id, [])
+                if ref_value not in pr_ids:
+                    pr_ids.append(ref_value)
+
+        def _parse_json_field(value: object) -> object:
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return {}
+                try:
+                    return json.loads(text)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    return {"raw": text}
+            if value is None:
+                return {}
+            return value
+
+        outcomes: list[dict[str, object]] = []
+        for row in rows:
+            outcome_id = str(row.get("id") or "")
+            linked_sources = sources_by_outcome.get(
+                outcome_id,
+                {
+                    "source_claim_ids": [],
+                    "source_record_ids": [],
+                    "source_episode_ids": [],
+                },
+            )
+            outcomes.append(
+                {
+                    "id": outcome_id,
+                    "action_key": row.get("action_key"),
+                    "action_summary": row.get("action_summary"),
+                    "outcome_type": row.get("outcome_type"),
+                    "summary": row.get("summary"),
+                    "details": _parse_json_field(row.get("details")),
+                    "confidence": row.get("confidence"),
+                    "provenance": _parse_json_field(row.get("provenance")),
+                    "observed_at": row.get("observed_at"),
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                    "source_claim_ids": list(linked_sources["source_claim_ids"]),
+                    "source_record_ids": list(linked_sources["source_record_ids"]),
+                    "source_episode_ids": list(linked_sources["source_episode_ids"]),
+                    "code_anchors": list(anchors_by_outcome.get(outcome_id, [])),
+                    "issue_ids": list(issues_by_outcome.get(outcome_id, [])),
+                    "pr_ids": list(prs_by_outcome.get(outcome_id, [])),
+                }
+            )
+
+        return OutcomeBrowseResult(
+            outcomes=outcomes,
+            total=len(outcomes),
+            outcome_type=query.outcome_type,
+            action_key=query.action_key,
+            source_claim_id=query.source_claim_id,
+            source_record_id=query.source_record_id,
+            source_episode_id=query.source_episode_id,
+            as_of=query.as_of,
+        )
+
     def detect_drift(self, query: DriftQuery) -> DriftOutput:
         """Execute canonical drift detection + challenge semantics."""
         from consolidation_memory.drift import detect_code_drift
@@ -369,5 +524,6 @@ __all__ = [
     "ClaimSearchQuery",
     "DriftQuery",
     "EpisodeSearchQuery",
+    "OutcomeBrowseQuery",
     "RecallQuery",
 ]

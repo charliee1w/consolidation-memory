@@ -257,6 +257,40 @@ class ClaimSearchRequest(BaseModel):
     scope: _ScopeInput | None = None
 
 
+class OutcomeAnchorInput(BaseModel):
+    anchor_type: str = Field(max_length=64)
+    anchor_value: str = Field(max_length=_MAX_PATH_LENGTH)
+
+
+class OutcomeRecordRequest(BaseModel):
+    action_summary: str = Field(max_length=_MAX_QUERY_LENGTH)
+    outcome_type: Literal["success", "failure", "partial_success", "reverted", "superseded"]
+    source_claim_ids: list[str] | None = None
+    source_record_ids: list[str] | None = None
+    source_episode_ids: list[str] | None = None
+    code_anchors: list[OutcomeAnchorInput] | None = None
+    issue_ids: list[str] | None = None
+    pr_ids: list[str] | None = None
+    action_key: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
+    summary: str | None = Field(default=None, max_length=50_000)
+    details: dict[str, object] | str | None = None
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    provenance: dict[str, object] | str | None = None
+    observed_at: str | None = Field(default=None, max_length=64)
+    scope: _ScopeInput | None = None
+
+
+class OutcomeBrowseRequest(BaseModel):
+    outcome_type: Literal["success", "failure", "partial_success", "reverted", "superseded"] | None = None
+    action_key: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
+    source_claim_id: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
+    source_record_id: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
+    source_episode_id: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
+    as_of: str | None = Field(default=None, max_length=64)
+    limit: int = Field(default=50, ge=1, le=200)
+    scope: _ScopeInput | None = None
+
+
 class DetectDriftRequest(BaseModel):
     base_ref: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
     repo_path: str | None = Field(default=None, max_length=_MAX_PATH_LENGTH)
@@ -525,6 +559,19 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     async def search_claims(req: ClaimSearchRequest):
         """Search claims by text with optional type and temporal filtering."""
         return await _execute("memory_claim_search", req.model_dump())
+
+    @app.post("/memory/outcomes/record")
+    async def record_outcome(req: OutcomeRecordRequest):
+        """Record an action outcome observation."""
+        payload = req.model_dump()
+        if req.code_anchors is not None:
+            payload["code_anchors"] = [anchor.model_dump() for anchor in req.code_anchors]
+        return await _execute("memory_outcome_record", payload)
+
+    @app.post("/memory/outcomes/browse")
+    async def browse_outcomes(req: OutcomeBrowseRequest):
+        """Browse recorded action outcomes."""
+        return await _execute("memory_outcome_browse", req.model_dump())
 
     @app.post("/memory/detect-drift")
     async def detect_drift(req: DetectDriftRequest):

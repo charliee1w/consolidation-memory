@@ -559,6 +559,165 @@ MEMORY_CLAIM_SEARCH_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_OUTCOME_RECORD_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_outcome_record",
+        "description": (
+            "Record whether a strategy/action worked. "
+            "Outcome observations are durable evidence for trust scoring and can be linked "
+            "to claim/record/episode provenance, code anchors, and issue/PR identifiers."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "action_summary": {
+                    "type": "string",
+                    "maxLength": _MAX_QUERY_LENGTH,
+                    "description": "Concise description of the attempted strategy or action.",
+                },
+                "outcome_type": {
+                    "type": "string",
+                    "enum": ["success", "failure", "partial_success", "reverted", "superseded"],
+                    "description": "Outcome classification for this observation.",
+                },
+                "source_claim_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                    "description": "Claim IDs this outcome is linked to.",
+                },
+                "source_record_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                    "description": "Knowledge record IDs this outcome is linked to.",
+                },
+                "source_episode_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                    "description": "Episode IDs this outcome is linked to.",
+                },
+                "code_anchors": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "anchor_type": {"type": "string", "maxLength": 64},
+                            "anchor_value": {"type": "string", "maxLength": _MAX_PATH_LENGTH},
+                        },
+                        "required": ["anchor_type", "anchor_value"],
+                    },
+                    "description": "Optional code anchors associated with the outcome.",
+                },
+                "issue_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                    "description": "Optional issue identifiers associated with the outcome.",
+                },
+                "pr_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                    "description": "Optional pull request identifiers associated with the outcome.",
+                },
+                "action_key": {
+                    "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
+                    "description": "Optional stable strategy key. Auto-derived when omitted.",
+                },
+                "summary": {
+                    "type": "string",
+                    "maxLength": _MAX_CONTENT_LENGTH,
+                    "description": "Optional short human summary of the observed outcome.",
+                },
+                "details": {
+                    "oneOf": [
+                        {"type": "object"},
+                        {"type": "string", "maxLength": _MAX_CONTENT_LENGTH},
+                    ],
+                    "description": "Optional structured details payload for this outcome.",
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.8,
+                    "description": "Confidence in this observation.",
+                },
+                "provenance": {
+                    "oneOf": [
+                        {"type": "object"},
+                        {"type": "string", "maxLength": _MAX_CONTENT_LENGTH},
+                    ],
+                    "description": "Optional provenance metadata (agent/tool/run identifiers, etc.).",
+                },
+                "observed_at": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": "Optional ISO datetime when the outcome was observed.",
+                },
+                "scope": SCOPE_INPUT_SCHEMA,
+            },
+            "required": ["action_summary", "outcome_type"],
+        },
+    },
+}
+
+MEMORY_OUTCOME_BROWSE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_outcome_browse",
+        "description": (
+            "Browse recorded outcome observations over time with optional source and temporal filters."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "outcome_type": {
+                    "type": "string",
+                    "enum": ["success", "failure", "partial_success", "reverted", "superseded"],
+                    "description": "Optional outcome type filter.",
+                },
+                "action_key": {
+                    "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
+                    "description": "Optional action/strategy key filter.",
+                },
+                "source_claim_id": {
+                    "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
+                    "description": "Optional claim source filter.",
+                },
+                "source_record_id": {
+                    "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
+                    "description": "Optional record source filter.",
+                },
+                "source_episode_id": {
+                    "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
+                    "description": "Optional episode source filter.",
+                },
+                "as_of": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": "Optional ISO datetime upper bound for observed outcomes.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "default": 50,
+                    "description": "Maximum outcomes to return.",
+                },
+                "scope": SCOPE_INPUT_SCHEMA,
+            },
+            "required": [],
+        },
+    },
+}
+
 MEMORY_DETECT_DRIFT_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -800,6 +959,8 @@ openai_tools: list[dict[str, Any]] = [
     MEMORY_SEARCH_SCHEMA,
     MEMORY_CLAIM_BROWSE_SCHEMA,
     MEMORY_CLAIM_SEARCH_SCHEMA,
+    MEMORY_OUTCOME_RECORD_SCHEMA,
+    MEMORY_OUTCOME_BROWSE_SCHEMA,
     MEMORY_DETECT_DRIFT_SCHEMA,
     MEMORY_STATUS_SCHEMA,
     MEMORY_FORGET_SCHEMA,

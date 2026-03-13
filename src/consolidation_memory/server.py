@@ -903,6 +903,74 @@ async def memory_claim_search(
 
 
 @_tracked_tool()
+async def memory_outcome_record(
+    action_summary: str,
+    outcome_type: str,
+    source_claim_ids: list[str] | None = None,
+    source_record_ids: list[str] | None = None,
+    source_episode_ids: list[str] | None = None,
+    code_anchors: list[dict[str, str]] | None = None,
+    issue_ids: list[str] | None = None,
+    pr_ids: list[str] | None = None,
+    action_key: str | None = None,
+    summary: str | None = None,
+    details: dict[str, Any] | str | None = None,
+    confidence: float = 0.8,
+    provenance: dict[str, Any] | str | None = None,
+    observed_at: str | None = None,
+    scope: ScopeInput = None,
+) -> str:
+    """Record an action outcome observation with provenance links."""
+    return await _call_tool_json(
+        "memory_outcome_record",
+        {
+            "action_summary": action_summary,
+            "outcome_type": outcome_type,
+            "source_claim_ids": source_claim_ids,
+            "source_record_ids": source_record_ids,
+            "source_episode_ids": source_episode_ids,
+            "code_anchors": code_anchors,
+            "issue_ids": issue_ids,
+            "pr_ids": pr_ids,
+            "action_key": action_key,
+            "summary": summary,
+            "details": details,
+            "confidence": confidence,
+            "provenance": provenance,
+            "observed_at": observed_at,
+            "scope": scope,
+        },
+    )
+
+
+@_tracked_tool()
+async def memory_outcome_browse(
+    outcome_type: str | None = None,
+    action_key: str | None = None,
+    source_claim_id: str | None = None,
+    source_record_id: str | None = None,
+    source_episode_id: str | None = None,
+    as_of: str | None = None,
+    limit: int = 50,
+    scope: ScopeInput = None,
+) -> str:
+    """Browse recorded action outcomes with optional filters."""
+    return await _call_tool_json(
+        "memory_outcome_browse",
+        {
+            "outcome_type": outcome_type,
+            "action_key": action_key,
+            "source_claim_id": source_claim_id,
+            "source_record_id": source_record_id,
+            "source_episode_id": source_episode_id,
+            "as_of": as_of,
+            "limit": limit,
+            "scope": scope,
+        },
+    )
+
+
+@_tracked_tool()
 async def memory_detect_drift(
     base_ref: str | None = None,
     repo_path: str | None = None,

@@ -12,6 +12,8 @@ from consolidation_memory.schemas import dispatch_tool_call
 from consolidation_memory.types import (
     BrowseResult,
     ClaimSearchResult,
+    OutcomeBrowseResult,
+    OutcomeRecordResult,
     RecallResult,
     TimelineResult,
     TopicDetailResult,
@@ -186,6 +188,139 @@ class TestSurfaceClaimSearchContract:
                 rest_resp = client.post(
                     "/memory/claims/search",
                     json={"query": "python", "scope": scope},
+                )
+            rest_out = rest_resp.json()
+        assert rest_resp.status_code == 200
+        rest_call.assert_called_once_with(**expected_args)
+
+        assert dispatch_out == mcp_out == rest_out
+
+
+class TestSurfaceOutcomeContract:
+    def test_outcome_browse_defaults_and_output_match_across_surfaces(self):
+        from consolidation_memory.rest import create_app
+        from consolidation_memory.server import memory_outcome_browse
+
+        scope = {"project": {"slug": "repo-a"}}
+        expected = OutcomeBrowseResult(
+            outcomes=[{"id": "outcome-1", "outcome_type": "success"}],
+            total=1,
+            outcome_type="success",
+        )
+        expected_args = {
+            "outcome_type": "success",
+            "action_key": None,
+            "source_claim_id": None,
+            "source_record_id": None,
+            "source_episode_id": None,
+            "as_of": None,
+            "limit": 50,
+            "scope": scope,
+        }
+
+        dispatch_client = MagicMock()
+        dispatch_client.query_browse_outcomes.return_value = expected
+        dispatch_out = dispatch_tool_call(
+            dispatch_client,
+            "memory_outcome_browse",
+            {"outcome_type": "success", "scope": scope},
+        )
+        dispatch_client.query_browse_outcomes.assert_called_once_with(**expected_args)
+
+        mcp_client = MagicMock()
+        mcp_client.query_browse_outcomes.return_value = expected
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
+            mcp_out = json.loads(asyncio.run(memory_outcome_browse(outcome_type="success", scope=scope)))
+        mcp_client.query_browse_outcomes.assert_called_once_with(**expected_args)
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.query_browse_outcomes",
+            return_value=expected,
+        ) as rest_call:
+            app = create_app()
+            with TestClient(app) as client:
+                rest_resp = client.post(
+                    "/memory/outcomes/browse",
+                    json={"outcome_type": "success", "scope": scope},
+                )
+            rest_out = rest_resp.json()
+        assert rest_resp.status_code == 200
+        rest_call.assert_called_once_with(**expected_args)
+
+        assert dispatch_out == mcp_out == rest_out
+
+    def test_outcome_record_defaults_and_output_match_across_surfaces(self):
+        from consolidation_memory.rest import create_app
+        from consolidation_memory.server import memory_outcome_record
+
+        scope = {"project": {"slug": "repo-a"}}
+        expected = OutcomeRecordResult(
+            status="recorded",
+            id="outcome-1",
+            action_key="act_abc",
+            outcome_type="success",
+        )
+        expected_args = {
+            "action_summary": "Run targeted tests",
+            "outcome_type": "success",
+            "source_claim_ids": ["claim-1"],
+            "source_record_ids": None,
+            "source_episode_ids": None,
+            "code_anchors": None,
+            "issue_ids": None,
+            "pr_ids": None,
+            "action_key": None,
+            "summary": None,
+            "details": None,
+            "confidence": 0.8,
+            "provenance": None,
+            "observed_at": None,
+            "scope": scope,
+        }
+
+        dispatch_client = MagicMock()
+        dispatch_client.record_outcome.return_value = expected
+        dispatch_out = dispatch_tool_call(
+            dispatch_client,
+            "memory_outcome_record",
+            {
+                "action_summary": "Run targeted tests",
+                "outcome_type": "success",
+                "source_claim_ids": ["claim-1"],
+                "scope": scope,
+            },
+        )
+        dispatch_client.record_outcome.assert_called_once_with(**expected_args)
+
+        mcp_client = MagicMock()
+        mcp_client.record_outcome.return_value = expected
+        with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
+            mcp_out = json.loads(
+                asyncio.run(
+                    memory_outcome_record(
+                        action_summary="Run targeted tests",
+                        outcome_type="success",
+                        source_claim_ids=["claim-1"],
+                        scope=scope,
+                    )
+                )
+            )
+        mcp_client.record_outcome.assert_called_once_with(**expected_args)
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.record_outcome",
+            return_value=expected,
+        ) as rest_call:
+            app = create_app()
+            with TestClient(app) as client:
+                rest_resp = client.post(
+                    "/memory/outcomes/record",
+                    json={
+                        "action_summary": "Run targeted tests",
+                        "outcome_type": "success",
+                        "source_claim_ids": ["claim-1"],
+                        "scope": scope,
+                    },
                 )
             rest_out = rest_resp.json()
         assert rest_resp.status_code == 200

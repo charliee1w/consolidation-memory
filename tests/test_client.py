@@ -1020,6 +1020,138 @@ class TestClientForget:
 
         client.close()
 
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_forget_expires_claim_with_only_forgotten_episode_source(self, mock_embed):
+        from consolidation_memory.database import ensure_schema, get_connection, insert_claim_sources, upsert_claim
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            vec = _make_normalized_vec(seed=87)
+            mock_embed.return_value = vec.reshape(1, -1)
+            stored = client.store("claim-backed episode")
+            upsert_claim(
+                claim_id="claim-forget-only-source",
+                claim_type="fact",
+                canonical_text="only source claim",
+                payload={"subject": "forget", "info": "episode only"},
+                valid_from="2026-01-01T00:00:00+00:00",
+            )
+            insert_claim_sources(
+                "claim-forget-only-source",
+                [{"source_episode_id": stored.id}],
+            )
+
+            result = client.forget(stored.id)
+            assert result.status == "forgotten"
+
+            with get_connection() as conn:
+                claim_row = conn.execute(
+                    "SELECT status, valid_until FROM claims WHERE id = ?",
+                    ("claim-forget-only-source",),
+                ).fetchone()
+                source_count = conn.execute(
+                    "SELECT COUNT(*) AS c FROM claim_sources WHERE claim_id = ?",
+                    ("claim-forget-only-source",),
+                ).fetchone()["c"]
+                event_row = conn.execute(
+                    """SELECT event_type, details
+                         FROM claim_events
+                        WHERE claim_id = ?
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1""",
+                    ("claim-forget-only-source",),
+                ).fetchone()
+
+            assert claim_row is not None
+            assert claim_row["status"] == "expired"
+            assert claim_row["valid_until"] is not None
+            assert source_count == 0
+            assert event_row is not None
+            assert event_row["event_type"] == "expire"
+            assert json.loads(event_row["details"])["reason"] == "episode_forgotten"
+        finally:
+            client.close()
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_forget_preserves_claim_with_surviving_record_source(self, mock_embed):
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_connection,
+            insert_claim_sources,
+            insert_knowledge_records,
+            upsert_claim,
+            upsert_knowledge_topic,
+        )
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            vec = _make_normalized_vec(seed=88)
+            mock_embed.return_value = vec.reshape(1, -1)
+            stored = client.store("episode with surviving record source")
+            topic_id = upsert_knowledge_topic(
+                filename="forget-survivor.md",
+                title="Forget Survivor",
+                summary="claim survives via record",
+                source_episodes=[stored.id],
+                fact_count=1,
+                confidence=0.8,
+            )
+            record_id = insert_knowledge_records(
+                topic_id,
+                [{
+                    "record_type": "fact",
+                    "content": {"type": "fact", "subject": "survivor", "info": "still true"},
+                    "embedding_text": "survivor still true",
+                    "confidence": 0.8,
+                    "valid_from": "2026-01-01T00:00:00+00:00",
+                }],
+                source_episodes=[stored.id],
+            )[0]
+            upsert_claim(
+                claim_id="claim-forget-survivor",
+                claim_type="fact",
+                canonical_text="survivor claim",
+                payload={"subject": "survivor", "info": "still true"},
+                valid_from="2026-01-01T00:00:00+00:00",
+            )
+            insert_claim_sources(
+                "claim-forget-survivor",
+                [{
+                    "source_episode_id": stored.id,
+                    "source_topic_id": topic_id,
+                    "source_record_id": record_id,
+                }],
+            )
+
+            result = client.forget(stored.id)
+            assert result.status == "forgotten"
+
+            with get_connection() as conn:
+                claim_row = conn.execute(
+                    "SELECT status, valid_until FROM claims WHERE id = ?",
+                    ("claim-forget-survivor",),
+                ).fetchone()
+                source_row = conn.execute(
+                    """SELECT source_episode_id, source_topic_id, source_record_id
+                         FROM claim_sources
+                        WHERE claim_id = ?""",
+                    ("claim-forget-survivor",),
+                ).fetchone()
+
+            assert claim_row is not None
+            assert claim_row["status"] == "active"
+            assert claim_row["valid_until"] is None
+            assert source_row is not None
+            assert source_row["source_episode_id"] is None
+            assert source_row["source_topic_id"] == topic_id
+            assert source_row["source_record_id"] == record_id
+        finally:
+            client.close()
+
     def test_forget_respects_write_policy_and_scope(self):
         from consolidation_memory.database import ensure_schema, insert_episode
         from consolidation_memory.client import MemoryClient
@@ -1590,11 +1722,15 @@ class TestClientConsolidate:
 class TestClientCorrect:
     def test_correct_updates_structured_records(self, tmp_data_dir):
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.claim_graph import claim_from_record
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             ensure_schema,
+            get_connection,
             get_records_by_topic,
+            insert_claim_sources,
             insert_knowledge_records,
+            upsert_claim,
             upsert_knowledge_topic,
         )
 
@@ -1613,7 +1749,7 @@ class TestClientCorrect:
             fact_count=1,
             confidence=0.8,
         )
-        insert_knowledge_records(
+        old_record_id = insert_knowledge_records(
             topic_id,
             records=[{
                 "record_type": "fact",
@@ -1622,6 +1758,22 @@ class TestClientCorrect:
                 "confidence": 0.8,
             }],
             source_episodes=["ep1"],
+        )[0]
+        old_claim_id = claim_from_record({"type": "fact", "subject": "Python", "info": "3.12"})["id"]
+        new_claim_id = claim_from_record({"type": "fact", "subject": "Python", "info": "3.13"})["id"]
+        upsert_claim(
+            claim_id=old_claim_id,
+            claim_type="fact",
+            canonical_text="type=fact | subject=python | info=3.12",
+            payload={"type": "fact", "subject": "python", "info": "3.12"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources(
+            old_claim_id,
+            [{
+                "source_topic_id": topic_id,
+                "source_record_id": old_record_id,
+            }],
         )
 
         corrected_md = (
@@ -1654,6 +1806,126 @@ class TestClientCorrect:
             assert len(all_records) == 2
             old = next(r for r in all_records if json.loads(r["content"]).get("info") == "3.12")
             assert old["valid_until"] is not None
+
+            with get_connection() as conn:
+                old_claim = conn.execute(
+                    "SELECT status, valid_until FROM claims WHERE id = ?",
+                    (old_claim_id,),
+                ).fetchone()
+                new_claim = conn.execute(
+                    "SELECT status, valid_from, valid_until FROM claims WHERE id = ?",
+                    (new_claim_id,),
+                ).fetchone()
+                old_sources = conn.execute(
+                    "SELECT COUNT(*) AS c FROM claim_sources WHERE claim_id = ?",
+                    (old_claim_id,),
+                ).fetchone()["c"]
+                new_sources = conn.execute(
+                    "SELECT COUNT(*) AS c FROM claim_sources WHERE claim_id = ?",
+                    (new_claim_id,),
+                ).fetchone()["c"]
+
+            assert old_claim is not None
+            assert old_claim["status"] == "expired"
+            assert old_claim["valid_until"] == old["valid_until"]
+            assert old_sources == 0
+            assert new_claim is not None
+            assert new_claim["status"] == "active"
+            assert new_claim["valid_from"] is not None
+            assert new_claim["valid_until"] is None
+            assert new_sources == 1
+        finally:
+            client.close()
+
+    def test_correct_expires_legacy_topic_only_claims(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.claim_graph import claim_from_record
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_connection,
+            insert_claim_sources,
+            insert_knowledge_records,
+            upsert_claim,
+            upsert_knowledge_topic,
+        )
+
+        ensure_schema()
+        cfg = get_config()
+        filename = "legacy-topic.md"
+        (cfg.KNOWLEDGE_DIR / filename).write_text(
+            "---\ntitle: Legacy Topic\nsummary: old summary\n---\n\n## Facts\n- **Mode**: old\n",
+            encoding="utf-8",
+        )
+        topic_id = upsert_knowledge_topic(
+            filename=filename,
+            title="Legacy Topic",
+            summary="old summary",
+            source_episodes=[],
+            fact_count=1,
+            confidence=0.8,
+        )
+        insert_knowledge_records(
+            topic_id,
+            records=[{
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Mode", "info": "old"},
+                "embedding_text": "Mode old",
+                "confidence": 0.8,
+            }],
+        )
+        upsert_claim(
+            claim_id="claim-topic-only-old",
+            claim_type="fact",
+            canonical_text="legacy topic only claim",
+            payload={"subject": "Mode", "info": "old"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources(
+            "claim-topic-only-old",
+            [{"source_topic_id": topic_id}],
+        )
+
+        corrected_md = (
+            "---\n"
+            "title: Legacy Topic\n"
+            "summary: new summary\n"
+            "tags: [legacy]\n"
+            "confidence: 0.9\n"
+            "---\n\n"
+            "## Facts\n"
+            "- **Mode**: new\n"
+        )
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = corrected_md
+        new_claim_id = claim_from_record({"type": "fact", "subject": "Mode", "info": "new"})["id"]
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch("consolidation_memory.backends.get_llm_backend", return_value=mock_llm):
+                result = client.correct(filename, "Replace old topic-only claim")
+
+            assert result.status == "corrected"
+            with get_connection() as conn:
+                old_claim = conn.execute(
+                    "SELECT status, valid_until FROM claims WHERE id = ?",
+                    ("claim-topic-only-old",),
+                ).fetchone()
+                old_source_count = conn.execute(
+                    "SELECT COUNT(*) AS c FROM claim_sources WHERE claim_id = ?",
+                    ("claim-topic-only-old",),
+                ).fetchone()["c"]
+                new_claim = conn.execute(
+                    "SELECT status FROM claims WHERE id = ?",
+                    (new_claim_id,),
+                ).fetchone()
+
+            assert old_claim is not None
+            assert old_claim["status"] == "expired"
+            assert old_claim["valid_until"] is not None
+            assert old_source_count == 0
+            assert new_claim is not None
+            assert new_claim["status"] == "active"
         finally:
             client.close()
 

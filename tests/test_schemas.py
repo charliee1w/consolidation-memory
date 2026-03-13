@@ -16,6 +16,8 @@ from consolidation_memory.types import (
     SearchResult,
     ClaimBrowseResult,
     ClaimSearchResult,
+    OutcomeBrowseResult,
+    OutcomeRecordResult,
     ForgetResult,
     ProtectResult,
     StatusResult,
@@ -34,6 +36,8 @@ class TestSchemaStructure:
             "memory_search",
             "memory_claim_browse",
             "memory_claim_search",
+            "memory_outcome_record",
+            "memory_outcome_browse",
             "memory_detect_drift",
             "memory_status",
             "memory_forget",
@@ -91,6 +95,8 @@ class TestSchemaStructure:
         search = next(t for t in openai_tools if t["function"]["name"] == "memory_search")
         claim_browse = next(t for t in openai_tools if t["function"]["name"] == "memory_claim_browse")
         claim_search = next(t for t in openai_tools if t["function"]["name"] == "memory_claim_search")
+        outcome_record = next(t for t in openai_tools if t["function"]["name"] == "memory_outcome_record")
+        outcome_browse = next(t for t in openai_tools if t["function"]["name"] == "memory_outcome_browse")
         forget = next(t for t in openai_tools if t["function"]["name"] == "memory_forget")
         export = next(t for t in openai_tools if t["function"]["name"] == "memory_export")
         correct = next(t for t in openai_tools if t["function"]["name"] == "memory_correct")
@@ -104,6 +110,8 @@ class TestSchemaStructure:
         assert "scope" in search["function"]["parameters"]["properties"]
         assert "scope" in claim_browse["function"]["parameters"]["properties"]
         assert "scope" in claim_search["function"]["parameters"]["properties"]
+        assert "scope" in outcome_record["function"]["parameters"]["properties"]
+        assert "scope" in outcome_browse["function"]["parameters"]["properties"]
         assert "scope" in forget["function"]["parameters"]["properties"]
         assert "scope" in export["function"]["parameters"]["properties"]
         assert "scope" in correct["function"]["parameters"]["properties"]
@@ -131,11 +139,13 @@ class TestSchemaStructure:
         store = next(t for t in openai_tools if t["function"]["name"] == "memory_store")
         recall = next(t for t in openai_tools if t["function"]["name"] == "memory_recall")
         detect_drift = next(t for t in openai_tools if t["function"]["name"] == "memory_detect_drift")
+        outcome_record = next(t for t in openai_tools if t["function"]["name"] == "memory_outcome_record")
         read_topic = next(t for t in openai_tools if t["function"]["name"] == "memory_read_topic")
 
         assert store["function"]["parameters"]["properties"]["content"]["maxLength"] == 50_000
         assert recall["function"]["parameters"]["properties"]["query"]["maxLength"] == 10_000
         assert detect_drift["function"]["parameters"]["properties"]["repo_path"]["maxLength"] == 4096
+        assert outcome_record["function"]["parameters"]["properties"]["action_summary"]["maxLength"] == 10_000
         assert read_topic["function"]["parameters"]["properties"]["filename"]["maxLength"] == 255
 
 
@@ -476,6 +486,69 @@ class TestDispatch:
         client.query_search_claims.assert_called_once_with(
             query="python",
             claim_type=None,
+            as_of=None,
+            limit=50,
+            scope={"namespace": {"slug": "team-a"}},
+        )
+
+    def test_dispatch_outcome_record_with_scope(self):
+        client = MagicMock()
+        client.record_outcome.return_value = OutcomeRecordResult(
+            status="recorded",
+            id="outcome-1",
+            action_key="act_abc",
+            outcome_type="success",
+        )
+
+        result = dispatch_tool_call(
+            client,
+            "memory_outcome_record",
+            {
+                "action_summary": "Run targeted pytest",
+                "outcome_type": "success",
+                "source_claim_ids": ["claim-1"],
+                "scope": {"project": {"slug": "repo-a"}},
+            },
+        )
+        assert result["status"] == "recorded"
+        client.record_outcome.assert_called_once_with(
+            action_summary="Run targeted pytest",
+            outcome_type="success",
+            source_claim_ids=["claim-1"],
+            source_record_ids=None,
+            source_episode_ids=None,
+            code_anchors=None,
+            issue_ids=None,
+            pr_ids=None,
+            action_key=None,
+            summary=None,
+            details=None,
+            confidence=0.8,
+            provenance=None,
+            observed_at=None,
+            scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_dispatch_outcome_browse_with_scope(self):
+        client = MagicMock()
+        client.query_browse_outcomes.return_value = OutcomeBrowseResult(outcomes=[], total=0)
+
+        result = dispatch_tool_call(
+            client,
+            "memory_outcome_browse",
+            {
+                "outcome_type": "failure",
+                "source_claim_id": "claim-1",
+                "scope": {"namespace": {"slug": "team-a"}},
+            },
+        )
+        assert result["total"] == 0
+        client.query_browse_outcomes.assert_called_once_with(
+            outcome_type="failure",
+            action_key=None,
+            source_claim_id="claim-1",
+            source_record_id=None,
+            source_episode_id=None,
             as_of=None,
             limit=50,
             scope={"namespace": {"slug": "team-a"}},

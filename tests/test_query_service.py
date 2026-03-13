@@ -10,6 +10,7 @@ from consolidation_memory.query_service import (
     ClaimBrowseQuery,
     ClaimSearchQuery,
     DriftQuery,
+    OutcomeBrowseQuery,
     RecallQuery,
 )
 
@@ -239,3 +240,58 @@ class TestCanonicalQueryServiceDrift:
             repo_path="C:/repo",
             scope={"namespace_slug": "default", "project_slug": "repo-a"},
         )
+
+
+class TestCanonicalQueryServiceOutcomes:
+    def test_browse_outcomes_assembles_links_and_refs(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        outcome_rows = [{
+            "id": "outcome-1",
+            "action_key": "act_abc",
+            "action_summary": "run targeted tests",
+            "outcome_type": "success",
+            "summary": "all good",
+            "details": "{\"duration\": 12}",
+            "confidence": 0.9,
+            "provenance": "{\"agent\":\"codex\"}",
+            "observed_at": "2026-03-01T00:00:00+00:00",
+            "created_at": "2026-03-01T00:00:00+00:00",
+            "updated_at": "2026-03-01T00:00:00+00:00",
+        }]
+        source_rows = [{
+            "id": "src-1",
+            "outcome_id": "outcome-1",
+            "source_claim_id": "claim-1",
+            "source_record_id": None,
+            "source_episode_id": "ep-1",
+            "created_at": "2026-03-01T00:00:00+00:00",
+        }]
+        ref_rows = [{
+            "id": "ref-1",
+            "outcome_id": "outcome-1",
+            "ref_type": "issue",
+            "ref_key": "id",
+            "ref_value": "ISSUE-1",
+            "created_at": "2026-03-01T00:00:00+00:00",
+        }]
+
+        with (
+            patch("consolidation_memory.database.get_action_outcomes", return_value=outcome_rows),
+            patch("consolidation_memory.database.get_action_outcome_sources_by_outcome_ids", return_value=source_rows),
+            patch("consolidation_memory.database.get_action_outcome_refs_by_outcome_ids", return_value=ref_rows),
+        ):
+            result = service.browse_outcomes(
+                OutcomeBrowseQuery(
+                    outcome_type="success",
+                    source_claim_id="claim-1",
+                    limit=10,
+                ),
+                scope_filter={"project_slug": "repo-a"},
+            )
+
+        assert result.total == 1
+        outcome = result.outcomes[0]
+        assert outcome["id"] == "outcome-1"
+        assert outcome["source_claim_ids"] == ["claim-1"]
+        assert outcome["source_episode_ids"] == ["ep-1"]
+        assert outcome["issue_ids"] == ["ISSUE-1"]

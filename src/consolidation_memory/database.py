@@ -39,7 +39,7 @@ _fts5_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = 17
 
 _DEFAULT_NAMESPACE_SLUG = "default"
 _DEFAULT_NAMESPACE_SHARING_MODE = "private"
@@ -220,7 +220,78 @@ MIGRATIONS: dict[int, list[str]] = {
     # Migration 16 is applied specially in _apply_migration() to hide episodes
     # until their vectors are durably persisted.
     16: [],
+    17: [
+        """CREATE TABLE IF NOT EXISTS action_outcomes (
+            id                      TEXT PRIMARY KEY,
+            action_key              TEXT NOT NULL,
+            action_summary          TEXT NOT NULL,
+            outcome_type            TEXT NOT NULL,
+            summary                 TEXT,
+            details                 TEXT,
+            confidence              REAL NOT NULL DEFAULT 0.8,
+            provenance              TEXT NOT NULL DEFAULT '{}',
+            observed_at             TEXT NOT NULL,
+            created_at              TEXT NOT NULL,
+            updated_at              TEXT NOT NULL,
+            namespace_slug          TEXT NOT NULL DEFAULT 'default',
+            namespace_sharing_mode  TEXT NOT NULL DEFAULT 'private',
+            app_client_name         TEXT NOT NULL DEFAULT 'legacy_client',
+            app_client_type         TEXT NOT NULL DEFAULT 'python_sdk',
+            app_client_provider     TEXT,
+            app_client_external_key TEXT,
+            agent_name              TEXT,
+            agent_external_key      TEXT,
+            session_external_key    TEXT,
+            session_kind            TEXT,
+            project_slug            TEXT NOT NULL DEFAULT 'default',
+            project_display_name    TEXT,
+            project_root_uri        TEXT,
+            project_repo_remote     TEXT,
+            project_default_branch  TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcomes_action_key ON action_outcomes(action_key)",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcomes_type_observed ON action_outcomes(outcome_type, observed_at)",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcomes_scope_ns_project ON action_outcomes(namespace_slug, project_slug)",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcomes_scope_app ON action_outcomes(namespace_slug, project_slug, app_client_name, app_client_type)",
+        """CREATE TABLE IF NOT EXISTS action_outcome_sources (
+            id                  TEXT PRIMARY KEY,
+            outcome_id          TEXT NOT NULL,
+            source_claim_id     TEXT,
+            source_record_id    TEXT,
+            source_episode_id   TEXT,
+            created_at          TEXT NOT NULL,
+            FOREIGN KEY (outcome_id) REFERENCES action_outcomes(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_claim_id) REFERENCES claims(id),
+            FOREIGN KEY (source_record_id) REFERENCES knowledge_records(id),
+            FOREIGN KEY (source_episode_id) REFERENCES episodes(id),
+            UNIQUE(outcome_id, source_claim_id, source_record_id, source_episode_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcome_sources_outcome ON action_outcome_sources(outcome_id)",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcome_sources_claim ON action_outcome_sources(source_claim_id)",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcome_sources_record ON action_outcome_sources(source_record_id)",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcome_sources_episode ON action_outcome_sources(source_episode_id)",
+        """CREATE TABLE IF NOT EXISTS action_outcome_refs (
+            id              TEXT PRIMARY KEY,
+            outcome_id      TEXT NOT NULL,
+            ref_type        TEXT NOT NULL,
+            ref_key         TEXT NOT NULL,
+            ref_value       TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            FOREIGN KEY (outcome_id) REFERENCES action_outcomes(id) ON DELETE CASCADE,
+            UNIQUE(outcome_id, ref_type, ref_key, ref_value)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcome_refs_outcome ON action_outcome_refs(outcome_id)",
+        "CREATE INDEX IF NOT EXISTS idx_action_outcome_refs_lookup ON action_outcome_refs(ref_type, ref_value)",
+    ],
 }
+
+OUTCOME_TYPES: tuple[str, ...] = (
+    "success",
+    "failure",
+    "partial_success",
+    "reverted",
+    "superseded",
+)
 
 
 def _now() -> str:
@@ -233,6 +304,21 @@ def _normalize_utc_timestamp(value: str | datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat()
+
+
+def _normalize_outcome_type(value: object) -> str:
+    token = str(value or "").strip().lower()
+    if token not in OUTCOME_TYPES:
+        raise ValueError(
+            "outcome_type must be one of: " + ", ".join(OUTCOME_TYPES)
+        )
+    return token
+
+
+def _derive_action_key(action_summary: str) -> str:
+    normalized = " ".join(action_summary.split()).strip().casefold()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+    return f"act_{digest}"
 
 
 def _normalize_scope_token(value: object) -> str | None:
@@ -1330,19 +1416,46 @@ def get_existing_episode_ids(
     episode_ids: Sequence[str],
     *,
     include_deleted: bool = False,
+    scope: Mapping[str, Any] | None = None,
 ) -> set[str]:
     """Return the subset of provided episode IDs that currently exist in SQLite."""
     if not episode_ids:
         return set()
     placeholders = ",".join("?" for _ in episode_ids)
     conditions = [f"id IN ({placeholders})"]  # nosec B608
+    params: list[Any] = list(episode_ids)
     if not include_deleted:
         conditions.append("deleted = 0")
+    _apply_scope_filters(conditions, params, scope)
     where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         rows = conn.execute(
             f"SELECT id FROM episodes WHERE {where_clause}",  # nosec B608
-            list(episode_ids),
+            params,
+        ).fetchall()
+    return {str(row["id"]) for row in rows}
+
+
+def get_existing_record_ids(
+    record_ids: Sequence[str],
+    *,
+    include_deleted: bool = False,
+    scope: Mapping[str, Any] | None = None,
+) -> set[str]:
+    """Return the subset of provided record IDs that currently exist in SQLite."""
+    if not record_ids:
+        return set()
+    placeholders = ",".join("?" for _ in record_ids)
+    conditions = [f"id IN ({placeholders})"]  # nosec B608
+    params: list[Any] = list(record_ids)
+    if not include_deleted:
+        conditions.append("deleted = 0")
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM knowledge_records WHERE {where_clause}",  # nosec B608
+            params,
         ).fetchall()
     return {str(row["id"]) for row in rows}
 
@@ -2550,6 +2663,19 @@ def get_claims_as_of(
     return claims
 
 
+def get_existing_claim_ids(claim_ids: Sequence[str]) -> set[str]:
+    """Return the subset of provided claim IDs that currently exist in SQLite."""
+    if not claim_ids:
+        return set()
+    placeholders = ",".join("?" for _ in claim_ids)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM claims WHERE id IN ({placeholders})",  # nosec B608
+            list(claim_ids),
+        ).fetchall()
+    return {str(row["id"]) for row in rows}
+
+
 def get_claim_trust_stats(as_of: str | None = None) -> dict[str, float | int]:
     """Return trust-oriented claim coverage stats for the current snapshot."""
     as_of_utc = _normalize_utc_timestamp(as_of or _now())
@@ -2666,6 +2792,190 @@ def expire_claim(claim_id: str, valid_until: str | None = None) -> bool:
             (ts, ts, _now(), claim_id),
         )
     return bool(cursor.rowcount and cursor.rowcount > 0)
+
+
+def detach_claim_sources_for_episode(episode_id: str) -> list[str]:
+    """Remove episode provenance while preserving any remaining record/topic source."""
+    episode_token = str(episode_id or "").strip()
+    if not episode_token:
+        return []
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, claim_id, source_topic_id, source_record_id
+               FROM claim_sources
+               WHERE source_episode_id = ?""",
+            (episode_token,),
+        ).fetchall()
+        if not rows:
+            return []
+
+        delete_ids: list[str] = []
+        update_ids: list[str] = []
+        claim_ids: list[str] = []
+        seen_claim_ids: set[str] = set()
+        for row in rows:
+            claim_id = str(row["claim_id"])
+            if claim_id not in seen_claim_ids:
+                seen_claim_ids.add(claim_id)
+                claim_ids.append(claim_id)
+            if row["source_topic_id"] is not None or row["source_record_id"] is not None:
+                update_ids.append(str(row["id"]))
+            else:
+                delete_ids.append(str(row["id"]))
+
+        if update_ids:
+            placeholders = ",".join("?" for _ in update_ids)
+            conn.execute(
+                f"""UPDATE claim_sources
+                    SET source_episode_id = NULL
+                    WHERE id IN ({placeholders})""",  # nosec B608
+                update_ids,
+            )
+        if delete_ids:
+            placeholders = ",".join("?" for _ in delete_ids)
+            conn.execute(
+                f"DELETE FROM claim_sources WHERE id IN ({placeholders})",  # nosec B608
+                delete_ids,
+            )
+
+    return claim_ids
+
+
+def remove_claim_sources_for_records(record_ids: Sequence[str]) -> list[str]:
+    """Remove claim source rows tied to superseded knowledge record IDs."""
+    normalized_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for record_id in record_ids:
+        token = str(record_id or "").strip()
+        if not token or token in seen_ids:
+            continue
+        seen_ids.add(token)
+        normalized_ids.append(token)
+    if not normalized_ids:
+        return []
+
+    placeholders = ",".join("?" for _ in normalized_ids)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT DISTINCT claim_id
+                FROM claim_sources
+                WHERE source_record_id IN ({placeholders})
+                ORDER BY claim_id ASC""",  # nosec B608
+            normalized_ids,
+        ).fetchall()
+        if not rows:
+            return []
+        conn.execute(
+            f"DELETE FROM claim_sources WHERE source_record_id IN ({placeholders})",  # nosec B608
+            normalized_ids,
+        )
+
+    return [str(row["claim_id"]) for row in rows]
+
+
+def remove_topic_only_claim_sources(topic_id: str) -> list[str]:
+    """Remove legacy topic-only claim source rows for a corrected topic snapshot."""
+    topic_token = str(topic_id or "").strip()
+    if not topic_token:
+        return []
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT claim_id
+               FROM claim_sources
+               WHERE source_topic_id = ?
+                 AND source_record_id IS NULL
+                 AND source_episode_id IS NULL
+               ORDER BY claim_id ASC""",
+            (topic_token,),
+        ).fetchall()
+        if not rows:
+            return []
+        conn.execute(
+            """DELETE FROM claim_sources
+               WHERE source_topic_id = ?
+                 AND source_record_id IS NULL
+                 AND source_episode_id IS NULL""",
+            (topic_token,),
+        )
+
+    return [str(row["claim_id"]) for row in rows]
+
+
+def expire_claims_without_sources(
+    claim_ids: Sequence[str],
+    *,
+    valid_until: str | None = None,
+    reason: str,
+    details: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Expire currently-valid claims that no longer have any provenance rows."""
+    normalized_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for claim_id in claim_ids:
+        token = str(claim_id or "").strip()
+        if not token or token in seen_ids:
+            continue
+        seen_ids.add(token)
+        normalized_ids.append(token)
+    if not normalized_ids:
+        return []
+
+    expired_at = _normalize_utc_timestamp(valid_until or _now())
+    placeholders = ",".join("?" for _ in normalized_ids)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT c.id
+                  FROM claims c
+                  LEFT JOIN claim_sources cs ON cs.claim_id = c.id
+                 WHERE c.id IN ({placeholders})
+                   AND julianday(c.valid_from) <= julianday(?)
+                   AND (c.valid_until IS NULL OR julianday(c.valid_until) > julianday(?))
+              GROUP BY c.id
+                HAVING COUNT(cs.id) = 0
+              ORDER BY c.id ASC""",  # nosec B608
+            [*normalized_ids, expired_at, expired_at],
+        ).fetchall()
+        orphaned_ids = [str(row["id"]) for row in rows]
+        if not orphaned_ids:
+            return []
+
+        orphan_placeholders = ",".join("?" for _ in orphaned_ids)
+        conn.execute(
+            f"""UPDATE claims
+                   SET status = 'expired',
+                       valid_until = CASE
+                           WHEN valid_until IS NULL OR julianday(valid_until) > julianday(?) THEN ?
+                           ELSE valid_until
+                       END,
+                       updated_at = ?
+                 WHERE id IN ({orphan_placeholders})
+                   AND julianday(valid_from) <= julianday(?)
+                   AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))""",  # nosec B608
+            [expired_at, expired_at, expired_at, *orphaned_ids, expired_at, expired_at],
+        )
+
+        event_details = dict(details or {})
+        event_details["reason"] = reason
+        event_details["expired_at"] = expired_at
+        conn.executemany(
+            """INSERT INTO claim_events
+               (id, claim_id, event_type, details, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                (
+                    str(uuid.uuid4()),
+                    claim_id,
+                    "expire",
+                    json.dumps(event_details, default=str),
+                    expired_at,
+                )
+                for claim_id in orphaned_ids
+            ],
+        )
+
+    return orphaned_ids
 
 
 def count_active_challenged_claims(as_of: str | None = None) -> int:
@@ -3562,6 +3872,295 @@ def get_recent_consolidation_runs(limit: int = 5) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def _normalize_id_tokens(values: Sequence[str] | None) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values or ():
+        token = str(value or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    return deduped
+
+
+def record_action_outcome(
+    *,
+    action_summary: str,
+    outcome_type: str,
+    source_claim_ids: Sequence[str] | None = None,
+    source_record_ids: Sequence[str] | None = None,
+    source_episode_ids: Sequence[str] | None = None,
+    code_anchors: Sequence[Mapping[str, Any]] | None = None,
+    issue_ids: Sequence[str] | None = None,
+    pr_ids: Sequence[str] | None = None,
+    action_key: str | None = None,
+    summary: str | None = None,
+    details: Mapping[str, Any] | str | None = None,
+    confidence: float = 0.8,
+    provenance: Mapping[str, Any] | str | None = None,
+    observed_at: str | None = None,
+    scope: Mapping[str, Any] | None = None,
+    outcome_id: str | None = None,
+) -> str:
+    """Persist one action outcome observation and provenance links atomically."""
+    action_summary_token = str(action_summary or "").strip()
+    if not action_summary_token:
+        raise ValueError("action_summary must not be empty")
+
+    normalized_outcome_type = _normalize_outcome_type(outcome_type)
+    claim_ids = _normalize_id_tokens(source_claim_ids)
+    record_ids = _normalize_id_tokens(source_record_ids)
+    episode_ids = _normalize_id_tokens(source_episode_ids)
+    if not claim_ids and not record_ids and not episode_ids:
+        raise ValueError(
+            "At least one source_claim_id, source_record_id, or source_episode_id is required"
+        )
+
+    issue_tokens = _normalize_id_tokens(issue_ids)
+    pr_tokens = _normalize_id_tokens(pr_ids)
+    normalized_anchors: list[tuple[str, str]] = []
+    seen_anchors: set[tuple[str, str]] = set()
+    for anchor in code_anchors or ():
+        anchor_type = str(anchor.get("anchor_type") or anchor.get("type") or "").strip()
+        anchor_value = str(anchor.get("anchor_value") or anchor.get("value") or "").strip()
+        if not anchor_type or not anchor_value:
+            continue
+        pair = (anchor_type, anchor_value)
+        if pair in seen_anchors:
+            continue
+        seen_anchors.add(pair)
+        normalized_anchors.append(pair)
+
+    now = _now()
+    observed_ts = _normalize_utc_timestamp(observed_at or now)
+    scope_row = _coerce_scope_row(scope)
+    resolved_outcome_id = str(outcome_id or uuid.uuid4())
+    resolved_action_key = (
+        str(action_key).strip()
+        if action_key is not None and str(action_key).strip()
+        else _derive_action_key(action_summary_token)
+    )
+    summary_token = str(summary).strip() if summary is not None else None
+    summary_token = summary_token or None
+    details_text = (
+        details
+        if isinstance(details, str)
+        else (json.dumps(details, default=str) if details is not None else None)
+    )
+    provenance_text = (
+        provenance
+        if isinstance(provenance, str)
+        else (json.dumps(provenance, default=str) if provenance is not None else "{}")
+    )
+    confidence_value = max(0.0, min(1.0, float(confidence)))
+
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO action_outcomes
+               (id, action_key, action_summary, outcome_type, summary, details,
+                confidence, provenance, observed_at, created_at, updated_at,
+                namespace_slug, namespace_sharing_mode,
+                app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                agent_name, agent_external_key,
+                session_external_key, session_kind,
+                project_slug, project_display_name, project_root_uri,
+                project_repo_remote, project_default_branch)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                resolved_outcome_id,
+                resolved_action_key,
+                action_summary_token,
+                normalized_outcome_type,
+                summary_token,
+                details_text,
+                confidence_value,
+                provenance_text,
+                observed_ts,
+                now,
+                now,
+                scope_row["namespace_slug"],
+                scope_row["namespace_sharing_mode"],
+                scope_row["app_client_name"],
+                scope_row["app_client_type"],
+                scope_row["app_client_provider"],
+                scope_row["app_client_external_key"],
+                scope_row["agent_name"],
+                scope_row["agent_external_key"],
+                scope_row["session_external_key"],
+                scope_row["session_kind"],
+                scope_row["project_slug"],
+                scope_row["project_display_name"],
+                scope_row["project_root_uri"],
+                scope_row["project_repo_remote"],
+                scope_row["project_default_branch"],
+            ),
+        )
+
+        source_rows: list[tuple[str, str, str | None, str | None, str | None, str]] = []
+        for claim_id in claim_ids:
+            source_rows.append((str(uuid.uuid4()), resolved_outcome_id, claim_id, None, None, now))
+        for record_id in record_ids:
+            source_rows.append((str(uuid.uuid4()), resolved_outcome_id, None, record_id, None, now))
+        for episode_id in episode_ids:
+            source_rows.append((str(uuid.uuid4()), resolved_outcome_id, None, None, episode_id, now))
+        if source_rows:
+            conn.executemany(
+                """INSERT INTO action_outcome_sources
+                   (id, outcome_id, source_claim_id, source_record_id, source_episode_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                source_rows,
+            )
+
+        ref_rows: list[tuple[str, str, str, str, str, str]] = []
+        for anchor_type, anchor_value in normalized_anchors:
+            ref_rows.append(
+                (
+                    str(uuid.uuid4()),
+                    resolved_outcome_id,
+                    "code_anchor",
+                    anchor_type,
+                    anchor_value,
+                    now,
+                )
+            )
+        for issue_id in issue_tokens:
+            ref_rows.append(
+                (
+                    str(uuid.uuid4()),
+                    resolved_outcome_id,
+                    "issue",
+                    "id",
+                    issue_id,
+                    now,
+                )
+            )
+        for pr_id in pr_tokens:
+            ref_rows.append(
+                (
+                    str(uuid.uuid4()),
+                    resolved_outcome_id,
+                    "pr",
+                    "id",
+                    pr_id,
+                    now,
+                )
+            )
+        if ref_rows:
+            conn.executemany(
+                """INSERT INTO action_outcome_refs
+                   (id, outcome_id, ref_type, ref_key, ref_value, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                ref_rows,
+            )
+
+    return resolved_outcome_id
+
+
+def get_action_outcomes(
+    *,
+    outcome_type: str | None = None,
+    action_key: str | None = None,
+    source_claim_id: str | None = None,
+    source_record_id: str | None = None,
+    source_episode_id: str | None = None,
+    as_of: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    scope: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Browse action outcomes with optional source and temporal filters."""
+    bounded_limit = max(1, int(limit))
+    bounded_offset = max(0, int(offset))
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    join_sources = source_claim_id is not None or source_record_id is not None or source_episode_id is not None
+    joins = ""
+    if join_sources:
+        joins = "JOIN action_outcome_sources aos ON aos.outcome_id = ao.id"
+
+    _apply_scope_filters(conditions, params, scope, table_alias="ao")
+    if outcome_type is not None:
+        conditions.append("ao.outcome_type = ?")
+        params.append(_normalize_outcome_type(outcome_type))
+    if action_key is not None:
+        action_key_token = str(action_key).strip()
+        if action_key_token:
+            conditions.append("ao.action_key = ?")
+            params.append(action_key_token)
+    if source_claim_id is not None:
+        source_claim_token = str(source_claim_id).strip()
+        if source_claim_token:
+            conditions.append("aos.source_claim_id = ?")
+            params.append(source_claim_token)
+    if source_record_id is not None:
+        source_record_token = str(source_record_id).strip()
+        if source_record_token:
+            conditions.append("aos.source_record_id = ?")
+            params.append(source_record_token)
+    if source_episode_id is not None:
+        source_episode_token = str(source_episode_id).strip()
+        if source_episode_token:
+            conditions.append("aos.source_episode_id = ?")
+            params.append(source_episode_token)
+    if as_of is not None:
+        as_of_utc = _normalize_utc_timestamp(as_of)
+        conditions.append("julianday(ao.observed_at) <= julianday(?)")
+        params.append(as_of_utc)
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT DISTINCT ao.*
+                FROM action_outcomes ao
+                {joins}
+                {where_clause}
+                ORDER BY julianday(ao.observed_at) DESC, ao.created_at DESC, ao.id ASC
+                LIMIT ? OFFSET ?""",  # nosec B608
+            [*params, bounded_limit, bounded_offset],
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_action_outcome_sources_by_outcome_ids(
+    outcome_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Return source-link rows for a set of outcome IDs."""
+    if not outcome_ids:
+        return []
+    placeholders = ",".join("?" for _ in outcome_ids)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT id, outcome_id, source_claim_id, source_record_id, source_episode_id, created_at
+                FROM action_outcome_sources
+                WHERE outcome_id IN ({placeholders})
+                ORDER BY created_at ASC, id ASC""",  # nosec B608
+            list(outcome_ids),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_action_outcome_refs_by_outcome_ids(
+    outcome_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Return reference rows for a set of outcome IDs."""
+    if not outcome_ids:
+        return []
+    placeholders = ",".join("?" for _ in outcome_ids)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT id, outcome_id, ref_type, ref_key, ref_value, created_at
+                FROM action_outcome_refs
+                WHERE outcome_id IN ({placeholders})
+                ORDER BY created_at ASC, id ASC""",  # nosec B608
+            list(outcome_ids),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 # ── Export / Bulk queries ────────────────────────────────────────────────────
 
 def get_all_episodes(
@@ -3706,6 +4305,87 @@ def get_all_episode_anchors(
     return [dict(r) for r in rows]
 
 
+def get_all_action_outcomes(
+    outcome_ids: Sequence[str] | None = None,
+    scope: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Return all action outcome observations for export."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if outcome_ids is not None:
+        if not outcome_ids:
+            return []
+        placeholders = ",".join("?" for _ in outcome_ids)
+        conditions.append(f"id IN ({placeholders})")  # nosec B608
+        params.extend(outcome_ids)
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, action_key, action_summary, outcome_type, summary, details,
+                      confidence, provenance, observed_at, created_at, updated_at,
+                      namespace_slug, namespace_sharing_mode,
+                      app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                      agent_name, agent_external_key,
+                      session_external_key, session_kind,
+                      project_slug, project_display_name, project_root_uri,
+                      project_repo_remote, project_default_branch
+               FROM action_outcomes
+               {where_clause}
+               ORDER BY observed_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_all_action_outcome_sources(
+    outcome_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return all action outcome source links for export."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if outcome_ids is not None:
+        if not outcome_ids:
+            return []
+        placeholders = ",".join("?" for _ in outcome_ids)
+        conditions.append(f"outcome_id IN ({placeholders})")  # nosec B608
+        params.extend(outcome_ids)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, outcome_id, source_claim_id, source_record_id, source_episode_id, created_at
+               FROM action_outcome_sources
+               {where_clause}
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_all_action_outcome_refs(
+    outcome_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return all action outcome references (anchors/issues/PRs) for export."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if outcome_ids is not None:
+        if not outcome_ids:
+            return []
+        placeholders = ",".join("?" for _ in outcome_ids)
+        conditions.append(f"outcome_id IN ({placeholders})")  # nosec B608
+        params.extend(outcome_ids)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, outcome_id, ref_type, ref_key, ref_value, created_at
+               FROM action_outcome_refs
+               {where_clause}
+               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),  # nosec B608
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def import_claim_graph_snapshot(
     *,
     claims: Sequence[Mapping[str, Any]] = (),
@@ -3713,12 +4393,15 @@ def import_claim_graph_snapshot(
     claim_sources: Sequence[Mapping[str, Any]] = (),
     claim_events: Sequence[Mapping[str, Any]] = (),
     episode_anchors: Sequence[Mapping[str, Any]] = (),
+    action_outcomes: Sequence[Mapping[str, Any]] = (),
+    action_outcome_sources: Sequence[Mapping[str, Any]] = (),
+    action_outcome_refs: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, int]:
-    """Import claim graph entities from an export snapshot.
+    """Import claim graph and action outcome entities from an export snapshot.
 
     Existing rows are preserved or updated by primary key:
     - claims: upsert by claim ID
-    - edges/sources/events/anchors: insert with conflict-ignore by unique key/ID
+    - edges/sources/events/anchors/outcome links: insert with conflict-ignore by unique key/ID
     """
     now = _now()
     imported = {
@@ -3727,6 +4410,9 @@ def import_claim_graph_snapshot(
         "claim_sources": 0,
         "claim_events": 0,
         "episode_anchors": 0,
+        "action_outcomes": 0,
+        "action_outcome_sources": 0,
+        "action_outcome_refs": 0,
     }
 
     with get_connection() as conn:
@@ -3877,6 +4563,150 @@ def import_claim_graph_snapshot(
             )
             if cursor.rowcount and cursor.rowcount > 0:
                 imported["episode_anchors"] += 1
+
+        for outcome in action_outcomes:
+            outcome_id = str(outcome.get("id") or uuid.uuid4())
+            action_summary = str(outcome.get("action_summary") or "").strip()
+            outcome_type = str(outcome.get("outcome_type") or "").strip().lower()
+            if not action_summary or not outcome_type:
+                continue
+            if outcome_type not in OUTCOME_TYPES:
+                continue
+
+            action_key = str(outcome.get("action_key") or "").strip() or _derive_action_key(action_summary)
+            summary = outcome.get("summary")
+            summary_text = str(summary).strip() if summary is not None else None
+            summary_text = summary_text or None
+            details_raw = outcome.get("details")
+            details_text = details_raw if isinstance(details_raw, str) else (
+                json.dumps(details_raw, default=str) if details_raw is not None else None
+            )
+            provenance_raw = outcome.get("provenance")
+            provenance_text = provenance_raw if isinstance(provenance_raw, str) else (
+                json.dumps(provenance_raw, default=str) if provenance_raw is not None else "{}"
+            )
+            confidence_raw = outcome.get("confidence", 0.8)
+            confidence = 0.8 if confidence_raw is None else float(confidence_raw)
+            observed_at = str(outcome.get("observed_at") or now)
+            created_at = str(outcome.get("created_at") or observed_at)
+            updated_at = str(outcome.get("updated_at") or created_at)
+            scope_row = _coerce_scope_row(outcome)
+
+            conn.execute(
+                """INSERT INTO action_outcomes
+                   (id, action_key, action_summary, outcome_type, summary, details,
+                    confidence, provenance, observed_at, created_at, updated_at,
+                    namespace_slug, namespace_sharing_mode,
+                    app_client_name, app_client_type, app_client_provider, app_client_external_key,
+                    agent_name, agent_external_key,
+                    session_external_key, session_kind,
+                    project_slug, project_display_name, project_root_uri,
+                    project_repo_remote, project_default_branch)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       action_key = excluded.action_key,
+                       action_summary = excluded.action_summary,
+                       outcome_type = excluded.outcome_type,
+                       summary = excluded.summary,
+                       details = excluded.details,
+                       confidence = excluded.confidence,
+                       provenance = excluded.provenance,
+                       observed_at = excluded.observed_at,
+                       updated_at = excluded.updated_at,
+                       namespace_slug = excluded.namespace_slug,
+                       namespace_sharing_mode = excluded.namespace_sharing_mode,
+                       app_client_name = excluded.app_client_name,
+                       app_client_type = excluded.app_client_type,
+                       app_client_provider = excluded.app_client_provider,
+                       app_client_external_key = excluded.app_client_external_key,
+                       agent_name = excluded.agent_name,
+                       agent_external_key = excluded.agent_external_key,
+                       session_external_key = excluded.session_external_key,
+                       session_kind = excluded.session_kind,
+                       project_slug = excluded.project_slug,
+                       project_display_name = excluded.project_display_name,
+                       project_root_uri = excluded.project_root_uri,
+                       project_repo_remote = excluded.project_repo_remote,
+                       project_default_branch = excluded.project_default_branch""",
+                (
+                    outcome_id,
+                    action_key,
+                    action_summary,
+                    outcome_type,
+                    summary_text,
+                    details_text,
+                    confidence,
+                    provenance_text,
+                    observed_at,
+                    created_at,
+                    updated_at,
+                    scope_row["namespace_slug"],
+                    scope_row["namespace_sharing_mode"],
+                    scope_row["app_client_name"],
+                    scope_row["app_client_type"],
+                    scope_row["app_client_provider"],
+                    scope_row["app_client_external_key"],
+                    scope_row["agent_name"],
+                    scope_row["agent_external_key"],
+                    scope_row["session_external_key"],
+                    scope_row["session_kind"],
+                    scope_row["project_slug"],
+                    scope_row["project_display_name"],
+                    scope_row["project_root_uri"],
+                    scope_row["project_repo_remote"],
+                    scope_row["project_default_branch"],
+                ),
+            )
+            imported["action_outcomes"] += 1
+
+        for source in action_outcome_sources:
+            source_id = str(source.get("id") or uuid.uuid4())
+            outcome_id = str(source.get("outcome_id") or "").strip()
+            if not outcome_id:
+                continue
+            source_claim_id_raw = source.get("source_claim_id")
+            source_record_id_raw = source.get("source_record_id")
+            source_episode_id_raw = source.get("source_episode_id")
+            if source_claim_id_raw is None and source_record_id_raw is None and source_episode_id_raw is None:
+                continue
+            created_at = str(source.get("created_at") or now)
+
+            cursor = conn.execute(
+                """INSERT INTO action_outcome_sources
+                   (id, outcome_id, source_claim_id, source_record_id, source_episode_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                (
+                    source_id,
+                    outcome_id,
+                    str(source_claim_id_raw) if source_claim_id_raw is not None else None,
+                    str(source_record_id_raw) if source_record_id_raw is not None else None,
+                    str(source_episode_id_raw) if source_episode_id_raw is not None else None,
+                    created_at,
+                ),
+            )
+            if cursor.rowcount and cursor.rowcount > 0:
+                imported["action_outcome_sources"] += 1
+
+        for ref in action_outcome_refs:
+            ref_id = str(ref.get("id") or uuid.uuid4())
+            outcome_id = str(ref.get("outcome_id") or "").strip()
+            ref_type = str(ref.get("ref_type") or "").strip()
+            ref_key = str(ref.get("ref_key") or "").strip()
+            ref_value = str(ref.get("ref_value") or "").strip()
+            if not outcome_id or not ref_type or not ref_key or not ref_value:
+                continue
+            created_at = str(ref.get("created_at") or now)
+
+            cursor = conn.execute(
+                """INSERT INTO action_outcome_refs
+                   (id, outcome_id, ref_type, ref_key, ref_value, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                (ref_id, outcome_id, ref_type, ref_key, ref_value, created_at),
+            )
+            if cursor.rowcount and cursor.rowcount > 0:
+                imported["action_outcome_refs"] += 1
 
     return imported
 

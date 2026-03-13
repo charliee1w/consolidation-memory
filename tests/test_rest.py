@@ -685,6 +685,152 @@ class TestClaimEndpoints:
         )
 
 
+class TestOutcomeEndpoints:
+    def test_outcome_record_and_browse(self, api_client):
+        from consolidation_memory.database import insert_claim_sources, insert_episode, upsert_claim
+
+        episode_id = insert_episode(content="Outcome provenance episode", content_type="fact")
+        upsert_claim(
+            claim_id="claim-rest-outcome-1",
+            claim_type="solution",
+            canonical_text="Use targeted pytest for verification",
+            payload={
+                "problem": "broad validation is slow",
+                "fix": "run targeted pytest file",
+                "context": "verification",
+            },
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources(
+            "claim-rest-outcome-1",
+            [{"source_episode_id": episode_id}],
+        )
+
+        record_resp = api_client.post(
+            "/memory/outcomes/record",
+            json={
+                "action_summary": "Run targeted pytest for changed files",
+                "outcome_type": "success",
+                "source_claim_ids": ["claim-rest-outcome-1"],
+                "issue_ids": ["ISSUE-123"],
+            },
+        )
+        assert record_resp.status_code == 200
+        recorded = record_resp.json()
+        assert recorded["status"] == "recorded"
+        assert recorded["id"] is not None
+
+        browse_resp = api_client.post(
+            "/memory/outcomes/browse",
+            json={"source_claim_id": "claim-rest-outcome-1"},
+        )
+        assert browse_resp.status_code == 200
+        payload = browse_resp.json()
+        assert payload["total"] >= 1
+        assert any(outcome["id"] == recorded["id"] for outcome in payload["outcomes"])
+
+    def test_outcome_browse_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import OutcomeBrowseResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.query_browse_outcomes",
+            return_value=OutcomeBrowseResult(outcomes=[], total=0),
+        ) as mock_query_browse:
+            resp = api_client.post(
+                "/memory/outcomes/browse",
+                json={
+                    "outcome_type": "failure",
+                    "scope": {"project": {"slug": "repo-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_query_browse.assert_called_once_with(
+            outcome_type="failure",
+            action_key=None,
+            source_claim_id=None,
+            source_record_id=None,
+            source_episode_id=None,
+            as_of=None,
+            limit=50,
+            scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_outcome_scope_visibility(self, api_client):
+        from consolidation_memory.database import insert_claim_sources, insert_episode, upsert_claim
+
+        visible_episode = insert_episode(
+            content="visible episode",
+            content_type="fact",
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "legacy_client",
+                "app_client_type": "python_sdk",
+            },
+        )
+        hidden_episode = insert_episode(
+            content="hidden episode",
+            content_type="fact",
+            scope={
+                "namespace_slug": "default",
+                "project_slug": "default",
+                "app_client_name": "other-app",
+                "app_client_type": "rest",
+            },
+        )
+        upsert_claim(
+            claim_id="claim-outcome-visible",
+            claim_type="fact",
+            canonical_text="visible claim",
+            payload={"subject": "visible", "info": "ok"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-outcome-hidden",
+            claim_type="fact",
+            canonical_text="hidden claim",
+            payload={"subject": "hidden", "info": "ok"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources("claim-outcome-visible", [{"source_episode_id": visible_episode}])
+        insert_claim_sources("claim-outcome-hidden", [{"source_episode_id": hidden_episode}])
+
+        visible_record = api_client.post(
+            "/memory/outcomes/record",
+            json={
+                "action_summary": "Visible strategy",
+                "outcome_type": "success",
+                "source_claim_ids": ["claim-outcome-visible"],
+                "scope": {"project": {"slug": "default"}},
+            },
+        )
+        assert visible_record.status_code == 200
+
+        hidden_record = api_client.post(
+            "/memory/outcomes/record",
+            json={
+                "action_summary": "Hidden strategy",
+                "outcome_type": "failure",
+                "source_claim_ids": ["claim-outcome-hidden"],
+                "scope": {
+                    "project": {"slug": "default"},
+                    "app_client": {"name": "other-app", "app_type": "rest"},
+                },
+            },
+        )
+        assert hidden_record.status_code == 200
+
+        visible_browse = api_client.post(
+            "/memory/outcomes/browse",
+            json={"scope": {"project": {"slug": "default"}}},
+        )
+        assert visible_browse.status_code == 200
+        visible_ids = {outcome["id"] for outcome in visible_browse.json()["outcomes"]}
+        assert visible_record.json()["id"] in visible_ids
+        assert hidden_record.json()["id"] not in visible_ids
+
+
 class TestDriftEndpoint:
     def test_detect_drift(self, api_client):
         expected = {

@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import uuid
+import hashlib
 from collections import deque
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -53,6 +54,7 @@ from consolidation_memory.query_service import (
     ClaimSearchQuery,
     DriftQuery,
     EpisodeSearchQuery,
+    OutcomeBrowseQuery,
     RecallQuery,
 )
 from consolidation_memory.policy_engine import (
@@ -85,6 +87,8 @@ from consolidation_memory.types import (
     SearchResult,
     ClaimBrowseResult,
     ClaimSearchResult,
+    OutcomeBrowseResult,
+    OutcomeRecordResult,
     DriftOutput,
     ForgetResult,
     StatusResult,
@@ -180,6 +184,12 @@ def _normalize_scope_token(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _derive_action_key(action_summary: str) -> str:
+    normalized = " ".join(action_summary.split()).strip().casefold()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+    return f"act_{digest}"
 
 
 def _resolved_scope_to_db_row(scope: ResolvedScopeEnvelope) -> dict[str, str | None]:
@@ -1379,6 +1389,198 @@ class MemoryClient:
             limit=limit,
         )
 
+    def _validate_outcome_sources_for_scope(
+        self,
+        *,
+        source_claim_ids: list[str],
+        source_record_ids: list[str],
+        source_episode_ids: list[str],
+        mutation_filter: Mapping[str, str | None],
+    ) -> None:
+        from consolidation_memory.database import (
+            get_existing_claim_ids,
+            get_existing_episode_ids,
+            get_existing_record_ids,
+        )
+        from consolidation_memory.query_semantics import filter_claims_for_scope
+
+        if source_claim_ids:
+            existing_claim_ids = get_existing_claim_ids(source_claim_ids)
+            missing_claim_ids = sorted(set(source_claim_ids) - existing_claim_ids)
+            if missing_claim_ids:
+                raise ValueError(
+                    f"Unknown source_claim_ids: {', '.join(missing_claim_ids)}"
+                )
+            scoped_claims = filter_claims_for_scope(
+                [{"id": claim_id} for claim_id in source_claim_ids],
+                mutation_filter,
+            )
+            visible_claim_ids = {str(claim["id"]) for claim in scoped_claims if claim.get("id")}
+            hidden_claim_ids = sorted(set(source_claim_ids) - visible_claim_ids)
+            if hidden_claim_ids:
+                raise ValueError(
+                    f"source_claim_ids outside scope: {', '.join(hidden_claim_ids)}"
+                )
+
+        if source_record_ids:
+            existing_record_ids = get_existing_record_ids(
+                source_record_ids,
+                scope=mutation_filter,
+            )
+            missing_record_ids = sorted(set(source_record_ids) - existing_record_ids)
+            if missing_record_ids:
+                raise ValueError(
+                    f"Unknown or out-of-scope source_record_ids: {', '.join(missing_record_ids)}"
+                )
+
+        if source_episode_ids:
+            existing_episode_ids = get_existing_episode_ids(
+                source_episode_ids,
+                scope=mutation_filter,
+            )
+            missing_episode_ids = sorted(set(source_episode_ids) - existing_episode_ids)
+            if missing_episode_ids:
+                raise ValueError(
+                    f"Unknown or out-of-scope source_episode_ids: {', '.join(missing_episode_ids)}"
+                )
+
+    def record_outcome(
+        self,
+        *,
+        action_summary: str,
+        outcome_type: str,
+        source_claim_ids: list[str] | None = None,
+        source_record_ids: list[str] | None = None,
+        source_episode_ids: list[str] | None = None,
+        code_anchors: list[dict[str, str]] | None = None,
+        issue_ids: list[str] | None = None,
+        pr_ids: list[str] | None = None,
+        action_key: str | None = None,
+        summary: str | None = None,
+        details: dict[str, object] | str | None = None,
+        confidence: float = 0.8,
+        provenance: dict[str, object] | str | None = None,
+        observed_at: str | None = None,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> OutcomeRecordResult:
+        """Record an outcome observation for a proposed strategy/action."""
+        from consolidation_memory.database import OUTCOME_TYPES, record_action_outcome
+
+        self._ensure_open()
+        resolved_scope = self.resolve_scope(scope)
+        denied_message = _write_denied_message(resolved_scope)
+        if denied_message is not None:
+            return OutcomeRecordResult(status="write_denied", message=denied_message)
+
+        action_summary_token = str(action_summary or "").strip()
+        if not action_summary_token:
+            raise ValueError("action_summary must not be empty")
+        outcome_type_token = str(outcome_type or "").strip().lower()
+        if outcome_type_token not in OUTCOME_TYPES:
+            raise ValueError(f"outcome_type must be one of: {', '.join(OUTCOME_TYPES)}")
+
+        normalized_claim_ids = sorted({str(claim_id).strip() for claim_id in source_claim_ids or [] if str(claim_id).strip()})
+        normalized_record_ids = sorted({str(record_id).strip() for record_id in source_record_ids or [] if str(record_id).strip()})
+        normalized_episode_ids = sorted({str(episode_id).strip() for episode_id in source_episode_ids or [] if str(episode_id).strip()})
+        if not normalized_claim_ids and not normalized_record_ids and not normalized_episode_ids:
+            raise ValueError(
+                "At least one source_claim_id, source_record_id, or source_episode_id is required"
+            )
+
+        mutation_filter = _resolved_scope_to_mutation_filter(resolved_scope)
+        self._validate_outcome_sources_for_scope(
+            source_claim_ids=normalized_claim_ids,
+            source_record_ids=normalized_record_ids,
+            source_episode_ids=normalized_episode_ids,
+            mutation_filter=mutation_filter,
+        )
+
+        canonical_action_key = (
+            str(action_key).strip() if action_key is not None and str(action_key).strip() else _derive_action_key(action_summary_token)
+        )
+        outcome_id = record_action_outcome(
+            action_summary=action_summary_token,
+            outcome_type=outcome_type_token,
+            source_claim_ids=normalized_claim_ids,
+            source_record_ids=normalized_record_ids,
+            source_episode_ids=normalized_episode_ids,
+            code_anchors=code_anchors,
+            issue_ids=issue_ids,
+            pr_ids=pr_ids,
+            action_key=canonical_action_key,
+            summary=summary,
+            details=details,
+            confidence=confidence,
+            provenance=provenance,
+            observed_at=observed_at,
+            scope=_resolved_scope_to_db_row(resolved_scope),
+        )
+        return OutcomeRecordResult(
+            status="recorded",
+            id=outcome_id,
+            action_key=canonical_action_key,
+            outcome_type=outcome_type_token,
+            observed_at=observed_at,
+        )
+
+    def query_browse_outcomes(
+        self,
+        *,
+        outcome_type: str | None = None,
+        action_key: str | None = None,
+        source_claim_id: str | None = None,
+        source_record_id: str | None = None,
+        source_episode_id: str | None = None,
+        as_of: str | None = None,
+        limit: int = 50,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> OutcomeBrowseResult:
+        """Canonical outcome-browse entrypoint for all adapters."""
+        operation_context = self.build_operation_context(scope)
+        scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
+        result = self._query_service.browse_outcomes(
+            OutcomeBrowseQuery(
+                outcome_type=outcome_type,
+                action_key=action_key,
+                source_claim_id=source_claim_id,
+                source_record_id=source_record_id,
+                source_episode_id=source_episode_id,
+                as_of=as_of,
+                limit=limit,
+            ),
+            scope_filter=scope_filter,
+        )
+        logger.info(
+            "Browse outcomes outcome_type=%r action_key=%r source_claim_id=%r returned %d rows",
+            outcome_type,
+            action_key,
+            source_claim_id,
+            len(result.outcomes),
+        )
+        return result
+
+    def browse_outcomes(
+        self,
+        *,
+        outcome_type: str | None = None,
+        action_key: str | None = None,
+        source_claim_id: str | None = None,
+        source_record_id: str | None = None,
+        source_episode_id: str | None = None,
+        as_of: str | None = None,
+        limit: int = 50,
+    ) -> OutcomeBrowseResult:
+        """Backward-compatible wrapper for outcome browse."""
+        return self.query_browse_outcomes(
+            outcome_type=outcome_type,
+            action_key=action_key,
+            source_claim_id=source_claim_id,
+            source_record_id=source_record_id,
+            source_episode_id=source_episode_id,
+            as_of=as_of,
+            limit=limit,
+        )
+
     def query_detect_drift(
         self,
         base_ref: str | None = None,
@@ -1639,7 +1841,13 @@ class MemoryClient:
         Returns:
             ForgetResult with status 'forgotten' or 'not_found'.
         """
-        from consolidation_memory.database import restore_soft_deleted_episode, soft_delete_episode
+        from consolidation_memory import claim_cache as _cc
+        from consolidation_memory.database import (
+            detach_claim_sources_for_episode,
+            expire_claims_without_sources,
+            get_connection,
+            soft_delete_episode,
+        )
 
         self._ensure_open()
         resolved_scope = self.resolve_scope(scope)
@@ -1648,35 +1856,21 @@ class MemoryClient:
             return ForgetResult(status="write_denied", id=episode_id, message=denied_message)
         self._vector_store.reload_if_stale()
         mutation_filter = _resolved_scope_to_mutation_filter(resolved_scope)
-        deleted = soft_delete_episode(episode_id, scope=mutation_filter)
-        if deleted:
-            try:
+        deleted = False
+        forgotten_at = datetime.now(timezone.utc).isoformat()
+        with get_connection():
+            deleted = soft_delete_episode(episode_id, scope=mutation_filter)
+            if deleted:
                 self._vector_store.remove(episode_id)
-            except Exception:
-                restored = False
-                try:
-                    restored = restore_soft_deleted_episode(episode_id, scope=mutation_filter)
-                except Exception:
-                    logger.exception(
-                        "Forget rollback failed while restoring DB row for %s",
-                        episode_id,
-                    )
-                    raise RuntimeError(
-                        f"Forget failed for {episode_id} and DB restore also failed."
-                    )
-                if not restored:
-                    logger.error(
-                        "Forget failed for %s and DB restore did not find row",
-                        episode_id,
-                    )
-                    raise RuntimeError(
-                        f"Forget failed for {episode_id}; unable to confirm DB rollback."
-                    )
-                logger.error(
-                    "Forget vector tombstone failed for %s; restored SQLite deletion",
-                    episode_id,
+                impacted_claim_ids = detach_claim_sources_for_episode(episode_id)
+                expire_claims_without_sources(
+                    impacted_claim_ids,
+                    valid_until=forgotten_at,
+                    reason="episode_forgotten",
+                    details={"episode_id": episode_id},
                 )
-                raise
+        if deleted:
+            _cc.invalidate()
             logger.info("Forgot episode %s", episode_id)
 
             from consolidation_memory.plugins import get_plugin_manager
@@ -1699,6 +1893,9 @@ class MemoryClient:
         """
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
+            get_all_action_outcome_refs,
+            get_all_action_outcome_sources,
+            get_all_action_outcomes,
             get_all_active_records,
             get_all_claim_edges,
             get_all_claim_events,
@@ -1743,10 +1940,14 @@ class MemoryClient:
         claim_events = get_all_claim_events(claim_ids=claim_ids)
         episode_ids = [str(ep["id"]) for ep in episodes if ep.get("id")]
         episode_anchors = get_all_episode_anchors(episode_ids=episode_ids)
+        action_outcomes = get_all_action_outcomes(scope=scope_filter)
+        outcome_ids = [str(outcome["id"]) for outcome in action_outcomes if outcome.get("id")]
+        action_outcome_sources = get_all_action_outcome_sources(outcome_ids=outcome_ids)
+        action_outcome_refs = get_all_action_outcome_refs(outcome_ids=outcome_ids)
 
         snapshot = {
             "exported_at": datetime.now(timezone.utc).isoformat(),
-            "version": "1.2",
+            "version": "1.3",
             "episodes": episodes,
             "knowledge_topics": knowledge,
             "knowledge_records": records,
@@ -1755,6 +1956,9 @@ class MemoryClient:
             "claim_sources": claim_sources,
             "claim_events": claim_events,
             "episode_anchors": episode_anchors,
+            "action_outcomes": action_outcomes,
+            "action_outcome_sources": action_outcome_sources,
+            "action_outcome_refs": action_outcome_refs,
             "stats": {
                 "episode_count": len(episodes),
                 "knowledge_count": len(knowledge),
@@ -1764,6 +1968,9 @@ class MemoryClient:
                 "claim_source_count": len(claim_sources),
                 "claim_event_count": len(claim_events),
                 "episode_anchor_count": len(episode_anchors),
+                "action_outcome_count": len(action_outcomes),
+                "action_outcome_source_count": len(action_outcome_sources),
+                "action_outcome_ref_count": len(action_outcome_refs),
             },
         }
 
@@ -1797,6 +2004,9 @@ class MemoryClient:
             claim_sources=len(claim_sources),
             claim_events=len(claim_events),
             episode_anchors=len(episode_anchors),
+            action_outcomes=len(action_outcomes),
+            action_outcome_sources=len(action_outcome_sources),
+            action_outcome_refs=len(action_outcome_refs),
         )
 
     def correct(
@@ -1817,13 +2027,21 @@ class MemoryClient:
         """
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
+            expire_claims_without_sources,
             expire_record,
             get_connection,
+            get_episodes_batch,
             get_knowledge_topic,
             get_records_by_topic,
+            insert_claim_event,
+            insert_claim_sources,
             insert_knowledge_records,
+            remove_claim_sources_for_records,
+            remove_topic_only_claim_sources,
+            upsert_claim,
             upsert_knowledge_topic,
         )
+        from consolidation_memory.claim_graph import claim_from_record
         from consolidation_memory.consolidation.engine import _version_knowledge_file
         from consolidation_memory.consolidation.prompting import (
             _embedding_text_for_record,
@@ -1909,6 +2127,11 @@ class MemoryClient:
         body = parsed.get("body", "")
 
         source_eps = parse_json_list(existing_topic.get("source_episodes"))
+        live_source_eps = [
+            episode_id
+            for episode_id in source_eps
+            if episode_id in get_episodes_batch(source_eps)
+        ]
         existing_confidence = float(existing_topic["confidence"])
         topic_scope = {
             "namespace_slug": existing_topic.get("namespace_slug"),
@@ -1975,16 +2198,74 @@ class MemoryClient:
                     scope=topic_scope,
                 )
 
-                for old in get_records_by_topic(topic_id, include_expired=False):
+                old_records = get_records_by_topic(topic_id, include_expired=False)
+                old_record_ids = [str(old["id"]) for old in old_records if old.get("id")]
+                for old in old_records:
                     expire_record(old["id"], valid_until=now_ts)
 
+                inserted_record_ids: list[str] = []
                 if record_rows:
-                    insert_knowledge_records(
+                    inserted_record_ids = insert_knowledge_records(
                         topic_id,
                         record_rows,
                         source_episodes=source_eps,
                         scope=topic_scope,
                     )
+
+                impacted_claim_ids = set(remove_claim_sources_for_records(old_record_ids))
+                impacted_claim_ids.update(remove_topic_only_claim_sources(topic_id))
+
+                current_claim_ids: set[str] = set()
+                for rec, record_id in zip(parsed_records, inserted_record_ids):
+                    claim_obj = claim_from_record(rec)
+                    current_claim_ids.add(claim_obj["id"])
+                    upsert_claim(
+                        claim_id=claim_obj["id"],
+                        claim_type=claim_obj["claim_type"],
+                        canonical_text=claim_obj["canonical_text"],
+                        payload=claim_obj["payload"],
+                        status="active",
+                        confidence=confidence,
+                        valid_from=now_ts,
+                    )
+                    source_rows = [
+                        {
+                            "source_episode_id": episode_id,
+                            "source_topic_id": topic_id,
+                            "source_record_id": record_id,
+                        }
+                        for episode_id in live_source_eps
+                    ]
+                    if not source_rows:
+                        source_rows = [{
+                            "source_topic_id": topic_id,
+                            "source_record_id": record_id,
+                        }]
+                    insert_claim_sources(
+                        claim_obj["id"],
+                        source_rows,
+                    )
+                    insert_claim_event(
+                        claim_obj["id"],
+                        event_type="correct",
+                        details={
+                            "topic_id": topic_id,
+                            "topic_filename": topic_filename,
+                            "source_record_id": record_id,
+                        },
+                        created_at=now_ts,
+                    )
+
+                impacted_claim_ids.difference_update(current_claim_ids)
+                expire_claims_without_sources(
+                    sorted(impacted_claim_ids),
+                    valid_until=now_ts,
+                    reason="correction_superseded",
+                    details={
+                        "topic_id": topic_id,
+                        "topic_filename": topic_filename,
+                    },
+                )
 
                 _version_knowledge_file(filepath)
                 os.replace(prepared_path, filepath)

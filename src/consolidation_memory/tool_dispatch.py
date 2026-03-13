@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from consolidation_memory.client import MemoryClient
 
-from consolidation_memory.types import ContentType, ScopeEnvelope, coerce_scope_envelope
+from consolidation_memory.types import (
+    ContentType,
+    OUTCOME_TYPES,
+    ScopeEnvelope,
+    coerce_scope_envelope,
+)
 
 _MAX_CONTENT_LENGTH = 50_000
 _MAX_BATCH_SIZE = 100
@@ -20,10 +25,12 @@ _MAX_FILENAME_LENGTH = 255
 _MAX_PATH_LENGTH = 4096
 _MAX_TAGS = 100
 _MAX_TAG_LENGTH = 100
+_MAX_OUTCOME_SOURCE_IDS = 500
 _UNSAFE_FILENAME_RE = re.compile(r"[/\\]|\.\.")
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[a-zA-Z]:[/\\]")
 _URI_PREFIX_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 _VALID_CONTENT_TYPES = frozenset(content_type.value for content_type in ContentType)
+_VALID_OUTCOME_TYPES = frozenset(OUTCOME_TYPES)
 
 
 def tool_requires_client(name: str) -> bool:
@@ -135,6 +142,82 @@ def _validate_surprise(value: object, *, field_name: str = "surprise") -> float:
     if not 0.0 <= surprise <= 1.0:
         raise ValueError(f"{field_name} must be between 0.0 and 1.0")
     return surprise
+
+
+def _validate_string_list(
+    field_name: str,
+    value: object,
+    *,
+    max_items: int,
+    max_length: int,
+) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of strings")
+    if len(value) > max_items:
+        raise ValueError(f"{field_name} exceeds maximum of {max_items} entries")
+    validated: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ValueError(f"{field_name}[{index}] must be a string")
+        token = item.strip()
+        if not token:
+            continue
+        if len(token) > max_length:
+            raise ValueError(
+                f"{field_name}[{index}] too long ({len(token)} chars). Maximum is {max_length} characters."
+            )
+        validated.append(token)
+    return validated
+
+
+def _validate_outcome_type(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("outcome_type must be a string")
+    token = value.strip().lower()
+    if token not in _VALID_OUTCOME_TYPES:
+        allowed = ", ".join(sorted(_VALID_OUTCOME_TYPES))
+        raise ValueError(f"outcome_type must be one of: {allowed}")
+    return token
+
+
+def _validate_code_anchors(value: object) -> list[dict[str, str]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("code_anchors must be a list of objects")
+    anchors: list[dict[str, str]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"code_anchors[{index}] must be an object")
+        anchor_type = item.get("anchor_type", item.get("type"))
+        anchor_value = item.get("anchor_value", item.get("value"))
+        if not isinstance(anchor_type, str) or not anchor_type.strip():
+            raise ValueError(f"code_anchors[{index}].anchor_type must be a non-empty string")
+        if not isinstance(anchor_value, str) or not anchor_value.strip():
+            raise ValueError(f"code_anchors[{index}].anchor_value must be a non-empty string")
+        anchors.append(
+            {
+                "anchor_type": anchor_type.strip(),
+                "anchor_value": anchor_value.strip(),
+            }
+        )
+    return anchors
+
+
+def _validate_details(value: object, *, field_name: str) -> dict[str, object] | str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if len(value) > _MAX_CONTENT_LENGTH:
+            raise ValueError(
+                f"{field_name} too long ({len(value)} chars). Maximum is {_MAX_CONTENT_LENGTH} characters."
+            )
+        return value
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise ValueError(f"{field_name} must be an object or string")
 
 
 def _validate_bounded_int(
@@ -368,6 +451,124 @@ def execute_tool_call(
             scope=_validate_scope(arguments.get("scope")),
         )
         return dataclasses.asdict(claim_search_result)
+
+    if name == "memory_outcome_record":
+        client = _require_client(client, name)
+        source_claim_ids = _validate_string_list(
+            "source_claim_ids",
+            arguments.get("source_claim_ids"),
+            max_items=_MAX_OUTCOME_SOURCE_IDS,
+            max_length=_MAX_FILENAME_LENGTH,
+        )
+        source_record_ids = _validate_string_list(
+            "source_record_ids",
+            arguments.get("source_record_ids"),
+            max_items=_MAX_OUTCOME_SOURCE_IDS,
+            max_length=_MAX_FILENAME_LENGTH,
+        )
+        source_episode_ids = _validate_string_list(
+            "source_episode_ids",
+            arguments.get("source_episode_ids"),
+            max_items=_MAX_OUTCOME_SOURCE_IDS,
+            max_length=_MAX_FILENAME_LENGTH,
+        )
+        if not source_claim_ids and not source_record_ids and not source_episode_ids:
+            raise ValueError(
+                "At least one source_claim_ids, source_record_ids, or source_episode_ids entry is required"
+            )
+        outcome_result = client.record_outcome(
+            action_summary=_validate_required_text(
+                "action_summary",
+                arguments["action_summary"],
+                max_length=_MAX_QUERY_LENGTH,
+            ),
+            outcome_type=_validate_outcome_type(arguments.get("outcome_type")),
+            source_claim_ids=source_claim_ids,
+            source_record_ids=source_record_ids,
+            source_episode_ids=source_episode_ids,
+            code_anchors=_validate_code_anchors(arguments.get("code_anchors")),
+            issue_ids=_validate_string_list(
+                "issue_ids",
+                arguments.get("issue_ids"),
+                max_items=_MAX_OUTCOME_SOURCE_IDS,
+                max_length=_MAX_FILENAME_LENGTH,
+            ),
+            pr_ids=_validate_string_list(
+                "pr_ids",
+                arguments.get("pr_ids"),
+                max_items=_MAX_OUTCOME_SOURCE_IDS,
+                max_length=_MAX_FILENAME_LENGTH,
+            ),
+            action_key=_validate_optional_text(
+                "action_key",
+                arguments.get("action_key"),
+                max_length=_MAX_FILENAME_LENGTH,
+                allow_empty=False,
+            ),
+            summary=_validate_optional_text(
+                "summary",
+                arguments.get("summary"),
+                max_length=_MAX_CONTENT_LENGTH,
+                allow_empty=False,
+            ),
+            details=_validate_details(arguments.get("details"), field_name="details"),
+            confidence=_validate_surprise(
+                arguments.get("confidence", 0.8),
+                field_name="confidence",
+            ),
+            provenance=_validate_details(arguments.get("provenance"), field_name="provenance"),
+            observed_at=_validate_optional_text(
+                "observed_at",
+                arguments.get("observed_at"),
+                max_length=64,
+                allow_empty=False,
+            ),
+            scope=_validate_scope(arguments.get("scope")),
+        )
+        return dataclasses.asdict(outcome_result)
+
+    if name == "memory_outcome_browse":
+        client = _require_client(client, name)
+        outcome_browse_result = client.query_browse_outcomes(
+            outcome_type=(
+                _validate_outcome_type(arguments.get("outcome_type"))
+                if arguments.get("outcome_type") is not None
+                else None
+            ),
+            action_key=_validate_optional_text(
+                "action_key",
+                arguments.get("action_key"),
+                max_length=_MAX_FILENAME_LENGTH,
+                allow_empty=False,
+            ),
+            source_claim_id=_validate_optional_text(
+                "source_claim_id",
+                arguments.get("source_claim_id"),
+                max_length=_MAX_FILENAME_LENGTH,
+                allow_empty=False,
+            ),
+            source_record_id=_validate_optional_text(
+                "source_record_id",
+                arguments.get("source_record_id"),
+                max_length=_MAX_FILENAME_LENGTH,
+                allow_empty=False,
+            ),
+            source_episode_id=_validate_optional_text(
+                "source_episode_id",
+                arguments.get("source_episode_id"),
+                max_length=_MAX_FILENAME_LENGTH,
+                allow_empty=False,
+            ),
+            as_of=_validate_optional_text("as_of", arguments.get("as_of"), max_length=64),
+            limit=_validate_bounded_int(
+                "limit",
+                arguments.get("limit", 50),
+                minimum=1,
+                maximum=200,
+            ),
+            scope=_validate_scope(arguments.get("scope")),
+        )
+        return dataclasses.asdict(outcome_browse_result)
 
     if name == "memory_detect_drift":
         base_ref = _validate_optional_text(

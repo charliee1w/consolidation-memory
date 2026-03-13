@@ -491,6 +491,9 @@ def cmd_status():
 def cmd_export():
     """Export to JSON."""
     from consolidation_memory.database import (
+        get_all_action_outcome_refs,
+        get_all_action_outcome_sources,
+        get_all_action_outcomes,
         ensure_schema,
         get_all_active_records,
         get_all_claim_edges,
@@ -528,10 +531,14 @@ def cmd_export():
     claim_sources = get_all_claim_sources()
     claim_events = get_all_claim_events()
     episode_anchors = get_all_episode_anchors()
+    action_outcomes = get_all_action_outcomes()
+    outcome_ids = [str(outcome["id"]) for outcome in action_outcomes if outcome.get("id")]
+    action_outcome_sources = get_all_action_outcome_sources(outcome_ids=outcome_ids)
+    action_outcome_refs = get_all_action_outcome_refs(outcome_ids=outcome_ids)
 
     snapshot = {
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "version": "1.2",
+        "version": "1.3",
         "episodes": episodes,
         "knowledge_topics": knowledge,
         "knowledge_records": records,
@@ -540,6 +547,9 @@ def cmd_export():
         "claim_sources": claim_sources,
         "claim_events": claim_events,
         "episode_anchors": episode_anchors,
+        "action_outcomes": action_outcomes,
+        "action_outcome_sources": action_outcome_sources,
+        "action_outcome_refs": action_outcome_refs,
         "stats": {
             "episode_count": len(episodes),
             "knowledge_count": len(knowledge),
@@ -549,6 +559,9 @@ def cmd_export():
             "claim_source_count": len(claim_sources),
             "claim_event_count": len(claim_events),
             "episode_anchor_count": len(episode_anchors),
+            "action_outcome_count": len(action_outcomes),
+            "action_outcome_source_count": len(action_outcome_sources),
+            "action_outcome_ref_count": len(action_outcome_refs),
         },
     }
 
@@ -607,6 +620,10 @@ def _validate_import(data: dict) -> list[str]:
 
     # Optional v1.2+ claim graph sections
     for key in ("claims", "claim_edges", "claim_sources", "claim_events", "episode_anchors"):
+        if key in data and not isinstance(data[key], list):
+            errors.append(f"{key!r} must be a list when provided")
+    # Optional v1.3+ action outcome sections
+    for key in ("action_outcomes", "action_outcome_sources", "action_outcome_refs"):
         if key in data and not isinstance(data[key], list):
             errors.append(f"{key!r} must be a list when provided")
 
@@ -855,12 +872,26 @@ def cmd_import(path: str):
             )
         claim_sources.append(remapped)
 
+    action_outcome_sources = []
+    for source in data.get("action_outcome_sources", []):
+        remapped = dict(source)
+        source_record_id = remapped.get("source_record_id")
+        if source_record_id is not None:
+            remapped["source_record_id"] = record_id_map.get(
+                str(source_record_id),
+                source_record_id,
+            )
+        action_outcome_sources.append(remapped)
+
     imported_claim_graph = import_claim_graph_snapshot(
         claims=data.get("claims", []),
         claim_edges=data.get("claim_edges", []),
         claim_sources=claim_sources,
         claim_events=data.get("claim_events", []),
         episode_anchors=data.get("episode_anchors", []),
+        action_outcomes=data.get("action_outcomes", []),
+        action_outcome_sources=action_outcome_sources,
+        action_outcome_refs=data.get("action_outcome_refs", []),
     )
     if any(imported_claim_graph.values()):
         print(
@@ -870,6 +901,12 @@ def cmd_import(path: str):
             f"{imported_claim_graph['claim_sources']} sources, "
             f"{imported_claim_graph['claim_events']} events, "
             f"{imported_claim_graph['episode_anchors']} anchors imported"
+        )
+        print(
+            "Outcomes: "
+            f"{imported_claim_graph['action_outcomes']} outcomes, "
+            f"{imported_claim_graph['action_outcome_sources']} source links, "
+            f"{imported_claim_graph['action_outcome_refs']} refs imported"
         )
 
     VectorStore.signal_reload()

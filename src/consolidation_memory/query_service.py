@@ -9,6 +9,7 @@ from os import PathLike
 from typing import Mapping
 
 from consolidation_memory.query_semantics import (
+    coerce_numeric_float,
     filter_claims_for_scope,
     parse_claim_payload,
     strategy_reuse_profile,
@@ -382,7 +383,10 @@ class CanonicalQueryService:
                 claim_id = str(ranked.get("id", ""))
                 profile = strategy_reuse_profile(strategy_evidence.get(claim_id))
                 ranked["strategy_evidence"] = profile
-                relevance *= float(profile["reuse_multiplier"])
+                relevance *= coerce_numeric_float(
+                    profile.get("reuse_multiplier"),
+                    default=1.0,
+                )
             ranked["relevance"] = round(relevance, 3)
             scored.append(ranked)
 

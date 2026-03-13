@@ -87,7 +87,7 @@ def _env_int(name: str, default: int) -> int:
 
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS",
-    90.0,
+    180.0,
 )
 _MEMORY_RECALL_TIMEOUT_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS",
@@ -629,6 +629,16 @@ def _run_detect_drift(
     return result
 
 
+def _degraded_drift_output(*, message: str) -> dict[str, object]:
+    return {
+        "checked_anchors": [],
+        "impacted_claim_ids": [],
+        "challenged_claim_ids": [],
+        "impacts": [],
+        "message": message,
+    }
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Start and stop the runtime-owned MCP server resources."""
@@ -976,8 +986,8 @@ async def memory_detect_drift(
     repo_path: str | None = None,
 ) -> str:
     """Detect code drift and challenge impacted claims."""
+    timeout_seconds = _drift_timeout_seconds()
     try:
-        timeout_seconds = _drift_timeout_seconds()
         result = await _run_blocking(
             _run_detect_drift,
             base_ref=base_ref,
@@ -986,13 +996,40 @@ async def memory_detect_drift(
         )
         return json.dumps(result, default=str)
     except asyncio.TimeoutError:
+        fallback_timeout = max(5.0, min(60.0, timeout_seconds))
+        if base_ref:
+            logger.warning(
+                "memory_detect_drift timed out after %.2fs with base_ref=%r; retrying fallback without base_ref",
+                timeout_seconds,
+                base_ref,
+            )
+            try:
+                fallback_result = await _run_blocking(
+                    _run_detect_drift,
+                    base_ref=None,
+                    repo_path=repo_path,
+                    timeout=fallback_timeout,
+                )
+                payload: dict[str, object] = dict(fallback_result)
+                payload["message"] = (
+                    f"memory_detect_drift timed out after {timeout_seconds:g}s using base_ref={base_ref!r}; "
+                    "returned fallback scan without base_ref."
+                )
+                return json.dumps(payload, default=str)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "memory_detect_drift fallback without base_ref timed out after %.2fs",
+                    fallback_timeout,
+                )
+            except Exception:
+                logger.exception("memory_detect_drift fallback without base_ref failed")
+
         message = (
             f"memory_detect_drift timed out after {timeout_seconds:g}s. "
-            "Try scoping repo_path to a smaller repository or set "
-            "CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS to a higher value."
+            "Returned a degraded empty result instead of failing."
         )
         logger.error(message)
-        return json.dumps({"error": message})
+        return json.dumps(_degraded_drift_output(message=message), default=str)
     except Exception as exc:
         logger.exception("memory_detect_drift failed")
         return json.dumps({"error": str(exc)})

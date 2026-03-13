@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import threading
 import time
@@ -72,4 +73,32 @@ class TestMemoryRuntimeLifecycle:
             with pytest.raises(RuntimeError, match="factory returned None"):
                 runtime.get_client(wait_timeout=0.5)
         finally:
+            runtime.shutdown()
+
+    def test_run_blocking_timeout_recycles_executor_capacity(self):
+        from consolidation_memory.runtime import MemoryRuntime
+
+        started = threading.Event()
+        release = threading.Event()
+        runtime = MemoryRuntime(max_workers=1)
+        runtime.startup()
+
+        def _slow_call():
+            started.set()
+            release.wait(timeout=5.0)
+            return "slow"
+
+        try:
+            with pytest.raises(TimeoutError):
+                asyncio.run(runtime.run_blocking(_slow_call, timeout=0.05))
+            assert started.wait(timeout=1.0)
+
+            before = time.monotonic()
+            result = asyncio.run(runtime.run_blocking(lambda: "fast", timeout=0.3))
+            elapsed = time.monotonic() - before
+
+            assert result == "fast"
+            assert elapsed < 0.2
+        finally:
+            release.set()
             runtime.shutdown()

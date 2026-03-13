@@ -109,12 +109,23 @@ def get_changed_files(
     changed: set[str] = set()
     raw_paths: list[str] = []
 
-    raw_paths.extend(_run_git_lines(repo_dir, ["diff", "--name-only"]))
-    raw_paths.extend(_run_git_lines(repo_dir, ["diff", "--name-only", "--cached"]))
-    raw_paths.extend(_run_git_lines(repo_dir, ["ls-files", "--others", "--exclude-standard"]))
-
+    git_queries: list[list[str]] = [
+        ["diff", "--name-only"],
+        ["diff", "--name-only", "--cached"],
+        ["ls-files", "--others", "--exclude-standard"],
+    ]
     if base_ref:
-        raw_paths.extend(_run_git_lines(repo_dir, ["diff", "--name-only", f"{base_ref}...HEAD"]))
+        git_queries.append(["diff", "--name-only", f"{base_ref}...HEAD"])
+
+    # Parallelize independent git queries so drift scans stay under MCP timeout
+    # budgets when multiple agents invoke detect_drift concurrently.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(git_queries),
+        thread_name_prefix="drift_git",
+    ) as pool:
+        futures = [pool.submit(_run_git_lines, repo_dir, query) for query in git_queries]
+        for future in concurrent.futures.as_completed(futures):
+            raw_paths.extend(future.result())
 
     for path in raw_paths:
         normalized = _normalize_changed_path(path)

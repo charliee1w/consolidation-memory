@@ -124,6 +124,16 @@ def _run_detect_drift(
     )
 
 
+def _degraded_drift_output(*, message: str) -> dict[str, object]:
+    return {
+        "checked_anchors": [],
+        "impacted_claim_ids": [],
+        "challenged_claim_ids": [],
+        "impacts": [],
+        "message": message,
+    }
+
+
 def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -576,23 +586,40 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     @app.post("/memory/detect-drift")
     async def detect_drift(req: DetectDriftRequest):
         """Detect code drift and challenge anchored claims."""
+        timeout_seconds = _drift_timeout_seconds()
         try:
-            timeout_seconds = _drift_timeout_seconds()
             return await runtime.run_blocking(
                 _run_detect_drift,
                 base_ref=req.base_ref,
                 repo_path=req.repo_path,
                 timeout=timeout_seconds,
             )
-        except asyncio.TimeoutError as e:
-            raise HTTPException(
-                status_code=408,
-                detail=(
-                    f"memory_detect_drift timed out after {timeout_seconds:g}s. "
-                    "Try scoping repo_path to a smaller repository or set "
-                    "CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS to a higher value."
-                ),
-            ) from e
+        except asyncio.TimeoutError:
+            fallback_timeout = max(5.0, min(60.0, timeout_seconds))
+            if req.base_ref:
+                try:
+                    fallback = await runtime.run_blocking(
+                        _run_detect_drift,
+                        base_ref=None,
+                        repo_path=req.repo_path,
+                        timeout=fallback_timeout,
+                    )
+                    payload = dict(fallback)
+                    payload["message"] = (
+                        f"memory_detect_drift timed out after {timeout_seconds:g}s using "
+                        f"base_ref={req.base_ref!r}; returned fallback scan without base_ref."
+                    )
+                    return payload
+                except asyncio.TimeoutError:
+                    pass
+                except RuntimeError as e:
+                    raise HTTPException(status_code=400, detail=str(e)) from e
+
+            message = (
+                f"memory_detect_drift timed out after {timeout_seconds:g}s. "
+                "Returned a degraded empty result instead of failing."
+            )
+            return _degraded_drift_output(message=message)
         except RuntimeError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 

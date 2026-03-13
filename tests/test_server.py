@@ -47,7 +47,7 @@ class TestServerEnvParsing:
 
         server = importlib.reload(server)
 
-        assert server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS == 90.0
+        assert server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS == 180.0
         assert server._MEMORY_RECALL_TIMEOUT_SECONDS == 45.0
         assert server._MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS == 10.0
         assert server._CLIENT_INIT_TIMEOUT_SECONDS == 45.0
@@ -107,7 +107,34 @@ class TestMCPDetectDriftTool:
         assert "error" in data
         assert "git diff failed" in data["error"]
 
-    def test_memory_detect_drift_timeout_returns_error_json(self):
+    def test_memory_detect_drift_timeout_returns_fallback_json(self):
+        from consolidation_memory.server import memory_detect_drift
+
+        def _slow_detect(*args, **kwargs):
+            base_ref = kwargs.get("base_ref")
+            if base_ref is not None:
+                time.sleep(0.05)
+            return {
+                "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/fallback.py"}],
+                "impacted_claim_ids": [],
+                "challenged_claim_ids": [],
+                "impacts": [],
+            }
+
+        with (
+            patch("consolidation_memory.drift.detect_code_drift", side_effect=_slow_detect),
+            patch("consolidation_memory.server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
+        ):
+            output = asyncio.run(memory_detect_drift(base_ref="origin/main"))
+
+        data = json.loads(output)
+        assert data["checked_anchors"] == [
+            {"anchor_type": "path", "anchor_value": "src/fallback.py"}
+        ]
+        assert "message" in data
+        assert "timed out after" in data["message"]
+
+    def test_memory_detect_drift_timeout_without_base_ref_returns_degraded_json(self):
         from consolidation_memory.server import memory_detect_drift
 
         def _slow_detect(*args, **kwargs):
@@ -122,8 +149,11 @@ class TestMCPDetectDriftTool:
             output = asyncio.run(memory_detect_drift())
 
         data = json.loads(output)
-        assert "error" in data
-        assert "timed out after" in data["error"]
+        assert data["checked_anchors"] == []
+        assert data["impacted_claim_ids"] == []
+        assert data["challenged_claim_ids"] == []
+        assert data["impacts"] == []
+        assert "timed out after" in data["message"]
 
     def test_memory_detect_drift_does_not_require_memory_client_init(self):
         from consolidation_memory.server import memory_detect_drift

@@ -124,6 +124,24 @@ class MemoryRuntime:
                 )
             return self._blocking_executor
 
+    def _recycle_blocking_executor(self, *, reason: str) -> None:
+        """Swap out the shared executor after a timeout to restore worker capacity.
+
+        Timed-out `run_in_executor` callables may continue running in abandoned worker
+        threads. Replacing the pool prevents follow-up requests from queueing behind
+        those stale workers and timing out repeatedly.
+        """
+        with self._blocking_executor_lock:
+            old_executor = self._blocking_executor
+            if old_executor is None:
+                return
+            self._blocking_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self._max_workers,
+                thread_name_prefix="consolidation_memory_mcp",
+            )
+        logger.warning("Recycled blocking executor after timeout (%s)", reason)
+        old_executor.shutdown(wait=False, cancel_futures=True)
+
     async def run_blocking(
         self,
         func: Callable[..., _T],
@@ -137,7 +155,18 @@ class MemoryRuntime:
         future = loop.run_in_executor(self._get_blocking_executor(), work)
         if timeout is None:
             return await future
-        return await asyncio.wait_for(future, timeout=timeout)
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except TimeoutError:
+            # If the future is still running (or was cancelled while queued), it can
+            # occupy shared pool capacity and cause cascading timeouts.
+            if not future.done() or future.cancelled():
+                func_name = getattr(func, "__qualname__", getattr(func, "__name__", "callable"))
+                timeout_seconds = max(0.0, float(timeout))
+                self._recycle_blocking_executor(
+                    reason=f"{func_name} exceeded {timeout_seconds:.3f}s"
+                )
+            raise
 
     def get_client(self, *, wait_timeout: float | None = None):
         """Return the process-local client, initializing it lazily once."""

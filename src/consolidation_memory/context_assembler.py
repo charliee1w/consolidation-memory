@@ -36,6 +36,7 @@ from consolidation_memory import backends
 from consolidation_memory import claim_cache
 from consolidation_memory.knowledge_paths import resolve_topic_path
 from consolidation_memory.query_semantics import (
+    coerce_numeric_float as _coerce_numeric_float,
     filter_claims_for_scope as _filter_claims_for_scope,
     matches_scope_filter as _matches_scope_filter,
     strategy_reuse_profile as _strategy_reuse_profile,
@@ -473,7 +474,10 @@ def _search_claims(
         if claim.get("claim_type") == "strategy":
             claim_id = str(claim.get("id", ""))
             strategy_profile = _strategy_reuse_profile(strategy_evidence.get(claim_id))
-            relevance *= float(strategy_profile["reuse_multiplier"])
+            relevance *= _coerce_numeric_float(
+                strategy_profile.get("reuse_multiplier"),
+                default=1.0,
+            )
         if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
             continue
 

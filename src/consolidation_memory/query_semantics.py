@@ -12,6 +12,52 @@ _LEGACY_DEFAULT_NAMESPACE = "default"
 _LEGACY_DEFAULT_PROJECT = "default"
 
 
+def _coerce_int_metric(value: object, *, default: int = 0) -> int:
+    """Best-effort coercion for metric counters loaded from flexible payloads."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return default
+        return int(value)
+    if isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return default
+        try:
+            return int(token)
+        except ValueError:
+            try:
+                parsed = float(token)
+            except ValueError:
+                return default
+            if not math.isfinite(parsed):
+                return default
+            return int(parsed)
+    return default
+
+
+def coerce_numeric_float(value: object, *, default: float) -> float:
+    """Best-effort float conversion that fails closed to a default."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else default
+    if isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return default
+        try:
+            parsed = float(token)
+        except ValueError:
+            return default
+        return parsed if math.isfinite(parsed) else default
+    return default
+
+
 def parse_claim_payload(payload_raw: object) -> dict[str, object]:
     """Parse a claim payload from DB storage into a dict."""
     if isinstance(payload_raw, dict):
@@ -84,12 +130,12 @@ def filter_claims_for_scope(
 def strategy_reuse_profile(evidence: Mapping[str, object] | None) -> dict[str, object]:
     """Build trust signals used to rank strategy claims for reuse."""
     data = dict(evidence or {})
-    validation_count = max(0, int(data.get("validation_count", 0) or 0))
-    success_count = max(0, int(data.get("success_count", 0) or 0))
-    partial_success_count = max(0, int(data.get("partial_success_count", 0) or 0))
-    failure_count = max(0, int(data.get("failure_count", 0) or 0))
-    contradiction_count = max(0, int(data.get("contradiction_count", 0) or 0))
-    challenged_count = max(0, int(data.get("challenged_count", 0) or 0))
+    validation_count = max(0, _coerce_int_metric(data.get("validation_count", 0)))
+    success_count = max(0, _coerce_int_metric(data.get("success_count", 0)))
+    partial_success_count = max(0, _coerce_int_metric(data.get("partial_success_count", 0)))
+    failure_count = max(0, _coerce_int_metric(data.get("failure_count", 0)))
+    contradiction_count = max(0, _coerce_int_metric(data.get("contradiction_count", 0)))
+    challenged_count = max(0, _coerce_int_metric(data.get("challenged_count", 0)))
 
     support_weight = success_count + (0.5 * partial_success_count)
     risk_weight = failure_count + contradiction_count + (0.5 * challenged_count)
@@ -125,6 +171,7 @@ def strategy_reuse_profile(evidence: Mapping[str, object] | None) -> dict[str, o
 
 
 __all__ = [
+    "coerce_numeric_float",
     "filter_claims_for_scope",
     "matches_scope_filter",
     "parse_claim_payload",

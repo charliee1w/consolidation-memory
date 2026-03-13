@@ -862,7 +862,32 @@ class TestDriftEndpoint:
         assert resp.status_code == 400
         assert "git diff failed" in resp.json()["detail"]
 
-    def test_detect_drift_timeout_returns_408(self, api_client):
+    def test_detect_drift_timeout_returns_fallback_payload(self, api_client):
+        def _slow_detect(*args, **kwargs):
+            base_ref = kwargs.get("base_ref")
+            if base_ref is not None:
+                time.sleep(0.05)
+            return {
+                "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/fallback.py"}],
+                "impacted_claim_ids": [],
+                "challenged_claim_ids": [],
+                "impacts": [],
+            }
+
+        with (
+            patch("consolidation_memory.rest._run_detect_drift", side_effect=_slow_detect),
+            patch("consolidation_memory.rest._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
+        ):
+            resp = api_client.post("/memory/detect-drift", json={"base_ref": "origin/main"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["checked_anchors"] == [
+            {"anchor_type": "path", "anchor_value": "src/fallback.py"}
+        ]
+        assert "timed out after" in data["message"]
+
+    def test_detect_drift_timeout_without_base_ref_returns_degraded_payload(self, api_client):
         def _slow_detect(*args, **kwargs):
             del args, kwargs
             time.sleep(0.05)
@@ -874,5 +899,10 @@ class TestDriftEndpoint:
         ):
             resp = api_client.post("/memory/detect-drift", json={})
 
-        assert resp.status_code == 408
-        assert "timed out after" in resp.json()["detail"]
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["checked_anchors"] == []
+        assert data["impacted_claim_ids"] == []
+        assert data["challenged_claim_ids"] == []
+        assert data["impacts"] == []
+        assert "timed out after" in data["message"]

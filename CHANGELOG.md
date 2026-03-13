@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.7 - 2026-03-13
+
+### Highlights
+
+- Fix memory client hardening issues
+- Harden multi-agent pipeline
+- Harden multi-agent codebase
+- Remove unused scope_row assignment
+- Fix fastembed cache handling
+- Harden multi-agent system
+- Fix type errors in tool dispatch
+- Harden multi-agent consolidation
+- Fix memory server scope validation
+- Add provenance episode insert
+- Fix checkout auth failure
+- Enable automated memory workflow
+
+
 ## 0.13.6 - 2026-03-10
 
 ### Highlights

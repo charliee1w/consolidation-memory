@@ -767,7 +767,7 @@ async def memory_recall(
                 client=client,
                 timeout=recall_timeout,
             )
-        except asyncio.TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             fallback_timeout = _recall_fallback_timeout_seconds()
             logger.warning(
                 "memory_recall timed out after %.2fs; retrying keyword episodes-only fallback",
@@ -789,7 +789,7 @@ async def memory_recall(
                     client=client,
                     timeout=fallback_timeout,
                 )
-            except asyncio.TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 message = (
                     f"memory_recall timed out after {recall_timeout:g}s and keyword fallback "
                     f"timed out after {fallback_timeout:g}s. "
@@ -995,7 +995,7 @@ async def memory_detect_drift(
             timeout=timeout_seconds,
         )
         return json.dumps(result, default=str)
-    except asyncio.TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         fallback_timeout = max(5.0, min(20.0, timeout_seconds * 0.2))
         if base_ref:
             logger.warning(
@@ -1016,7 +1016,7 @@ async def memory_detect_drift(
                     "returned fallback scan without base_ref."
                 )
                 return json.dumps(payload, default=str)
-            except asyncio.TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 logger.error(
                     "memory_detect_drift fallback without base_ref timed out after %.2fs",
                     fallback_timeout,

@@ -86,6 +86,7 @@ class TestCanonicalQueryServiceClaims:
 
         with (
             patch("consolidation_memory.database.get_active_claims", return_value=rows),
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value={}),
             patch("consolidation_memory.query_service.filter_claims_for_scope", return_value=[]) as mock_scope_filter,
         ):
             result = service.browse_claims(
@@ -140,7 +141,10 @@ class TestCanonicalQueryServiceClaims:
         with patch(
             "consolidation_memory.database.get_active_claims",
             side_effect=[first_page, second_page, []],
-        ) as mock_get_active_claims:
+        ) as mock_get_active_claims, patch(
+            "consolidation_memory.database.get_claim_outcome_evidence",
+            return_value={},
+        ):
             result = service.search_claims(
                 ClaimSearchQuery(
                     query="uvicorn",
@@ -194,6 +198,7 @@ class TestCanonicalQueryServiceClaims:
                 "consolidation_memory.database.get_active_claims",
                 side_effect=[first_page, second_page],
             ) as mock_get_active_claims,
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value={}),
             patch(
                 "consolidation_memory.query_service.filter_claims_for_scope",
                 side_effect=_filter_side_effect,
@@ -281,6 +286,7 @@ class TestCanonicalQueryServiceClaims:
         assert result.claims[0]["relevance"] > result.claims[1]["relevance"]
         assert result.claims[0]["strategy_evidence"]["reusability"] == "validated"
         assert result.claims[1]["strategy_evidence"]["reusability"] == "degraded"
+        assert result.claims[0]["reliability"]["score"] > result.claims[1]["reliability"]["score"]
 
     def test_browse_claims_attaches_strategy_evidence(self):
         service = CanonicalQueryService(vector_store=MagicMock())
@@ -319,6 +325,143 @@ class TestCanonicalQueryServiceClaims:
         assert result.total == 1
         assert result.claims[0]["strategy_evidence"]["validation_count"] == 2
         assert result.claims[0]["strategy_evidence"]["reusability"] == "mixed"
+        assert "reliability" in result.claims[0]
+
+    def test_search_claims_reliability_prefers_supported_claims(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        rows = [
+            {
+                "id": "claim-supported",
+                "claim_type": "fact",
+                "canonical_text": "target flaky ci tests quickly",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+            {
+                "id": "claim-unsupported",
+                "claim_type": "fact",
+                "canonical_text": "target flaky ci tests quickly",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+        ]
+        evidence = {
+            "claim-supported": {
+                "validation_count": 4,
+                "success_count": 4,
+                "source_link_count": 3,
+                "source_episode_count": 1,
+                "source_topic_count": 1,
+                "source_record_count": 1,
+                "source_anchor_count": 2,
+                "outcome_anchor_count": 1,
+                "outcomes_with_provenance_count": 2,
+                "last_observed_at": "2026-03-12T00:00:00+00:00",
+            },
+            "claim-unsupported": {
+                "validation_count": 0,
+                "success_count": 0,
+                "source_link_count": 0,
+                "source_episode_count": 0,
+                "source_topic_count": 0,
+                "source_record_count": 0,
+                "source_anchor_count": 0,
+                "outcome_anchor_count": 0,
+                "outcomes_with_provenance_count": 0,
+                "last_observed_at": None,
+            },
+        }
+
+        with (
+            patch("consolidation_memory.database.get_active_claims", side_effect=[rows, []]),
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value=evidence),
+        ):
+            result = service.search_claims(
+                ClaimSearchQuery(query="flaky ci tests", claim_type="fact", limit=10)
+            )
+
+        assert [claim["id"] for claim in result.claims] == ["claim-supported", "claim-unsupported"]
+        assert result.claims[0]["reliability"]["score"] > result.claims[1]["reliability"]["score"]
+        assert result.claims[0]["relevance"] > result.claims[1]["relevance"]
+
+    def test_search_claims_reliability_penalizes_challenged_drifted_claims(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        rows = [
+            {
+                "id": "claim-stable",
+                "claim_type": "fact",
+                "canonical_text": "debug flaky ci tests",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+            {
+                "id": "claim-drifted",
+                "claim_type": "fact",
+                "canonical_text": "debug flaky ci tests",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "challenged",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+        ]
+        evidence = {
+            "claim-stable": {
+                "validation_count": 3,
+                "success_count": 3,
+                "source_link_count": 2,
+                "source_episode_count": 1,
+                "source_topic_count": 1,
+                "source_record_count": 0,
+                "source_anchor_count": 1,
+                "outcome_anchor_count": 1,
+                "outcomes_with_provenance_count": 1,
+                "last_observed_at": "2026-03-12T00:00:00+00:00",
+            },
+            "claim-drifted": {
+                "validation_count": 3,
+                "success_count": 3,
+                "challenged_count": 1,
+                "drift_event_count": 2,
+                "source_link_count": 2,
+                "source_episode_count": 1,
+                "source_topic_count": 1,
+                "source_record_count": 0,
+                "source_anchor_count": 1,
+                "outcome_anchor_count": 1,
+                "outcomes_with_provenance_count": 1,
+                "last_observed_at": "2026-03-12T00:00:00+00:00",
+            },
+        }
+
+        with (
+            patch("consolidation_memory.database.get_active_claims", side_effect=[rows, []]),
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value=evidence),
+        ):
+            result = service.search_claims(
+                ClaimSearchQuery(query="flaky ci tests", claim_type="fact", limit=10)
+            )
+
+        assert [claim["id"] for claim in result.claims] == ["claim-stable", "claim-drifted"]
+        assert result.claims[0]["reliability"]["score"] > result.claims[1]["reliability"]["score"]
+        assert result.claims[1]["reliability"]["recommendation"] in {"reuse_with_caution", "avoid_reuse"}
 
 
 class TestCanonicalQueryServiceDrift:

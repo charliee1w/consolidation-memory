@@ -36,6 +36,7 @@ from consolidation_memory import backends
 from consolidation_memory import claim_cache
 from consolidation_memory.knowledge_paths import resolve_topic_path
 from consolidation_memory.query_semantics import (
+    claim_reliability_profile as _claim_reliability_profile,
     coerce_numeric_float as _coerce_numeric_float,
     filter_claims_for_scope as _filter_claims_for_scope,
     matches_scope_filter as _matches_scope_filter,
@@ -448,13 +449,9 @@ def _search_claims(
         warnings.append("Claim search fell back to keyword-only (embedding failed)")
 
     query_words = set(query.lower().split())
-    strategy_claim_ids = [
-        str(claim.get("id"))
-        for claim in claims
-        if claim.get("id") and claim.get("claim_type") == "strategy"
-    ]
-    strategy_evidence = get_claim_outcome_evidence(
-        strategy_claim_ids,
+    claim_ids = [str(claim.get("id")) for claim in claims if claim.get("id")]
+    claim_evidence = get_claim_outcome_evidence(
+        claim_ids,
         as_of=as_of,
         scope=scope,
     )
@@ -470,10 +467,25 @@ def _search_claims(
 
         confidence = float(claim.get("confidence", 0.8) or 0.8)
         relevance *= 0.5 + 0.5 * confidence
+        claim_id = str(claim.get("id", ""))
+        evidence_payload = {
+            **claim_evidence.get(claim_id, {}),
+            "claim_status": claim.get("status", "active"),
+        }
+        reliability_profile = _claim_reliability_profile(
+            evidence_payload,
+            claim_status=str(claim.get("status", "active")),
+            as_of=as_of,
+            claim_updated_at=str(claim.get("updated_at") or ""),
+        )
+        relevance *= _coerce_numeric_float(
+            reliability_profile.get("ranking_multiplier"),
+            default=1.0,
+        )
+
         strategy_profile: dict[str, object] | None = None
         if claim.get("claim_type") == "strategy":
-            claim_id = str(claim.get("id", ""))
-            strategy_profile = _strategy_reuse_profile(strategy_evidence.get(claim_id))
+            strategy_profile = _strategy_reuse_profile(evidence_payload)
             relevance *= _coerce_numeric_float(
                 strategy_profile.get("reuse_multiplier"),
                 default=1.0,
@@ -491,6 +503,7 @@ def _search_claims(
             "valid_from": claim.get("valid_from"),
             "valid_until": claim.get("valid_until"),
             "relevance": round(relevance, 3),
+            "reliability": reliability_profile,
         }
         if strategy_profile is not None:
             row["strategy_evidence"] = strategy_profile

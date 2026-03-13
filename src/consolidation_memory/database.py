@@ -4205,6 +4205,17 @@ def get_claim_outcome_evidence(
                     SUM(CASE WHEN ao.outcome_type = 'success' THEN 1 ELSE 0 END) AS success_count,
                     SUM(CASE WHEN ao.outcome_type = 'partial_success' THEN 1 ELSE 0 END) AS partial_success_count,
                     SUM(CASE WHEN ao.outcome_type IN ('failure', 'reverted', 'superseded') THEN 1 ELSE 0 END) AS failure_count,
+                    SUM(CASE WHEN ao.outcome_type = 'failure' THEN 1 ELSE 0 END) AS explicit_failure_count,
+                    SUM(CASE WHEN ao.outcome_type = 'reverted' THEN 1 ELSE 0 END) AS reverted_count,
+                    SUM(CASE WHEN ao.outcome_type = 'superseded' THEN 1 ELSE 0 END) AS superseded_count,
+                    SUM(
+                        CASE
+                            WHEN ao.provenance IS NOT NULL
+                                 AND TRIM(ao.provenance) NOT IN ('', '{{}}', 'null')
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS outcomes_with_provenance_count,
                     MAX(ao.observed_at) AS last_observed_at
                 FROM action_outcome_sources aos
                 JOIN action_outcomes ao ON ao.id = aos.outcome_id
@@ -4212,15 +4223,48 @@ def get_claim_outcome_evidence(
                 GROUP BY aos.source_claim_id""",
             outcome_params,
         ).fetchall()
+        outcome_anchor_rows = conn.execute(
+            f"""SELECT
+                    aos.source_claim_id AS claim_id,
+                    COUNT(DISTINCT aor.id) AS outcome_anchor_count
+                FROM action_outcome_sources aos
+                JOIN action_outcomes ao ON ao.id = aos.outcome_id
+                JOIN action_outcome_refs aor ON aor.outcome_id = ao.id
+                WHERE {outcome_where}
+                  AND aor.ref_type = 'code_anchor'
+                GROUP BY aos.source_claim_id""",
+            outcome_params,
+        ).fetchall()
         event_rows = conn.execute(
             f"""SELECT
                     claim_id,
                     SUM(CASE WHEN event_type = 'contradiction' THEN 1 ELSE 0 END) AS contradiction_count,
-                    SUM(CASE WHEN event_type = 'challenged' THEN 1 ELSE 0 END) AS challenged_count
+                    SUM(CASE WHEN event_type = 'challenged' THEN 1 ELSE 0 END) AS challenged_count,
+                    SUM(CASE WHEN event_type = 'code_drift_detected' THEN 1 ELSE 0 END) AS drift_event_count,
+                    SUM(
+                        CASE
+                            WHEN event_type IN ('expire', 'auto_expired_challenged') THEN 1
+                            ELSE 0
+                        END
+                    ) AS expiry_event_count
                 FROM claim_events
                 WHERE {event_where}
                 GROUP BY claim_id""",
             event_params,
+        ).fetchall()
+        source_rows = conn.execute(
+            f"""SELECT
+                    cs.claim_id AS claim_id,
+                    COUNT(*) AS source_link_count,
+                    COUNT(DISTINCT cs.source_episode_id) AS source_episode_count,
+                    COUNT(DISTINCT cs.source_topic_id) AS source_topic_count,
+                    COUNT(DISTINCT cs.source_record_id) AS source_record_count,
+                    COUNT(DISTINCT ea.id) AS source_anchor_count
+                FROM claim_sources cs
+                LEFT JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
+                WHERE cs.claim_id IN ({placeholders})
+                GROUP BY cs.claim_id""",
+            [*normalized_ids],
         ).fetchall()
 
     evidence: dict[str, dict[str, Any]] = {
@@ -4229,8 +4273,20 @@ def get_claim_outcome_evidence(
             "success_count": 0,
             "partial_success_count": 0,
             "failure_count": 0,
+            "explicit_failure_count": 0,
+            "reverted_count": 0,
+            "superseded_count": 0,
             "contradiction_count": 0,
             "challenged_count": 0,
+            "drift_event_count": 0,
+            "expiry_event_count": 0,
+            "outcome_anchor_count": 0,
+            "outcomes_with_provenance_count": 0,
+            "source_link_count": 0,
+            "source_episode_count": 0,
+            "source_topic_count": 0,
+            "source_record_count": 0,
+            "source_anchor_count": 0,
             "last_observed_at": None,
         }
         for claim_id in normalized_ids
@@ -4243,7 +4299,17 @@ def get_claim_outcome_evidence(
             "success_count": int(row["success_count"] or 0),
             "partial_success_count": int(row["partial_success_count"] or 0),
             "failure_count": int(row["failure_count"] or 0),
+            "explicit_failure_count": int(row["explicit_failure_count"] or 0),
+            "reverted_count": int(row["reverted_count"] or 0),
+            "superseded_count": int(row["superseded_count"] or 0),
+            "outcomes_with_provenance_count": int(row["outcomes_with_provenance_count"] or 0),
             "last_observed_at": row["last_observed_at"],
+        }
+    for row in outcome_anchor_rows:
+        claim_id = str(row["claim_id"])
+        evidence[claim_id] = {
+            **evidence.get(claim_id, {}),
+            "outcome_anchor_count": int(row["outcome_anchor_count"] or 0),
         }
     for row in event_rows:
         claim_id = str(row["claim_id"])
@@ -4251,6 +4317,18 @@ def get_claim_outcome_evidence(
             **evidence.get(claim_id, {}),
             "contradiction_count": int(row["contradiction_count"] or 0),
             "challenged_count": int(row["challenged_count"] or 0),
+            "drift_event_count": int(row["drift_event_count"] or 0),
+            "expiry_event_count": int(row["expiry_event_count"] or 0),
+        }
+    for row in source_rows:
+        claim_id = str(row["claim_id"])
+        evidence[claim_id] = {
+            **evidence.get(claim_id, {}),
+            "source_link_count": int(row["source_link_count"] or 0),
+            "source_episode_count": int(row["source_episode_count"] or 0),
+            "source_topic_count": int(row["source_topic_count"] or 0),
+            "source_record_count": int(row["source_record_count"] or 0),
+            "source_anchor_count": int(row["source_anchor_count"] or 0),
         }
     return evidence
 

@@ -10,6 +10,7 @@ from consolidation_memory.database import (
     ensure_schema,
     get_claim_outcome_evidence,
     insert_claim_event,
+    insert_episode_anchors,
     insert_claim_sources,
     insert_episode,
     insert_knowledge_records,
@@ -149,6 +150,53 @@ def test_supporting_outcomes_increase_strategy_evidence_density(tmp_data_dir):
     evidence = get_claim_outcome_evidence([seeded["claim_id"]])[seeded["claim_id"]]
     assert evidence["validation_count"] == 2
     assert evidence["success_count"] == 2
+
+
+def test_strategy_evidence_exposes_reliability_inputs_for_debugging(tmp_data_dir):
+    ensure_schema()
+    seeded = _seed_strategy(
+        strategy_id="evidence-inputs",
+        problem_pattern="flaky ci tests",
+        strategy_text="rerun deterministically then isolate side effects",
+    )
+    insert_episode_anchors(
+        seeded["episode_id"],
+        [{"anchor_type": "path", "anchor_value": "src/service.py"}],
+    )
+    insert_claim_event(
+        seeded["claim_id"],
+        event_type="code_drift_detected",
+        details={"reason": "source file changed"},
+        created_at="2026-03-12T10:00:00+00:00",
+    )
+
+    client = MemoryClient(auto_consolidate=False)
+    try:
+        client.record_outcome(
+            action_summary="strategy validation run",
+            outcome_type="success",
+            source_claim_ids=[seeded["claim_id"]],
+            code_anchors=[{"anchor_type": "path", "anchor_value": "src/service.py"}],
+            provenance={"agent": "codex"},
+            observed_at="2026-03-12T11:00:00+00:00",
+        )
+        client.record_outcome(
+            action_summary="strategy rollback run",
+            outcome_type="reverted",
+            source_claim_ids=[seeded["claim_id"]],
+            observed_at="2026-03-12T12:00:00+00:00",
+        )
+    finally:
+        client.close()
+
+    evidence = get_claim_outcome_evidence([seeded["claim_id"]])[seeded["claim_id"]]
+    assert evidence["validation_count"] == 2
+    assert evidence["reverted_count"] == 1
+    assert evidence["drift_event_count"] == 1
+    assert evidence["source_link_count"] >= 1
+    assert evidence["source_anchor_count"] >= 1
+    assert evidence["outcome_anchor_count"] >= 1
+    assert evidence["outcomes_with_provenance_count"] >= 1
 
 
 def test_failed_or_contradicted_strategies_are_still_inspectable_but_rank_lower(tmp_data_dir):

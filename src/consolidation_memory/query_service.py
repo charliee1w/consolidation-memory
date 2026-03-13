@@ -9,6 +9,7 @@ from os import PathLike
 from typing import Mapping
 
 from consolidation_memory.query_semantics import (
+    claim_reliability_profile,
     coerce_numeric_float,
     filter_claims_for_scope,
     parse_claim_payload,
@@ -235,23 +236,27 @@ class CanonicalQueryService:
                 if len(rows) < page_size:
                     break
 
-        strategy_ids = [
-            str(claim["id"])
-            for claim in scoped_claims
-            if claim.get("id") and claim.get("claim_type") == "strategy"
-        ]
-        strategy_evidence = self._strategy_evidence_by_claim(
-            strategy_ids,
+        claim_ids = [str(claim["id"]) for claim in scoped_claims if claim.get("id")]
+        claim_evidence = self._claim_evidence_by_claim(
+            claim_ids,
             as_of=query.as_of,
             scope_filter=scope_filter,
         )
-        if strategy_evidence:
-            for claim in scoped_claims:
-                if claim.get("claim_type") != "strategy":
-                    continue
-                claim_id = str(claim.get("id", ""))
+        for claim in scoped_claims:
+            claim_id = str(claim.get("id", ""))
+            evidence_payload = {
+                **claim_evidence.get(claim_id, {}),
+                "claim_status": claim.get("status", "active"),
+            }
+            claim["reliability"] = claim_reliability_profile(
+                evidence_payload,
+                claim_status=str(claim.get("status", "active")),
+                as_of=query.as_of,
+                claim_updated_at=str(claim.get("updated_at") or ""),
+            )
+            if claim.get("claim_type") == "strategy":
                 claim["strategy_evidence"] = strategy_reuse_profile(
-                    strategy_evidence.get(claim_id)
+                    evidence_payload,
                 )
 
         return ClaimBrowseResult(
@@ -342,13 +347,9 @@ class CanonicalQueryService:
         query_terms = [term for term in query_lower.split() if term]
 
         scored: list[dict[str, object]] = []
-        strategy_ids = [
-            str(claim["id"])
-            for claim in all_claims
-            if claim.get("id") and claim.get("claim_type") == "strategy"
-        ]
-        strategy_evidence = self._strategy_evidence_by_claim(
-            strategy_ids,
+        claim_ids = [str(claim["id"]) for claim in all_claims if claim.get("id")]
+        claim_evidence = self._claim_evidence_by_claim(
+            claim_ids,
             as_of=query.as_of,
             scope_filter=scope_filter,
         )
@@ -379,12 +380,26 @@ class CanonicalQueryService:
             relevance = (phrase_hit + term_score) * (0.5 + 0.5 * confidence)
 
             ranked = dict(claim)
+            claim_id = str(ranked.get("id", ""))
+            evidence_payload = {
+                **claim_evidence.get(claim_id, {}),
+                "claim_status": ranked.get("status", "active"),
+            }
+            reliability = claim_reliability_profile(
+                evidence_payload,
+                claim_status=str(ranked.get("status", "active")),
+                as_of=query.as_of,
+                claim_updated_at=str(ranked.get("updated_at") or ""),
+            )
+            ranked["reliability"] = reliability
+            relevance *= coerce_numeric_float(
+                reliability.get("ranking_multiplier"),
+                default=1.0,
+            )
             if ranked.get("claim_type") == "strategy":
-                claim_id = str(ranked.get("id", ""))
-                profile = strategy_reuse_profile(strategy_evidence.get(claim_id))
-                ranked["strategy_evidence"] = profile
+                ranked["strategy_evidence"] = strategy_reuse_profile(evidence_payload)
                 relevance *= coerce_numeric_float(
-                    profile.get("reuse_multiplier"),
+                    ranked["strategy_evidence"].get("reuse_multiplier"),
                     default=1.0,
                 )
             ranked["relevance"] = round(relevance, 3)
@@ -406,7 +421,7 @@ class CanonicalQueryService:
             as_of=query.as_of,
         )
 
-    def _strategy_evidence_by_claim(
+    def _claim_evidence_by_claim(
         self,
         claim_ids: list[str],
         *,

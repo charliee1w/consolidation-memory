@@ -7,6 +7,7 @@ from typing import Any
 from consolidation_memory.config import get_config
 from consolidation_memory.consolidation.prompting import _parse_frontmatter
 from consolidation_memory.database import get_all_knowledge_topics, get_records_by_topic
+from consolidation_memory.knowledge_paths import resolve_topic_path
 from consolidation_memory.markdown_records import parse_markdown_records
 
 
@@ -40,9 +41,23 @@ def build_knowledge_consistency_report(*, max_issues: int = 20) -> dict[str, Any
     for topic in topics:
         topic_id = str(topic.get("id") or "")
         filename = str(topic.get("filename") or "")
-        file_path = (cfg.KNOWLEDGE_DIR / filename).resolve()
         checked_topics += 1
 
+        try:
+            file_path = resolve_topic_path(
+                cfg.KNOWLEDGE_DIR,
+                topic,
+                prefer_existing=True,
+            )
+        except ValueError:
+            _append_issue(
+                {
+                    "topic_id": topic_id,
+                    "filename": filename,
+                    "issue": "path_outside_knowledge_dir",
+                }
+            )
+            continue
         if not file_path.is_relative_to(knowledge_root):
             _append_issue(
                 {

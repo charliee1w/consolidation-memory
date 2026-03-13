@@ -6,6 +6,7 @@ from consolidation_memory.config import get_config
 from consolidation_memory.consolidation.prompting import _render_markdown_from_records
 from consolidation_memory.database import (
     ensure_schema,
+    get_knowledge_topic,
     insert_knowledge_records,
     upsert_knowledge_topic,
 )
@@ -95,3 +96,56 @@ def test_consistency_report_detects_markdown_record_drift(tmp_data_dir):
     assert report["meets_threshold"] is False
     assert report["issues"][0]["issue"] == "record_count_mismatch"
 
+
+def test_consistency_report_uses_storage_filename_for_scoped_topic(tmp_data_dir):
+    ensure_schema()
+    cfg = get_config()
+    scope = {
+        "namespace_slug": "default",
+        "project_slug": "default",
+        "app_client_name": "codex-desktop",
+        "app_client_type": "mcp",
+    }
+    records = [
+        {"type": "fact", "subject": "Scoped topic", "info": "stored via canonical path"},
+    ]
+    topic_id = upsert_knowledge_topic(
+        filename="scoped.md",
+        title="Scoped",
+        summary="Scoped summary",
+        source_episodes=[],
+        fact_count=len(records),
+        scope=scope,
+    )
+    insert_knowledge_records(
+        topic_id,
+        [
+            {
+                "record_type": rec["type"],
+                "content": rec,
+                "embedding_text": rec["subject"],
+            }
+            for rec in records
+        ],
+        scope=scope,
+    )
+    topic_row = get_knowledge_topic("scoped.md", scope=scope)
+    assert topic_row is not None
+    storage_filename = str(topic_row["storage_filename"])
+    assert storage_filename != "scoped.md"
+
+    markdown = _render_markdown_from_records(
+        "Scoped",
+        "Scoped summary",
+        [],
+        0.8,
+        records,
+    )
+    (cfg.KNOWLEDGE_DIR / storage_filename).write_text(markdown, encoding="utf-8")
+    assert not (cfg.KNOWLEDGE_DIR / "scoped.md").exists()
+
+    report = build_knowledge_consistency_report()
+    assert report["checked_topics"] == 1
+    assert report["consistent_topics"] == 1
+    assert report["issue_count"] == 0
+    assert report["meets_threshold"] is True

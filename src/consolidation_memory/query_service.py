@@ -11,12 +11,14 @@ from typing import Mapping
 from consolidation_memory.query_semantics import (
     filter_claims_for_scope,
     parse_claim_payload,
+    strategy_reuse_profile,
 )
 from consolidation_memory.types import (
     ClaimBrowseResult,
     ClaimSearchResult,
     DriftOutput,
     OutcomeBrowseResult,
+    OutcomeType,
     RecallResult,
     SearchResult,
 )
@@ -75,7 +77,7 @@ class ClaimSearchQuery:
 class OutcomeBrowseQuery:
     """Canonical outcome-browse envelope."""
 
-    outcome_type: str | None = None
+    outcome_type: OutcomeType | None = None
     action_key: str | None = None
     source_claim_id: str | None = None
     source_record_id: str | None = None
@@ -232,6 +234,25 @@ class CanonicalQueryService:
                 if len(rows) < page_size:
                     break
 
+        strategy_ids = [
+            str(claim["id"])
+            for claim in scoped_claims
+            if claim.get("id") and claim.get("claim_type") == "strategy"
+        ]
+        strategy_evidence = self._strategy_evidence_by_claim(
+            strategy_ids,
+            as_of=query.as_of,
+            scope_filter=scope_filter,
+        )
+        if strategy_evidence:
+            for claim in scoped_claims:
+                if claim.get("claim_type") != "strategy":
+                    continue
+                claim_id = str(claim.get("id", ""))
+                claim["strategy_evidence"] = strategy_reuse_profile(
+                    strategy_evidence.get(claim_id)
+                )
+
         return ClaimBrowseResult(
             claims=scoped_claims[:bounded_limit],
             total=min(len(scoped_claims), bounded_limit),
@@ -320,6 +341,16 @@ class CanonicalQueryService:
         query_terms = [term for term in query_lower.split() if term]
 
         scored: list[dict[str, object]] = []
+        strategy_ids = [
+            str(claim["id"])
+            for claim in all_claims
+            if claim.get("id") and claim.get("claim_type") == "strategy"
+        ]
+        strategy_evidence = self._strategy_evidence_by_claim(
+            strategy_ids,
+            as_of=query.as_of,
+            scope_filter=scope_filter,
+        )
         for claim in all_claims:
             payload_text = json.dumps(claim.get("payload", {}), sort_keys=True, default=str)
             haystack = f"{claim.get('canonical_text', '')} {payload_text}".lower()
@@ -347,6 +378,11 @@ class CanonicalQueryService:
             relevance = (phrase_hit + term_score) * (0.5 + 0.5 * confidence)
 
             ranked = dict(claim)
+            if ranked.get("claim_type") == "strategy":
+                claim_id = str(ranked.get("id", ""))
+                profile = strategy_reuse_profile(strategy_evidence.get(claim_id))
+                ranked["strategy_evidence"] = profile
+                relevance *= float(profile["reuse_multiplier"])
             ranked["relevance"] = round(relevance, 3)
             scored.append(ranked)
 
@@ -364,6 +400,23 @@ class CanonicalQueryService:
             query=normalized_query,
             claim_type=query.claim_type,
             as_of=query.as_of,
+        )
+
+    def _strategy_evidence_by_claim(
+        self,
+        claim_ids: list[str],
+        *,
+        as_of: str | None,
+        scope_filter: Mapping[str, str | None] | None,
+    ) -> dict[str, dict[str, object]]:
+        if not claim_ids:
+            return {}
+        from consolidation_memory.database import get_claim_outcome_evidence
+
+        return get_claim_outcome_evidence(
+            claim_ids,
+            as_of=as_of,
+            scope=scope_filter,
         )
 
     def browse_outcomes(

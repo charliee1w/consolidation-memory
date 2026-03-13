@@ -121,14 +121,16 @@ class TestRecordCRUD:
             {"record_type": "solution", "content": {}, "embedding_text": "b"},
             {"record_type": "preference", "content": {}, "embedding_text": "c"},
             {"record_type": "procedure", "content": {}, "embedding_text": "d"},
+            {"record_type": "strategy", "content": {}, "embedding_text": "e"},
         ])
         stats = get_stats()
         kb = stats["knowledge_base"]
-        assert kb["total_records"] == 4
+        assert kb["total_records"] == 5
         assert kb["records_by_type"]["facts"] == 1
         assert kb["records_by_type"]["solutions"] == 1
         assert kb["records_by_type"]["preferences"] == 1
         assert kb["records_by_type"]["procedures"] == 1
+        assert kb["records_by_type"]["strategies"] == 1
 
 
 # ── Types ────────────────────────────────────────────────────────────────────
@@ -139,6 +141,7 @@ class TestRecordTypes:
         assert RecordType.SOLUTION.value == "solution"
         assert RecordType.PREFERENCE.value == "preference"
         assert RecordType.PROCEDURE.value == "procedure"
+        assert RecordType.STRATEGY.value == "strategy"
 
     def test_recall_result_has_records(self):
         from consolidation_memory.types import RecallResult
@@ -230,6 +233,34 @@ class TestExtractionValidation:
         assert not valid
         assert any("procedure missing" in f for f in failures)
 
+    def test_valid_strategy_record(self):
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
+        data = {
+            "title": "Debugging Strategies",
+            "summary": "Intermittent test flakiness is mitigated with deterministic reruns and isolation checks.",
+            "tags": ["debugging"],
+            "records": [{
+                "type": "strategy",
+                "problem_pattern": "intermittent CI test failures",
+                "strategy": "rerun deterministically with narrowed fixtures, then isolate shared global state",
+                "preconditions": "failing test can be reproduced in CI",
+                "expected_signals": "failure reproduces in isolated run",
+                "failure_modes": "non-deterministic infrastructure outages",
+            }],
+        }
+        valid, failures = _validate_extraction_output(data, [])
+        assert valid, failures
+
+    def test_strategy_missing_fields(self):
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
+        data = {
+            "title": "T", "summary": "S",
+            "records": [{"type": "strategy", "problem_pattern": "flaky tests"}],
+        }
+        valid, failures = _validate_extraction_output(data, [])
+        assert not valid
+        assert any("strategy missing" in f for f in failures)
+
     def test_extract_with_validation_uses_json_schema(self):
         from consolidation_memory.consolidation.prompting import _llm_extract_with_validation
 
@@ -308,6 +339,19 @@ class TestEmbeddingText:
         })
         assert text == "Procedure: before committing -> run tests then lint"
 
+    def test_strategy_embedding(self):
+        from consolidation_memory.consolidation.prompting import _embedding_text_for_record
+        text = _embedding_text_for_record({
+            "type": "strategy",
+            "problem_pattern": "flaky tests in CI",
+            "strategy": "rerun with deterministic seed and isolate fixture scope",
+            "preconditions": "reproducible failure",
+            "expected_signals": "same assertion fails in isolated run",
+            "failure_modes": "infrastructure-only outage",
+        })
+        assert "Strategy for flaky tests in CI" in text
+        assert "deterministic seed" in text
+
 
 # ── Markdown rendering ──────────────────────────────────────────────────────
 
@@ -319,6 +363,15 @@ class TestMarkdownRendering:
             {"type": "solution", "problem": "Error", "fix": "Fix it", "context": "dev"},
             {"type": "preference", "key": "theme", "value": "dark", "context": "IDE"},
             {"type": "procedure", "trigger": "deploying", "steps": "test then push", "context": "production"},
+            {
+                "type": "strategy",
+                "problem_pattern": "flaky tests",
+                "strategy": "isolate side effects and rerun deterministically",
+                "preconditions": "repeatable failure",
+                "expected_signals": "failure remains in isolated run",
+                "failure_modes": "infra outage",
+                "context": "CI",
+            },
         ]
         md = _render_markdown_from_records("Title", "Summary", ["tag1"], 0.85, records)
         assert "## Facts" in md
@@ -331,6 +384,12 @@ class TestMarkdownRendering:
         assert "### deploying" in md
         assert "test then push" in md
         assert "*Context: production*" in md
+        assert "## Strategies" in md
+        assert "### flaky tests" in md
+        assert "isolate side effects" in md
+        assert "- Preconditions: repeatable failure" in md
+        assert "- Expected signals: failure remains in isolated run" in md
+        assert "- Failure modes: infra outage" in md
         assert "confidence: 0.85" in md
 
     def test_omits_empty_sections(self):
@@ -343,6 +402,31 @@ class TestMarkdownRendering:
         assert "## Solutions" not in md
         assert "## Preferences" not in md
         assert "## Procedures" not in md
+        assert "## Strategies" not in md
+
+
+class TestMarkdownParsing:
+    def test_parse_markdown_records_extracts_strategy_fields(self):
+        from consolidation_memory.markdown_records import parse_markdown_records
+
+        body = """## Strategies
+### flaky ci tests
+Run deterministic reruns and isolate shared fixtures.
+- Preconditions: Reproducible failure in CI
+- Expected signals: Same assertion fails in isolated run
+- Failure modes: Infra-only outages
+*Context: CI pipeline*
+"""
+        records = parse_markdown_records(body)
+        assert records == [{
+            "type": "strategy",
+            "problem_pattern": "flaky ci tests",
+            "strategy": "Run deterministic reruns and isolate shared fixtures.",
+            "preconditions": "Reproducible failure in CI",
+            "expected_signals": "Same assertion fails in isolated run",
+            "failure_modes": "Infra-only outages",
+            "context": "CI pipeline",
+        }]
 
 
 # ── Record cache ─────────────────────────────────────────────────────────────

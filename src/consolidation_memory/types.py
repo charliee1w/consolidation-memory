@@ -31,6 +31,7 @@ class RecordType(str, Enum):
     SOLUTION = "solution"
     PREFERENCE = "preference"
     PROCEDURE = "procedure"
+    STRATEGY = "strategy"
 
 
 OutcomeType = Literal[
@@ -539,6 +540,7 @@ class RecordsByType(TypedDict):
     solutions: int
     preferences: int
     procedures: int
+    strategies: int
 
 
 class KnowledgeBaseStats(TypedDict):

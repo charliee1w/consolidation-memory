@@ -7,6 +7,7 @@ import re
 _MD_KV_BULLET_RE = re.compile(r"^[-*]\s+(?:\*\*(.+?)\*\*|([^:]+)):\s*(.+)$")
 _MD_CONTEXT_RE = re.compile(r"^\*Context:\s*(.+?)\*\s*$")
 _MD_VALUE_CONTEXT_RE = re.compile(r"^(.*?)\s+\(([^()]+)\)\s*$")
+_MD_STRATEGY_FIELD_RE = re.compile(r"^-\s*(Preconditions|Expected signals|Failure modes):\s*(.+)$", re.IGNORECASE)
 
 
 def _parse_markdown_kv_bullet(line: str) -> tuple[str, str] | None:
@@ -48,6 +49,10 @@ def parse_markdown_records(body: str) -> list[dict[str, str]]:
             section = "procedures"
             i += 1
             continue
+        if lowered == "## strategies":
+            section = "strategies"
+            i += 1
+            continue
 
         if section == "facts":
             parsed = _parse_markdown_kv_bullet(stripped)
@@ -64,11 +69,12 @@ def parse_markdown_records(body: str) -> list[dict[str, str]]:
                     rec["value"] = ctx_match.group(1).strip()
                     rec["context"] = ctx_match.group(2).strip()
                 records.append(rec)
-        elif section in {"solutions", "procedures"} and stripped.startswith("### "):
+        elif section in {"solutions", "procedures", "strategies"} and stripped.startswith("### "):
             header = stripped[4:].strip()
             j = i + 1
             body_lines: list[str] = []
             context = ""
+            strategy_fields: dict[str, str] = {}
             while j < len(lines):
                 nxt = lines[j].strip()
                 if nxt.startswith("## ") or nxt.startswith("### "):
@@ -76,6 +82,21 @@ def parse_markdown_records(body: str) -> list[dict[str, str]]:
                 context_match = _MD_CONTEXT_RE.match(nxt)
                 if context_match:
                     context = context_match.group(1).strip()
+                elif section == "strategies":
+                    strategy_field_match = _MD_STRATEGY_FIELD_RE.match(nxt)
+                    if strategy_field_match:
+                        label = strategy_field_match.group(1).strip().lower()
+                        value = strategy_field_match.group(2).strip()
+                        key_map = {
+                            "preconditions": "preconditions",
+                            "expected signals": "expected_signals",
+                            "failure modes": "failure_modes",
+                        }
+                        field_key = key_map.get(label)
+                        if field_key and value:
+                            strategy_fields[field_key] = value
+                    elif nxt:
+                        body_lines.append(nxt)
                 elif nxt:
                     body_lines.append(nxt)
                 j += 1
@@ -84,8 +105,15 @@ def parse_markdown_records(body: str) -> list[dict[str, str]]:
             if header and text_body:
                 if section == "solutions":
                     rec = {"type": "solution", "problem": header, "fix": text_body}
-                else:
+                elif section == "procedures":
                     rec = {"type": "procedure", "trigger": header, "steps": text_body}
+                else:
+                    rec = {
+                        "type": "strategy",
+                        "problem_pattern": header,
+                        "strategy": text_body,
+                    }
+                    rec.update(strategy_fields)
                 if context:
                     rec["context"] = context
                 records.append(rec)
@@ -95,4 +123,3 @@ def parse_markdown_records(body: str) -> list[dict[str, str]]:
         i += 1
 
     return records
-

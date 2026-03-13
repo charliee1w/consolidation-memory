@@ -4161,6 +4161,100 @@ def get_action_outcome_refs_by_outcome_ids(
     return [dict(row) for row in rows]
 
 
+def get_claim_outcome_evidence(
+    claim_ids: Sequence[str],
+    *,
+    as_of: str | None = None,
+    scope: Mapping[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Aggregate outcome + challenge evidence for claim-level trust scoring."""
+    normalized_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for claim_id in claim_ids:
+        token = str(claim_id or "").strip()
+        if not token or token in seen_ids:
+            continue
+        seen_ids.add(token)
+        normalized_ids.append(token)
+    if not normalized_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in normalized_ids)
+    outcome_conditions = [f"aos.source_claim_id IN ({placeholders})"]  # nosec B608
+    outcome_params: list[Any] = [*normalized_ids]
+    _apply_scope_filters(outcome_conditions, outcome_params, scope, table_alias="ao")
+    if as_of is not None:
+        as_of_utc = _normalize_utc_timestamp(as_of)
+        outcome_conditions.append("julianday(ao.observed_at) <= julianday(?)")
+        outcome_params.append(as_of_utc)
+
+    outcome_where = " AND ".join(outcome_conditions)
+    event_conditions = [f"claim_id IN ({placeholders})"]  # nosec B608
+    event_params: list[Any] = [*normalized_ids]
+    if as_of is not None:
+        as_of_utc = _normalize_utc_timestamp(as_of)
+        event_conditions.append("julianday(created_at) <= julianday(?)")
+        event_params.append(as_of_utc)
+    event_where = " AND ".join(event_conditions)
+
+    with get_connection() as conn:
+        outcome_rows = conn.execute(
+            f"""SELECT
+                    aos.source_claim_id AS claim_id,
+                    COUNT(*) AS validation_count,
+                    SUM(CASE WHEN ao.outcome_type = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN ao.outcome_type = 'partial_success' THEN 1 ELSE 0 END) AS partial_success_count,
+                    SUM(CASE WHEN ao.outcome_type IN ('failure', 'reverted', 'superseded') THEN 1 ELSE 0 END) AS failure_count,
+                    MAX(ao.observed_at) AS last_observed_at
+                FROM action_outcome_sources aos
+                JOIN action_outcomes ao ON ao.id = aos.outcome_id
+                WHERE {outcome_where}
+                GROUP BY aos.source_claim_id""",  # nosec B608
+            outcome_params,
+        ).fetchall()
+        event_rows = conn.execute(
+            f"""SELECT
+                    claim_id,
+                    SUM(CASE WHEN event_type = 'contradiction' THEN 1 ELSE 0 END) AS contradiction_count,
+                    SUM(CASE WHEN event_type = 'challenged' THEN 1 ELSE 0 END) AS challenged_count
+                FROM claim_events
+                WHERE {event_where}
+                GROUP BY claim_id""",  # nosec B608
+            event_params,
+        ).fetchall()
+
+    evidence: dict[str, dict[str, Any]] = {
+        claim_id: {
+            "validation_count": 0,
+            "success_count": 0,
+            "partial_success_count": 0,
+            "failure_count": 0,
+            "contradiction_count": 0,
+            "challenged_count": 0,
+            "last_observed_at": None,
+        }
+        for claim_id in normalized_ids
+    }
+    for row in outcome_rows:
+        claim_id = str(row["claim_id"])
+        evidence[claim_id] = {
+            **evidence.get(claim_id, {}),
+            "validation_count": int(row["validation_count"] or 0),
+            "success_count": int(row["success_count"] or 0),
+            "partial_success_count": int(row["partial_success_count"] or 0),
+            "failure_count": int(row["failure_count"] or 0),
+            "last_observed_at": row["last_observed_at"],
+        }
+    for row in event_rows:
+        claim_id = str(row["claim_id"])
+        evidence[claim_id] = {
+            **evidence.get(claim_id, {}),
+            "contradiction_count": int(row["contradiction_count"] or 0),
+            "challenged_count": int(row["challenged_count"] or 0),
+        }
+    return evidence
+
+
 # ── Export / Bulk queries ────────────────────────────────────────────────────
 
 def get_all_episodes(
@@ -4770,7 +4864,8 @@ def get_stats(scope: Mapping[str, Any] | None = None) -> StatsDict:
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'fact') as facts,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'solution') as solutions,
                  COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'preference') as preferences,
-                 COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'procedure') as procedures
+                 COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'procedure') as procedures,
+                 COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'strategy') as strategies
                FROM knowledge_records {record_where}""",  # nosec B608
             record_params,
         ).fetchone()
@@ -4791,6 +4886,7 @@ def get_stats(scope: Mapping[str, Any] | None = None) -> StatsDict:
                 "solutions": rec_counts["solutions"],
                 "preferences": rec_counts["preferences"],
                 "procedures": rec_counts["procedures"],
+                "strategies": rec_counts["strategies"],
             },
         },
     }

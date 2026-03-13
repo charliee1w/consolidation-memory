@@ -20,6 +20,7 @@ _RECORD_TYPE_ALIASES: dict[str, str] = {
     "solution": "solution",
     "preference": "preference",
     "procedure": "procedure",
+    "strategy": "strategy",
 }
 
 _RECORD_FIELD_SPECS: dict[str, list[tuple[str, bool]]] = {
@@ -28,6 +29,14 @@ _RECORD_FIELD_SPECS: dict[str, list[tuple[str, bool]]] = {
     "solution": [("problem", True), ("fix", False), ("context", False)],
     "preference": [("key", True), ("value", False), ("context", False)],
     "procedure": [("trigger", True), ("steps", False), ("context", False)],
+    "strategy": [
+        ("problem_pattern", True),
+        ("strategy", False),
+        ("preconditions", False),
+        ("expected_signals", False),
+        ("failure_modes", False),
+        ("context", False),
+    ],
 }
 
 
@@ -48,6 +57,20 @@ def _normalize_text(value: Any, *, lowercase: bool = False) -> str:
     if lowercase:
         text = text.casefold()
     return text
+
+
+def _normalize_value(value: Any, *, lowercase: bool = False) -> str:
+    if isinstance(value, Mapping):
+        serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return _normalize_text(serialized, lowercase=lowercase)
+    if isinstance(value, (list, tuple, set)):
+        pieces: list[str] = []
+        for item in value:
+            normalized_item = _normalize_text(item, lowercase=lowercase)
+            if normalized_item:
+                pieces.append(normalized_item)
+        return " | ".join(pieces)
+    return _normalize_text(value, lowercase=lowercase)
 
 
 def _parse_content(value: Any) -> dict[str, Any]:
@@ -78,7 +101,7 @@ def normalize_claim_payload(record_type: str, payload: Mapping[str, Any]) -> dic
 
     normalized: dict[str, str] = {"type": claim_type}
     for field_name, lowercase in specs:
-        value = _normalize_text(payload.get(field_name), lowercase=lowercase)
+        value = _normalize_value(payload.get(field_name), lowercase=lowercase)
         if value:
             normalized[field_name] = value
     return normalized

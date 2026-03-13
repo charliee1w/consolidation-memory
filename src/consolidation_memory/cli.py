@@ -443,7 +443,9 @@ def cmd_status():
         rbt = kb.get("records_by_type", {})
         print(f"Records:     {kb['total_records']} total "
               f"({rbt.get('facts', 0)} facts, {rbt.get('solutions', 0)} solutions, "
-              f"{rbt.get('preferences', 0)} preferences)")
+              f"{rbt.get('preferences', 0)} preferences, "
+              f"{rbt.get('procedures', 0)} procedures, "
+              f"{rbt.get('strategies', 0)} strategies)")
 
     trust_counts = get_claim_trust_stats()
     challenged_backlog = count_active_challenged_claims()
@@ -1043,10 +1045,24 @@ def cmd_browse():
     for rec in records:
         tid = rec["topic_id"]
         if tid not in records_by_topic:
-            records_by_topic[tid] = {"facts": 0, "solutions": 0, "preferences": 0, "procedures": 0}
+            records_by_topic[tid] = {
+                "facts": 0,
+                "solutions": 0,
+                "preferences": 0,
+                "procedures": 0,
+                "strategies": 0,
+            }
         rt = rec.get("record_type", "fact")
-        if rt in records_by_topic[tid]:
-            records_by_topic[tid][rt] += 1
+        plural_map = {
+            "fact": "facts",
+            "solution": "solutions",
+            "preference": "preferences",
+            "procedure": "procedures",
+            "strategy": "strategies",
+        }
+        bucket = plural_map.get(str(rt))
+        if bucket is not None:
+            records_by_topic[tid][bucket] += 1
 
     print(f"consolidation-memory v{__version__} - knowledge browser\n")
     print(f"Knowledge directory: {cfg.KNOWLEDGE_DIR}\n")
@@ -1057,7 +1073,7 @@ def cmd_browse():
         exists = filepath.exists()
 
         parts = []
-        for rtype in ("facts", "solutions", "preferences", "procedures"):
+        for rtype in ("facts", "solutions", "preferences", "procedures", "strategies"):
             count = rc.get(rtype, 0)
             if count > 0:
                 parts.append(f"{count} {rtype}")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 
 _LEGACY_DEFAULT_APP_NAME = "legacy_client"
@@ -80,8 +81,52 @@ def filter_claims_for_scope(
     return [dict(claim) for claim in claims if str(claim.get("id")) in allowed_ids]
 
 
+def strategy_reuse_profile(evidence: Mapping[str, object] | None) -> dict[str, object]:
+    """Build trust signals used to rank strategy claims for reuse."""
+    data = dict(evidence or {})
+    validation_count = max(0, int(data.get("validation_count", 0) or 0))
+    success_count = max(0, int(data.get("success_count", 0) or 0))
+    partial_success_count = max(0, int(data.get("partial_success_count", 0) or 0))
+    failure_count = max(0, int(data.get("failure_count", 0) or 0))
+    contradiction_count = max(0, int(data.get("contradiction_count", 0) or 0))
+    challenged_count = max(0, int(data.get("challenged_count", 0) or 0))
+
+    support_weight = success_count + (0.5 * partial_success_count)
+    risk_weight = failure_count + contradiction_count + (0.5 * challenged_count)
+    density = min(1.0, validation_count / 5.0)
+    density_bonus = min(0.35, math.log1p(validation_count) * 0.12)
+    support_bonus = min(0.45, support_weight * 0.1)
+    risk_penalty = min(0.75, risk_weight * 0.2)
+    reuse_multiplier = max(0.2, 1.0 + density_bonus + support_bonus - risk_penalty)
+
+    if validation_count == 0:
+        reusability = "unvalidated"
+    elif risk_weight == 0 and support_weight >= 2:
+        reusability = "validated"
+    elif risk_weight > support_weight:
+        reusability = "degraded"
+    else:
+        reusability = "mixed"
+
+    return {
+        "validation_count": validation_count,
+        "success_count": success_count,
+        "partial_success_count": partial_success_count,
+        "failure_count": failure_count,
+        "contradiction_count": contradiction_count,
+        "challenged_count": challenged_count,
+        "support_weight": round(support_weight, 3),
+        "risk_weight": round(risk_weight, 3),
+        "evidence_density": round(density, 3),
+        "reuse_multiplier": round(reuse_multiplier, 3),
+        "reusability": reusability,
+        "last_observed_at": data.get("last_observed_at"),
+    }
+
+
 __all__ = [
     "filter_claims_for_scope",
     "matches_scope_filter",
     "parse_claim_payload",
+    "strategy_reuse_profile",
 ]

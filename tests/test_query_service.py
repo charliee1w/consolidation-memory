@@ -209,6 +209,117 @@ class TestCanonicalQueryServiceClaims:
         assert mock_get_active_claims.call_args_list[0].kwargs["offset"] == 0
         assert mock_get_active_claims.call_args_list[1].kwargs["offset"] == 50
 
+    def test_search_claims_strategy_reuse_ranking_prefers_validated_strategies(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        strategy_rows = [
+            {
+                "id": "strategy-validated",
+                "claim_type": "strategy",
+                "canonical_text": "debug flaky ci tests with deterministic reruns",
+                "payload": (
+                    '{"problem_pattern":"flaky ci tests","strategy":"rerun deterministically",'
+                    '"expected_signals":"same failure reproduces"}'
+                ),
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-02T00:00:00+00:00",
+            },
+            {
+                "id": "strategy-degraded",
+                "claim_type": "strategy",
+                "canonical_text": "debug flaky ci tests with deterministic reruns",
+                "payload": (
+                    '{"problem_pattern":"flaky ci tests","strategy":"rerun deterministically",'
+                    '"failure_modes":"infra outage"}'
+                ),
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+            },
+        ]
+
+        with (
+            patch("consolidation_memory.database.get_active_claims", side_effect=[strategy_rows, []]),
+            patch(
+                "consolidation_memory.database.get_claim_outcome_evidence",
+                return_value={
+                    "strategy-validated": {
+                        "validation_count": 4,
+                        "success_count": 3,
+                        "partial_success_count": 1,
+                        "failure_count": 0,
+                        "contradiction_count": 0,
+                        "challenged_count": 0,
+                        "last_observed_at": "2026-01-03T00:00:00+00:00",
+                    },
+                    "strategy-degraded": {
+                        "validation_count": 4,
+                        "success_count": 1,
+                        "partial_success_count": 0,
+                        "failure_count": 3,
+                        "contradiction_count": 1,
+                        "challenged_count": 1,
+                        "last_observed_at": "2026-01-03T00:00:00+00:00",
+                    },
+                },
+            ),
+        ):
+            result = service.search_claims(
+                ClaimSearchQuery(query="flaky ci tests", claim_type="strategy", limit=10)
+            )
+
+        assert [claim["id"] for claim in result.claims] == [
+            "strategy-validated",
+            "strategy-degraded",
+        ]
+        assert result.claims[0]["relevance"] > result.claims[1]["relevance"]
+        assert result.claims[0]["strategy_evidence"]["reusability"] == "validated"
+        assert result.claims[1]["strategy_evidence"]["reusability"] == "degraded"
+
+    def test_browse_claims_attaches_strategy_evidence(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        strategy_rows = [{
+            "id": "strategy-1",
+            "claim_type": "strategy",
+            "canonical_text": "triage flaky tests",
+            "payload": '{"problem_pattern":"flaky tests","strategy":"rerun deterministically"}',
+            "status": "active",
+            "confidence": 0.85,
+            "valid_from": "2025-01-01T00:00:00+00:00",
+            "valid_until": None,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": "2025-01-01T00:00:00+00:00",
+        }]
+
+        with (
+            patch("consolidation_memory.database.get_active_claims", return_value=strategy_rows),
+            patch(
+                "consolidation_memory.database.get_claim_outcome_evidence",
+                return_value={
+                    "strategy-1": {
+                        "validation_count": 2,
+                        "success_count": 1,
+                        "partial_success_count": 1,
+                        "failure_count": 0,
+                        "contradiction_count": 0,
+                        "challenged_count": 0,
+                        "last_observed_at": "2026-01-01T00:00:00+00:00",
+                    },
+                },
+            ),
+        ):
+            result = service.browse_claims(ClaimBrowseQuery(claim_type="strategy", limit=10))
+
+        assert result.total == 1
+        assert result.claims[0]["strategy_evidence"]["validation_count"] == 2
+        assert result.claims[0]["strategy_evidence"]["reusability"] == "mixed"
+
 
 class TestCanonicalQueryServiceDrift:
     def test_detect_drift_delegates_to_drift_engine(self):

@@ -9,6 +9,7 @@ from consolidation_memory.context_assembler import _search_claims, recall
 from consolidation_memory.database import (
     ensure_schema,
     insert_claim_event,
+    record_action_outcome,
     insert_episode,
     insert_claim_sources,
     upsert_claim,
@@ -188,6 +189,64 @@ class TestClaimSearch:
             )
 
         assert [claim["id"] for claim in claims] == ["claim-visible"]
+
+    def test_search_claims_strategy_evidence_penalizes_failed_claims(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-strategy-validated",
+            claim_type="strategy",
+            canonical_text="strategy for flaky ci tests",
+            payload={
+                "problem_pattern": "flaky ci tests",
+                "strategy": "rerun deterministically and isolate fixtures",
+            },
+            confidence=0.9,
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-strategy-degraded",
+            claim_type="strategy",
+            canonical_text="strategy for flaky ci tests",
+            payload={
+                "problem_pattern": "flaky ci tests",
+                "strategy": "rerun deterministically and isolate fixtures",
+            },
+            confidence=0.9,
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        record_action_outcome(
+            action_summary="validated strategy run",
+            outcome_type="success",
+            source_claim_ids=["claim-strategy-validated"],
+        )
+        record_action_outcome(
+            action_summary="validated strategy run",
+            outcome_type="success",
+            source_claim_ids=["claim-strategy-validated"],
+        )
+        record_action_outcome(
+            action_summary="degraded strategy run",
+            outcome_type="failure",
+            source_claim_ids=["claim-strategy-degraded"],
+        )
+        insert_claim_event(
+            claim_id="claim-strategy-degraded",
+            event_type="contradiction",
+            details={"reason": "recent contradictory evidence"},
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        query_vec = mock_encode(["flaky ci tests"])[0]
+        with patch(
+            "consolidation_memory.context_assembler.backends.encode_documents",
+            side_effect=lambda texts: np.stack([query_vec for _ in texts]),
+        ):
+            claims, _warnings = _search_claims("flaky ci tests", query_vec)
+
+        ranked_ids = [claim["id"] for claim in claims]
+        assert "claim-strategy-validated" in ranked_ids
+        assert "claim-strategy-degraded" in ranked_ids
+        assert ranked_ids.index("claim-strategy-validated") < ranked_ids.index("claim-strategy-degraded")
 
 
 class TestRecallClaimsIntegration:

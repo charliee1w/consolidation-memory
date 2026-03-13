@@ -100,6 +100,8 @@ from consolidation_memory.types import (
     TimelineResult,
     DecayReportResult,
     ProtectResult,
+    OUTCOME_TYPES,
+    OutcomeType,
 )
 
 logger = logging.getLogger("consolidation_memory")
@@ -190,6 +192,30 @@ def _derive_action_key(action_summary: str) -> str:
     normalized = " ".join(action_summary.split()).strip().casefold()
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
     return f"act_{digest}"
+
+
+def _normalize_outcome_type_token(value: str) -> OutcomeType:
+    token = str(value or "").strip().lower()
+    if token == "success":
+        return "success"
+    if token == "failure":
+        return "failure"
+    if token == "partial_success":
+        return "partial_success"
+    if token == "reverted":
+        return "reverted"
+    if token == "superseded":
+        return "superseded"
+    raise ValueError(f"outcome_type must be one of: {', '.join(OUTCOME_TYPES)}")
+
+
+def _normalize_optional_outcome_type_token(value: str | None) -> OutcomeType | None:
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    if not stripped:
+        return None
+    return _normalize_outcome_type_token(stripped)
 
 
 def _resolved_scope_to_db_row(scope: ResolvedScopeEnvelope) -> dict[str, str | None]:
@@ -1464,7 +1490,7 @@ class MemoryClient:
         scope: ScopeEnvelope | dict[str, object] | None = None,
     ) -> OutcomeRecordResult:
         """Record an outcome observation for a proposed strategy/action."""
-        from consolidation_memory.database import OUTCOME_TYPES, record_action_outcome
+        from consolidation_memory.database import record_action_outcome
 
         self._ensure_open()
         resolved_scope = self.resolve_scope(scope)
@@ -1475,9 +1501,7 @@ class MemoryClient:
         action_summary_token = str(action_summary or "").strip()
         if not action_summary_token:
             raise ValueError("action_summary must not be empty")
-        outcome_type_token = str(outcome_type or "").strip().lower()
-        if outcome_type_token not in OUTCOME_TYPES:
-            raise ValueError(f"outcome_type must be one of: {', '.join(OUTCOME_TYPES)}")
+        outcome_type_token = _normalize_outcome_type_token(outcome_type)
 
         normalized_claim_ids = sorted({str(claim_id).strip() for claim_id in source_claim_ids or [] if str(claim_id).strip()})
         normalized_record_ids = sorted({str(record_id).strip() for record_id in source_record_ids or [] if str(record_id).strip()})
@@ -1540,7 +1564,7 @@ class MemoryClient:
         scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
         result = self._query_service.browse_outcomes(
             OutcomeBrowseQuery(
-                outcome_type=outcome_type,
+                outcome_type=_normalize_optional_outcome_type_token(outcome_type),
                 action_key=action_key,
                 source_claim_id=source_claim_id,
                 source_record_id=source_record_id,
@@ -2342,7 +2366,13 @@ class MemoryClient:
         for rec in records:
             tid = rec["topic_id"]
             if tid not in records_by_topic:
-                records_by_topic[tid] = {"fact": 0, "solution": 0, "preference": 0, "procedure": 0}
+                records_by_topic[tid] = {
+                    "fact": 0,
+                    "solution": 0,
+                    "preference": 0,
+                    "procedure": 0,
+                    "strategy": 0,
+                }
             rt = rec.get("record_type", "fact")
             if rt in records_by_topic[tid]:
                 records_by_topic[tid][rt] += 1

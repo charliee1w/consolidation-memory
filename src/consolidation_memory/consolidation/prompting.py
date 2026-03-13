@@ -126,6 +126,20 @@ _EXTRACTION_RESPONSE_JSON_SCHEMA = {
                             "context": {"type": "string"},
                         },
                     },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["type", "problem_pattern", "strategy"],
+                        "properties": {
+                            "type": {"type": "string", "const": "strategy"},
+                            "problem_pattern": {"type": "string", "minLength": 1},
+                            "strategy": {"type": "string", "minLength": 1},
+                            "preconditions": {"type": "string"},
+                            "expected_signals": {"type": "string"},
+                            "failure_modes": {"type": "string"},
+                            "context": {"type": "string"},
+                        },
+                    },
                 ]
             },
         },
@@ -343,6 +357,13 @@ def _embedding_text_for_record(record: dict) -> str:
         return f"Preference {record.get('key', '')}: {record.get('value', '')}"
     elif rtype == "procedure":
         return f"Procedure: {record.get('trigger', '')} -> {record.get('steps', '')}"
+    elif rtype == "strategy":
+        return (
+            f"Strategy for {record.get('problem_pattern', '')}: {record.get('strategy', '')}. "
+            f"Preconditions: {record.get('preconditions', '')}. "
+            f"Expected signals: {record.get('expected_signals', '')}. "
+            f"Failure modes: {record.get('failure_modes', '')}"
+        )
     return json.dumps(record, default=str)
 
 
@@ -367,13 +388,15 @@ def _build_extraction_prompt(
 STRICT RULES:
 - Extract ONLY information explicitly stated in the episodes. NEVER add advice, recommendations, or inferences.
 - Preserve specific details: file paths, version numbers, line numbers, command syntax, error messages.
-- Each record must be one of four types:
+- Each record must be one of five types:
   * "fact": A static piece of information. Fields: "subject" (what it's about), "info" (the specific detail).
   * "solution": A problem->fix pair. Fields: "problem" (what went wrong), "fix" (HOW to solve it — include specific implementation details like function names, config changes, commands, code patterns; never just say "fixed it" or "ensured X"), "context" (optional, when this applies).
   * "preference": An explicitly stated user choice. Fields: "key" (what setting/choice), "value" (what they chose), "context" (optional, when/where).
   * "procedure": A repeated workflow or behavioral pattern. Fields: "trigger" (when/what situation activates this), "steps" (the sequence of actions taken), "context" (optional, scope or conditions). Extract procedures when episodes show the same workflow being followed multiple times or the user describes how they approach a task.
+  * "strategy": A reusable problem-solving heuristic. Fields: "problem_pattern" (the recurring issue pattern), "strategy" (the reusable approach), "preconditions" (optional prerequisites), "expected_signals" (optional success indicators), "failure_modes" (optional known failure conditions), "context" (optional scope).
 - Do NOT invent preferences from facts. Only extract preferences when the user explicitly stated a choice.
 - Do NOT invent procedures from one-off actions. Only extract procedures when episodes show a repeated pattern or the user explicitly describes their workflow.
+- Do NOT invent strategies from one-off fixes. Only extract strategies when episodes show reusable tactics, validation steps, or explicit guidance about how to solve a class of problems.
 - The summary must be a dense factual statement, not a description. BAD: "Discusses VR setup." GOOD: "VR stack uses SteamVR with SpaceCalibrator for multi-tracker calibration."
 - Output valid JSON only. No markdown, no code fences, no commentary.
 
@@ -383,7 +406,7 @@ Episodes:
 {chr(10).join(episode_texts)}
 
 Output this exact JSON structure:
-{{"title": "Short Descriptive Title", "summary": "Dense factual summary with key specifics.", "tags": ["tag1", "tag2"], "records": [{{"type": "fact", "subject": "...", "info": "..."}}, {{"type": "solution", "problem": "...", "fix": "...", "context": "..."}}, {{"type": "preference", "key": "...", "value": "...", "context": "..."}}, {{"type": "procedure", "trigger": "...", "steps": "...", "context": "..."}}]}}"""
+{{"title": "Short Descriptive Title", "summary": "Dense factual summary with key specifics.", "tags": ["tag1", "tag2"], "records": [{{"type": "fact", "subject": "...", "info": "..."}}, {{"type": "solution", "problem": "...", "fix": "...", "context": "..."}}, {{"type": "preference", "key": "...", "value": "...", "context": "..."}}, {{"type": "procedure", "trigger": "...", "steps": "...", "context": "..."}}, {{"type": "strategy", "problem_pattern": "...", "strategy": "...", "preconditions": "...", "expected_signals": "...", "failure_modes": "...", "context": "..."}}]}}"""
 
 
 def _build_merge_extraction_prompt(
@@ -501,7 +524,7 @@ def _validate_extraction_output(
     if not records:
         failures.append("No records extracted")
     else:
-        valid_types = {"fact", "solution", "preference", "procedure"}
+        valid_types = {"fact", "solution", "preference", "procedure", "strategy"}
         for i, rec in enumerate(records):
             rtype = rec.get("type")
             if rtype not in valid_types:
@@ -515,6 +538,10 @@ def _validate_extraction_output(
                 failures.append(f"Record {i}: preference missing key or value")
             elif rtype == "procedure" and (not rec.get("trigger") or not rec.get("steps")):
                 failures.append(f"Record {i}: procedure missing trigger or steps")
+            elif rtype == "strategy" and (
+                not rec.get("problem_pattern") or not rec.get("strategy")
+            ):
+                failures.append(f"Record {i}: strategy missing problem_pattern or strategy")
 
     specifics_failure = _check_specifics_preservation(cluster_episodes, json.dumps(data, default=str))
     if specifics_failure:
@@ -606,6 +633,7 @@ def _render_markdown_from_records(
     solutions = [r for r in records if r.get("type") == "solution"]
     preferences = [r for r in records if r.get("type") == "preference"]
     procedures = [r for r in records if r.get("type") == "procedure"]
+    strategies = [r for r in records if r.get("type") == "strategy"]
 
     if facts:
         lines.append("## Facts")
@@ -636,6 +664,21 @@ def _render_markdown_from_records(
             lines.append(f"{pr.get('steps', '')}")
             if pr.get("context"):
                 lines.append(f"*Context: {pr['context']}*")
+            lines.append("")
+
+    if strategies:
+        lines.append("## Strategies")
+        for st in strategies:
+            lines.append(f"### {st.get('problem_pattern', 'Problem Pattern')}")
+            lines.append(f"{st.get('strategy', '')}")
+            if st.get("preconditions"):
+                lines.append(f"- Preconditions: {st['preconditions']}")
+            if st.get("expected_signals"):
+                lines.append(f"- Expected signals: {st['expected_signals']}")
+            if st.get("failure_modes"):
+                lines.append(f"- Failure modes: {st['failure_modes']}")
+            if st.get("context"):
+                lines.append(f"*Context: {st['context']}*")
             lines.append("")
 
     return "\n".join(lines)

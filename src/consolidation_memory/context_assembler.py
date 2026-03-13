@@ -20,6 +20,7 @@ from consolidation_memory.database import (
     fts_available,
     fts_search,
     get_active_claims,
+    get_claim_outcome_evidence,
     get_claims_as_of,
     get_connection,
     get_episodes_batch,
@@ -37,6 +38,7 @@ from consolidation_memory.knowledge_paths import resolve_topic_path
 from consolidation_memory.query_semantics import (
     filter_claims_for_scope as _filter_claims_for_scope,
     matches_scope_filter as _matches_scope_filter,
+    strategy_reuse_profile as _strategy_reuse_profile,
 )
 from consolidation_memory.vector_store import VectorStore
 from consolidation_memory import topic_cache
@@ -445,6 +447,16 @@ def _search_claims(
         warnings.append("Claim search fell back to keyword-only (embedding failed)")
 
     query_words = set(query.lower().split())
+    strategy_claim_ids = [
+        str(claim.get("id"))
+        for claim in claims
+        if claim.get("id") and claim.get("claim_type") == "strategy"
+    ]
+    strategy_evidence = get_claim_outcome_evidence(
+        strategy_claim_ids,
+        as_of=as_of,
+        scope=scope,
+    )
     scored_claims: list[dict] = []
     for i, claim in enumerate(claims):
         sem_score = float(sims[i]) if sims is not None else 0.0
@@ -457,10 +469,15 @@ def _search_claims(
 
         confidence = float(claim.get("confidence", 0.8) or 0.8)
         relevance *= 0.5 + 0.5 * confidence
+        strategy_profile: dict[str, object] | None = None
+        if claim.get("claim_type") == "strategy":
+            claim_id = str(claim.get("id", ""))
+            strategy_profile = _strategy_reuse_profile(strategy_evidence.get(claim_id))
+            relevance *= float(strategy_profile["reuse_multiplier"])
         if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
             continue
 
-        scored_claims.append({
+        row = {
             "id": claim["id"],
             "claim_type": claim.get("claim_type", ""),
             "canonical_text": claim.get("canonical_text", ""),
@@ -470,7 +487,10 @@ def _search_claims(
             "valid_from": claim.get("valid_from"),
             "valid_until": claim.get("valid_until"),
             "relevance": round(relevance, 3),
-        })
+        }
+        if strategy_profile is not None:
+            row["strategy_evidence"] = strategy_profile
+        scored_claims.append(row)
 
     logger.debug(
         "claim_search: %d claims checked, %d passed relevance threshold (>=%s)",

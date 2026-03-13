@@ -7,6 +7,7 @@ import sqlite3
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 from consolidation_memory.client import MemoryClient
 from consolidation_memory.cli import cmd_import
@@ -149,6 +150,42 @@ def test_multiple_outcomes_linked_to_same_claim_over_time(tmp_data_dir):
         browse = client.query_browse_outcomes(source_claim_id="claim-outcome-timeline")
         assert browse.total == 2
         assert [row["outcome_type"] for row in browse.outcomes] == ["success", "failure"]
+    finally:
+        client.close()
+
+
+def test_outcome_browse_normalizes_and_validates_outcome_type(tmp_data_dir):
+    ensure_schema()
+    _seed_claim_with_episode(
+        claim_id="claim-outcome-filter",
+        canonical_text="Normalize browse outcome type tokens",
+        payload={"problem": "token mismatch", "fix": "normalize literals", "context": "query"},
+    )
+
+    client = MemoryClient(auto_consolidate=False)
+    try:
+        client.record_outcome(
+            action_summary="Use normalized outcome tokens",
+            outcome_type="success",
+            source_claim_ids=["claim-outcome-filter"],
+        )
+
+        filtered = client.query_browse_outcomes(
+            source_claim_id="claim-outcome-filter",
+            outcome_type=" SUCCESS ",
+        )
+        assert filtered.total == 1
+        assert filtered.outcome_type == "success"
+
+        unfiltered = client.query_browse_outcomes(
+            source_claim_id="claim-outcome-filter",
+            outcome_type="   ",
+        )
+        assert unfiltered.total == 1
+        assert unfiltered.outcome_type is None
+
+        with pytest.raises(ValueError, match="outcome_type must be one of"):
+            client.query_browse_outcomes(outcome_type="unknown")
     finally:
         client.close()
 

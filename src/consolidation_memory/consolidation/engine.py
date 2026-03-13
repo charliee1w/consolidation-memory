@@ -389,6 +389,16 @@ def _record_dedup_key(record: dict) -> tuple:
             _normalize_record_field(record.get("steps")),
             _normalize_record_field(record.get("context")),
         )
+    if rtype == "strategy":
+        return (
+            "strategy",
+            _normalize_record_field(record.get("problem_pattern")),
+            _normalize_record_field(record.get("strategy")),
+            _normalize_record_field(record.get("preconditions")),
+            _normalize_record_field(record.get("expected_signals")),
+            _normalize_record_field(record.get("failure_modes")),
+            _normalize_record_field(record.get("context")),
+        )
     # Unknown record shape: keep stable by sorted JSON key.
     return ("unknown", json.dumps(record, sort_keys=True, default=str))
 

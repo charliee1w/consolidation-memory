@@ -1115,8 +1115,65 @@ class TestClientStatus:
         assert "consistency_ratio" in status.knowledge_consistency
         assert status.scaling is not None
         assert "index_type" in status.scaling
+        assert status.trust_profile is not None
+        assert status.trust_profile["role"] == "trust_layer_for_coding_agents"
+        assert status.trust_profile["evidence_model"]["reusable_unit"] == "claims"
 
         client.close()
+
+    def test_status_trust_profile_reports_claim_and_provenance_state(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_claim_sources,
+            insert_episode,
+            insert_episode_anchors,
+            upsert_claim,
+        )
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        episode_id = insert_episode(content="trust profile provenance")
+        insert_episode_anchors(
+            episode_id,
+            [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+        )
+        upsert_claim(
+            claim_id="claim-active-trusted",
+            claim_type="fact",
+            canonical_text="active claim with provenance",
+            payload={"subject": "app", "info": "trusted"},
+            valid_from="2025-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources("claim-active-trusted", [{"source_episode_id": episode_id}])
+        upsert_claim(
+            claim_id="claim-challenged-trusted",
+            claim_type="fact",
+            canonical_text="challenged claim",
+            payload={"subject": "app", "info": "challenged"},
+            status="challenged",
+            valid_from="2025-01-01T00:00:00+00:00",
+        )
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            status = client.status()
+        finally:
+            client.close()
+
+        trust_profile = status.trust_profile
+        assert trust_profile is not None
+        assert trust_profile["posture"] == "drift_watch"
+
+        current_state = trust_profile["current_state"]
+        assert current_state["total_claims"] == 2
+        assert current_state["currently_valid_claims"] == 2
+        assert current_state["active_claims"] == 1
+        assert current_state["challenged_claims"] == 1
+        assert current_state["claims_with_sources"] == 1
+        assert current_state["claims_without_sources"] == 1
+        assert current_state["claims_with_anchors"] == 1
+        assert current_state["source_coverage_ratio"] == 0.5
+        assert current_state["anchor_coverage_ratio"] == 1.0
 
 
 class TestClientExport:

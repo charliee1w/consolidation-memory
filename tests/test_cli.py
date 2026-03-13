@@ -2,9 +2,10 @@
 
 import io
 import json
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import patch, MagicMock
 
 from consolidation_memory.database import ensure_schema
 from tests.helpers import make_normalized_vec as _make_normalized_vec
@@ -305,6 +306,86 @@ class TestDetectDriftCommand:
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert "git diff failed" in captured.err
+
+
+class TestStatusCommand:
+    def test_cmd_status_prints_trust_profile_lines(self, capsys, tmp_path):
+        from consolidation_memory.cli import cmd_status
+
+        fake_cfg = SimpleNamespace(
+            DATA_DIR=tmp_path / "data",
+            DB_PATH=tmp_path / "memory.db",
+            EMBEDDING_BACKEND="fastembed",
+            EMBEDDING_MODEL_NAME="bge-small",
+            EMBEDDING_DIMENSION=384,
+            LLM_BACKEND="disabled",
+            LLM_MODEL="disabled",
+            EVOLVING_TOPIC_LOOKBACK_DAYS=30,
+        )
+        fake_cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        fake_cfg.DB_PATH.write_text("", encoding="utf-8")
+
+        with (
+            patch("consolidation_memory.database.ensure_schema"),
+            patch(
+                "consolidation_memory.database.get_stats",
+                return_value={
+                    "episodic_buffer": {
+                        "total": 3,
+                        "pending_consolidation": 1,
+                        "consolidated": 2,
+                        "pruned": 0,
+                    },
+                    "knowledge_base": {
+                        "total_topics": 2,
+                        "total_facts": 4,
+                        "total_records": 6,
+                        "records_by_type": {
+                            "facts": 4,
+                            "solutions": 1,
+                            "preferences": 1,
+                        },
+                    },
+                },
+            ),
+            patch(
+                "consolidation_memory.database.get_last_consolidation_run",
+                return_value={"started_at": "2026-03-12T00:00:00+00:00", "status": "completed"},
+            ),
+            patch(
+                "consolidation_memory.database.get_claim_trust_stats",
+                return_value={
+                    "total_claims": 5,
+                    "currently_valid_claims": 4,
+                    "active_claims": 3,
+                    "challenged_claims": 1,
+                    "claims_with_sources": 3,
+                    "claims_without_sources": 1,
+                    "claims_with_anchors": 2,
+                    "source_coverage_ratio": 0.75,
+                    "anchor_coverage_ratio": 0.667,
+                },
+            ),
+            patch(
+                "consolidation_memory.database.count_active_challenged_claims",
+                return_value=1,
+            ),
+            patch(
+                "consolidation_memory.database.get_recently_contradicted_topic_ids",
+                return_value=["topic-a"],
+            ),
+            patch("consolidation_memory.config.get_config", return_value=fake_cfg),
+            patch("consolidation_memory.config.get_active_project", return_value="repo-a"),
+        ):
+            cmd_status()
+
+        output = capsys.readouterr().out
+        assert "Trust role:  trust layer for coding agents" in output
+        assert "Trust unit:  claims first; episodes remain raw evidence" in output
+        assert "Posture:     drift_watch" in output
+        assert "Claims:      4 current, 3 active, 1 challenged" in output
+        assert "Evidence:    3 sourced (75%), 2 anchor-linked (67% of sourced)" in output
+        assert "Drift watch: 1 challenged claims, 1 evolving topics in the last 30 days" in output
 
 
 class TestExportImportHardening:

@@ -676,6 +676,7 @@ class StatusResult:
     utility_scheduler: dict[str, Any] | None = None
     knowledge_consistency: dict[str, Any] | None = None
     scaling: dict[str, Any] | None = None
+    trust_profile: dict[str, Any] | None = None
 
 
 @dataclass

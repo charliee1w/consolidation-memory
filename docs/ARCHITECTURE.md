@@ -9,6 +9,15 @@ This document describes the current architecture of `consolidation-memory` as im
 - Single semantic contract across MCP, REST, Python, and OpenAI-compatible tools.
 - Backward compatibility for single-project usage while supporting explicit shared scopes.
 
+## Product Stance
+
+`consolidation-memory` is designed as a trust layer for coding-agent memory.
+
+- Claims are the reusable unit.
+- Episodes are the raw evidence behind those claims.
+- Reuse should degrade when provenance is weak, contradictions accumulate, or code drift challenges prior conclusions.
+- Shared memory is only valuable when scope and policy make reuse safe.
+
 ## Runtime Surfaces
 
 - CLI entrypoint: `cli.py`
@@ -111,6 +120,8 @@ Key points:
 - Claim search with temporal and scope filtering.
 - Optional uncertainty signals (low confidence, recently contradicted).
 
+The retrieval bias is deliberate: prefer reusable claims with provenance and uncertainty signals, while keeping episodes available as raw supporting evidence.
+
 `query_service.py` wraps this behavior into canonical envelopes (`RecallQuery`, `EpisodeSearchQuery`, `ClaimBrowseQuery`, `ClaimSearchQuery`, `DriftQuery`) so all external adapters use the same semantics.
 
 ## Vector Store Behavior
@@ -131,6 +142,7 @@ To keep them in sync:
 
 - `knowledge_consistency.py` computes markdown/record consistency ratio.
 - `MemoryClient.status()` returns `knowledge_consistency` details.
+- `MemoryClient.status()` returns `trust_profile` details for claim coverage, provenance coverage, anchor coverage, contradiction pressure, and drift-watch posture.
 - Health degrades when consistency drops below `KNOWLEDGE_CONSISTENCY_THRESHOLD` (default `0.995`).
 
 ## Scaling Envelope

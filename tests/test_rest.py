@@ -284,6 +284,13 @@ class TestStatusEndpoint:
         data = resp.json()
         assert "episodic_buffer" in data
         assert "version" in data
+        assert "trust_profile" in data
+
+    def test_app_description_matches_trust_layer_positioning(self):
+        from consolidation_memory.rest import create_app
+
+        app = create_app()
+        assert app.description == "Trust-calibrated working memory for coding agents"
 
 
 class TestSearchEndpoint:

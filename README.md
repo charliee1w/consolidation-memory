@@ -7,9 +7,31 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/charliee1w/consolidation-memory?style=social)](https://github.com/charliee1w/consolidation-memory/stargazers)
 
-Local-first memory for coding agents that preserves provenance, temporal truth, and code-drift awareness.
+Trust-calibrated working memory for coding agents.
 
-`consolidation-memory` stores episodic events, consolidates them into structured knowledge, and serves the same trust-aware retrieval semantics across Python, MCP, REST, and OpenAI-style tool calls.
+`consolidation-memory` is built around a simple stance: claims are the reusable unit, episodes are the raw evidence, and code drift is a first-class reason to distrust stale memory. The system stores episodic events, consolidates them into structured knowledge and claims, and serves the same trust-aware retrieval semantics across Python, MCP, REST, and OpenAI-style tool calls.
+
+## Design Philosophy
+
+- Treat the system as a trust layer for coding-agent memory, not a generic blob store.
+- Prefer reusable claims with provenance over raw episodic recall.
+- Keep uncertainty visible through temporal validity, contradiction history, and drift challenge signals.
+- Preserve local-first inspectability: SQLite, FAISS, markdown, and logs should all stay understandable on disk.
+- Support shared memory only when scopes and policy make reuse safe.
+
+## What It Is And Is Not
+
+`consolidation-memory` is for:
+
+- coding agents that need durable, inspectable working memory
+- teams that want reusable claims without mixing unrelated contexts
+- workflows where code changes should automatically reduce trust in older conclusions
+
+`consolidation-memory` is not trying to be:
+
+- a generic “memory for every AI app” platform
+- a replacement for source control, issue trackers, or primary documentation
+- a black-box vector store that hides why something was retrieved
 
 ## Try It In 5 Minutes
 
@@ -36,6 +58,7 @@ If you want runnable integration snippets instead of docs, start in [examples/](
 | Capability | What `consolidation-memory` does |
 | --- | --- |
 | Local-first persistence | Stores memory on disk in inspectable SQLite, FAISS, markdown, and log artifacts |
+| Claim-first trust layer | Treats claims as the reusable memory unit and episodes as supporting evidence |
 | Trust-aware retrieval | Tracks temporal validity, contradictions, provenance, and claim lifecycle events |
 | Drift-aware knowledge | Maps changed files to anchored claims and challenges impacted knowledge automatically |
 | Shared memory without chaos | Supports namespace/project/app/agent/session scope dimensions with policy controls |
@@ -57,6 +80,8 @@ flowchart LR
 ```
 
 More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+`memory_status` / `MemoryClient.status()` also expose a `trust_profile` so callers can inspect current claim coverage, provenance coverage, anchor coverage, contradiction pressure, and drift-watch posture.
 
 ## Examples
 

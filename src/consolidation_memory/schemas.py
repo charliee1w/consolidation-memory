@@ -334,7 +334,10 @@ MEMORY_STATUS_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": "memory_status",
-        "description": "Show memory system statistics including episode counts, knowledge base size, and backend info.",
+        "description": (
+            "Show memory system statistics, including trust posture, claim coverage, "
+            "provenance coverage, drift-watch pressure, episode counts, and backend info."
+        ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,

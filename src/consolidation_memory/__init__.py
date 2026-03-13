@@ -1,4 +1,4 @@
-"""Consolidation Memory — persistent semantic memory for AI conversations."""
+"""Consolidation Memory — trust-calibrated working memory for coding agents."""
 
 from importlib.metadata import version as _pkg_version
 

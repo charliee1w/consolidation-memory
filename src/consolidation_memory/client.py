@@ -290,7 +290,7 @@ def _row_matches_scope_filter(
 
 
 class MemoryClient:
-    """Persistent semantic memory client.
+    """Trust-calibrated working memory client.
 
     Owns the vector store, database lifecycle, and optional background
     consolidation thread.  All public methods are synchronous and thread-safe.
@@ -1422,7 +1422,10 @@ class MemoryClient:
         """
         self._ensure_open()
         from consolidation_memory.database import (
+            count_active_challenged_claims,
+            get_claim_trust_stats,
             get_consolidation_scheduler_state,
+            get_recently_contradicted_topic_ids,
             get_stats,
             get_last_consolidation_run,
             get_recent_consolidation_runs,
@@ -1555,6 +1558,52 @@ class MemoryClient:
                 self._vector_store.size >= cfg.FAISS_PLATFORM_REVIEW_THRESHOLD
             ),
         }
+        trust_counts = get_claim_trust_stats()
+        evolving_topic_ids = get_recently_contradicted_topic_ids(
+            days=cfg.EVOLVING_TOPIC_LOOKBACK_DAYS
+        )
+        challenged_backlog = count_active_challenged_claims(as_of=now_utc.isoformat())
+        source_coverage = float(trust_counts["source_coverage_ratio"])
+        if int(trust_counts["currently_valid_claims"]) == 0:
+            trust_posture = "bootstrapping"
+        elif challenged_backlog > 0 or evolving_topic_ids:
+            trust_posture = "drift_watch"
+        elif source_coverage < 0.7:
+            trust_posture = "needs_provenance"
+        else:
+            trust_posture = "trusted_reuse_ready"
+        trust_profile = {
+            "role": "trust_layer_for_coding_agents",
+            "primary_unit": "claims",
+            "evidence_model": {
+                "reusable_unit": "claims",
+                "evidence_units": [
+                    "episodes",
+                    "knowledge_records",
+                    "claim_sources",
+                    "episode_anchors",
+                    "claim_events",
+                ],
+                "retrieval_preference": (
+                    "Prefer reusable claims with provenance and uncertainty "
+                    "signals; use episodes as raw evidence."
+                ),
+            },
+            "design_priorities": [
+                "reliability_over_breadth",
+                "claim_first_memory",
+                "provenance_required_for_reuse",
+                "drift_aware_retrieval",
+                "scope_safe_sharing",
+            ],
+            "posture": trust_posture,
+            "current_state": {
+                **trust_counts,
+                "recently_contradicted_topics": len(evolving_topic_ids),
+                "challenged_claim_backlog": challenged_backlog,
+                "evolving_topic_window_days": cfg.EVOLVING_TOPIC_LOOKBACK_DAYS,
+            },
+        }
 
         return StatusResult(
             episodic_buffer=stats["episodic_buffer"],
@@ -1573,6 +1622,7 @@ class MemoryClient:
             utility_scheduler=utility_scheduler,
             knowledge_consistency=knowledge_consistency,
             scaling=scaling,
+            trust_profile=trust_profile,
         )
 
     def forget(

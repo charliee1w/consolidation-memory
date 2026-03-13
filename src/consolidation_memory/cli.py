@@ -406,7 +406,14 @@ def cmd_detect_drift(base_ref: str | None = None, repo_path: str | None = None):
 
 def cmd_status():
     """Show system statistics."""
-    from consolidation_memory.database import ensure_schema, get_stats, get_last_consolidation_run
+    from consolidation_memory.database import (
+        count_active_challenged_claims,
+        ensure_schema,
+        get_claim_trust_stats,
+        get_last_consolidation_run,
+        get_recently_contradicted_topic_ids,
+        get_stats,
+    )
     from consolidation_memory.config import get_config, get_active_project
     cfg = get_config()
 
@@ -437,6 +444,42 @@ def cmd_status():
         print(f"Records:     {kb['total_records']} total "
               f"({rbt.get('facts', 0)} facts, {rbt.get('solutions', 0)} solutions, "
               f"{rbt.get('preferences', 0)} preferences)")
+
+    trust_counts = get_claim_trust_stats()
+    challenged_backlog = count_active_challenged_claims()
+    evolving_topics = len(
+        get_recently_contradicted_topic_ids(days=cfg.EVOLVING_TOPIC_LOOKBACK_DAYS)
+    )
+    source_coverage = float(trust_counts["source_coverage_ratio"])
+    if trust_counts["currently_valid_claims"] == 0:
+        trust_posture = "bootstrapping"
+    elif challenged_backlog > 0 or evolving_topics > 0:
+        trust_posture = "drift_watch"
+    elif source_coverage < 0.7:
+        trust_posture = "needs_provenance"
+    else:
+        trust_posture = "trusted_reuse_ready"
+
+    print()
+    print("Trust role:  trust layer for coding agents")
+    print("Trust unit:  claims first; episodes remain raw evidence")
+    print(f"Posture:     {trust_posture}")
+    print(
+        f"Claims:      {trust_counts['currently_valid_claims']} current, "
+        f"{trust_counts['active_claims']} active, "
+        f"{trust_counts['challenged_claims']} challenged"
+    )
+    print(
+        f"Evidence:    {trust_counts['claims_with_sources']} sourced "
+        f"({trust_counts['source_coverage_ratio']:.0%}), "
+        f"{trust_counts['claims_with_anchors']} anchor-linked "
+        f"({trust_counts['anchor_coverage_ratio']:.0%} of sourced)"
+    )
+    print(
+        f"Drift watch: {challenged_backlog} challenged claims, "
+        f"{evolving_topics} evolving topics in the last "
+        f"{cfg.EVOLVING_TOPIC_LOOKBACK_DAYS} days"
+    )
 
     if last_run:
         print(f"\nLast consolidation: {last_run['started_at']}")
@@ -1072,7 +1115,7 @@ def cmd_dashboard():
 def main():
     parser = argparse.ArgumentParser(
         prog="consolidation-memory",
-        description="Persistent semantic memory for AI conversations",
+        description="Trust-calibrated working memory for coding agents",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(

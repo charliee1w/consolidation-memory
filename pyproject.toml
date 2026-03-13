@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "consolidation-memory"
 version = "0.13.6"
-description = "Local-first persistent memory for AI agents - store, recall, and consolidate knowledge across sessions using FAISS, SQLite, and any LLM"
+description = "Trust-calibrated working memory for coding agents with provenance, drift awareness, and scoped sharing"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

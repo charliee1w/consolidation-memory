@@ -67,6 +67,13 @@ class TestSchemaStructure:
         recall = next(t for t in openai_tools if t["function"]["name"] == "memory_recall")
         assert "query" in recall["function"]["parameters"]["required"]
 
+    def test_status_schema_mentions_trust_posture_and_coverage(self):
+        status = next(t for t in openai_tools if t["function"]["name"] == "memory_status")
+        description = status["function"]["description"]
+        assert "trust posture" in description
+        assert "claim coverage" in description
+        assert "provenance coverage" in description
+
     def test_forget_schema_requires_episode_id(self):
         forget = next(t for t in openai_tools if t["function"]["name"] == "memory_forget")
         assert "episode_id" in forget["function"]["parameters"]["required"]

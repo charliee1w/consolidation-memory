@@ -2550,6 +2550,70 @@ def get_claims_as_of(
     return claims
 
 
+def get_claim_trust_stats(as_of: str | None = None) -> dict[str, float | int]:
+    """Return trust-oriented claim coverage stats for the current snapshot."""
+    as_of_utc = _normalize_utc_timestamp(as_of or _now())
+    with get_connection() as conn:
+        row = conn.execute(
+            """WITH valid_claims AS (
+                   SELECT id, status
+                   FROM claims
+                   WHERE julianday(valid_from) <= julianday(?)
+                     AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))
+               ),
+               sourced_claims AS (
+                   SELECT DISTINCT claim_id
+                   FROM claim_sources
+               ),
+               anchored_claims AS (
+                   SELECT DISTINCT cs.claim_id
+                   FROM claim_sources cs
+                   JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
+               )
+               SELECT
+                   COUNT(*) AS currently_valid_claims,
+                   COALESCE(SUM(CASE WHEN vc.status = 'active' THEN 1 ELSE 0 END), 0) AS active_claims,
+                   COALESCE(SUM(CASE WHEN vc.status = 'challenged' THEN 1 ELSE 0 END), 0) AS challenged_claims,
+                   COALESCE(SUM(CASE WHEN sc.claim_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS claims_with_sources,
+                   COALESCE(SUM(CASE WHEN ac.claim_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS claims_with_anchors
+               FROM valid_claims vc
+               LEFT JOIN sourced_claims sc ON sc.claim_id = vc.id
+               LEFT JOIN anchored_claims ac ON ac.claim_id = vc.id""",
+            (as_of_utc, as_of_utc),
+        ).fetchone()
+        total_row = conn.execute("SELECT COUNT(*) AS total_claims FROM claims").fetchone()
+
+    currently_valid_claims = int(row["currently_valid_claims"]) if row else 0
+    active_claims = int(row["active_claims"]) if row else 0
+    challenged_claims = int(row["challenged_claims"]) if row else 0
+    claims_with_sources = int(row["claims_with_sources"]) if row else 0
+    claims_with_anchors = int(row["claims_with_anchors"]) if row else 0
+
+    source_coverage_ratio = (
+        round(claims_with_sources / currently_valid_claims, 3)
+        if currently_valid_claims
+        else 0.0
+    )
+    anchor_coverage_ratio = (
+        round(claims_with_anchors / claims_with_sources, 3)
+        if claims_with_sources
+        else 0.0
+    )
+
+    total_claims = int(total_row["total_claims"]) if total_row else 0
+    return {
+        "total_claims": total_claims,
+        "currently_valid_claims": currently_valid_claims,
+        "active_claims": active_claims,
+        "challenged_claims": challenged_claims,
+        "claims_with_sources": claims_with_sources,
+        "claims_without_sources": max(0, currently_valid_claims - claims_with_sources),
+        "claims_with_anchors": claims_with_anchors,
+        "source_coverage_ratio": source_coverage_ratio,
+        "anchor_coverage_ratio": anchor_coverage_ratio,
+    }
+
+
 def get_claim_source_scope_rows(
     claim_ids: Sequence[str],
 ) -> dict[str, list[dict[str, Any]]]:

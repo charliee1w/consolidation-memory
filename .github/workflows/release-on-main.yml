@@ -33,6 +33,7 @@ jobs:
       reason: ${{ steps.criteria.outputs.reason }}
       commits_scanned: ${{ steps.criteria.outputs.commits_scanned }}
       from_ref: ${{ steps.criteria.outputs.from_ref }}
+      has_release_pat: ${{ steps.release_auth.outputs.has_release_pat }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -57,6 +58,17 @@ jobs:
             python scripts/release_criteria.py --github-output "$GITHUB_OUTPUT"
           fi
 
+      - id: release_auth
+        name: Detect release automation PAT
+        env:
+          RELEASE_AUTOMATION_PAT: ${{ secrets.RELEASE_AUTOMATION_PAT }}
+        run: |
+          if [ -n "$RELEASE_AUTOMATION_PAT" ]; then
+            echo "has_release_pat=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_release_pat=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Criteria summary
         run: |
           echo "should_release=${{ steps.criteria.outputs.should_release }}"
@@ -64,22 +76,23 @@ jobs:
           echo "reason=${{ steps.criteria.outputs.reason }}"
           echo "from_ref=${{ steps.criteria.outputs.from_ref }}"
           echo "commits_scanned=${{ steps.criteria.outputs.commits_scanned }}"
+          echo "has_release_pat=${{ steps.release_auth.outputs.has_release_pat }}"
+
+  release_skipped_missing_pat:
+    needs: decide
+    if: needs.decide.outputs.should_release == 'true' && needs.decide.outputs.has_release_pat != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip release when PAT is not configured
+        run: |
+          echo "::warning::Release criteria matched but RELEASE_AUTOMATION_PAT is not configured."
+          echo "::warning::Skipping automated release. Add RELEASE_AUTOMATION_PAT repo secret to enable releases."
 
   release:
     needs: decide
-    if: needs.decide.outputs.should_release == 'true'
+    if: needs.decide.outputs.should_release == 'true' && needs.decide.outputs.has_release_pat == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Verify release PAT is configured
-        env:
-          RELEASE_AUTOMATION_PAT: ${{ secrets.RELEASE_AUTOMATION_PAT }}
-        run: |
-          if [ -z "$RELEASE_AUTOMATION_PAT" ]; then
-            echo "::error::Missing required secret RELEASE_AUTOMATION_PAT."
-            echo "::error::Create a classic PAT with repo scope, then add it as repo secret RELEASE_AUTOMATION_PAT."
-            exit 1
-          fi
-
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           token: ${{ secrets.RELEASE_AUTOMATION_PAT }}

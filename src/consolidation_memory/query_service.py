@@ -359,6 +359,7 @@ class CanonicalQueryService:
         )
         try:
             query_vec = backends.encode_query(normalized_query)
+            claim_vecs = None
             if query.as_of:
                 # Temporal snapshots are query-specific; bypass global cache.
                 claim_vecs = backends.encode_documents(claim_texts)

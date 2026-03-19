@@ -342,6 +342,7 @@ CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=6
 - [Builder Baseline](docs/BUILDER_BASELINE.md)
 - [Model Support](docs/MODEL_SUPPORT.md)
 - [Release Gates](docs/RELEASE_GATES.md)
+- [Release Automation](docs/RELEASE_AUTOMATION.md)
 - [Novelty Metrics](docs/NOVELTY_METRICS.md)
 - [Novelty Eval Guide](docs/NOVELTY_EVAL_GUIDE.md)
 - [External Review Playbook](docs/EXTERNAL_REVIEW_PLAYBOOK.md)

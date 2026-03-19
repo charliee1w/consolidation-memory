@@ -9,6 +9,8 @@ A release is allowed only when all required gates pass with complete and recent 
 - Gate evaluator: `src/consolidation_memory/release_gates.py`
 - Gate CLI: `scripts/verify_release_gates.py`
 - Publish workflow: `.github/workflows/publish.yml`
+- Automated release trigger: `.github/workflows/release-on-main.yml`
+- Criteria evaluator: `scripts/release_criteria.py`
 
 ## Required Evidence
 
@@ -55,6 +57,8 @@ type checks, security scan, full novelty gate enforcement, and artifact build +
 - PR CI (`test.yml`) runs quick novelty checks.
 - PR CI also validates wheel/sdist buildability and runs a dedicated optional-surface
   job with `rest`, `openai`, and `dashboard` extras installed.
+- Main-branch automation (`release-on-main.yml`) evaluates release criteria and only
+  creates a new release tag/version when eligible.
 - Tag publish (`publish.yml`) requires the tagged commit to be on `origin/main`,
   runs release quality gates (tests/resource warnings/lint/mypy/security/smoke),
   then runs full novelty evaluation + gate enforcement before build/publish.

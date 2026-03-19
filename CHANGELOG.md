@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.1 - 2026-03-19
+
+### Highlights
+
+- Document release setup and enforce docs freshness
+- Merge branch 'main' of https://github.com/charliee1w/consolidation-memory
+- Fix docs guard git path for bandit
+- fix: harden drift detection subprocess
+- test: fix drift subprocess cwd assertion
+
+
 ## 0.14.0 - 2026-03-19
 
 ### Highlights

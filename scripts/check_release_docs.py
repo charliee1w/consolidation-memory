@@ -7,6 +7,7 @@ Fails CI when release automation code changes without matching doc updates.
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess  # nosec B404
 from pathlib import Path
 
@@ -31,8 +32,11 @@ REQUIRED_RELEASE_DOC_MARKERS = (
 
 
 def _run_git(args: list[str]) -> str:
+    git_executable = shutil.which("git")
+    if not git_executable:
+        raise RuntimeError("git executable not found in PATH")
     result = subprocess.run(  # nosec B603
-        ["git", *args],
+        [str(Path(git_executable).resolve()), *args],
         cwd=str(ROOT),
         check=True,
         capture_output=True,

@@ -57,6 +57,28 @@ class TestServerEnvParsing:
         assert server._WARMUP_START_DELAY_SECONDS == 0.25
         assert server._STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS == 10.0
 
+    def test_mcp_client_factory_defaults_auto_consolidate_to_false(self, monkeypatch):
+        monkeypatch.delenv("CONSOLIDATION_MEMORY_MCP_AUTO_CONSOLIDATE", raising=False)
+
+        import consolidation_memory.server as server
+
+        server = importlib.reload(server)
+        with patch("consolidation_memory.client.MemoryClient") as mock_client:
+            server._mcp_client_factory()
+
+        mock_client.assert_called_once_with(auto_consolidate=False)
+
+    def test_mcp_client_factory_allows_auto_consolidate_override(self, monkeypatch):
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_MCP_AUTO_CONSOLIDATE", "true")
+
+        import consolidation_memory.server as server
+
+        server = importlib.reload(server)
+        with patch("consolidation_memory.client.MemoryClient") as mock_client:
+            server._mcp_client_factory()
+
+        mock_client.assert_called_once_with(auto_consolidate=True)
+
 
 class TestMCPDetectDriftTool:
     def test_memory_detect_drift_signature(self):

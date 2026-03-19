@@ -85,6 +85,20 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    token = raw.strip().lower()
+    if not token:
+        return default
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS",
     90.0,
@@ -121,8 +135,23 @@ _STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS",
     10.0,
 )
+_MCP_AUTO_CONSOLIDATE = _env_bool(
+    "CONSOLIDATION_MEMORY_MCP_AUTO_CONSOLIDATE",
+    False,
+)
 
-_runtime = MemoryRuntime(max_workers=_MCP_BLOCKING_WORKERS)
+
+def _mcp_client_factory():
+    """Create the MCP-owned client with MCP-safe lifecycle defaults."""
+    from consolidation_memory.client import MemoryClient
+
+    return MemoryClient(auto_consolidate=_MCP_AUTO_CONSOLIDATE)
+
+
+_runtime = MemoryRuntime(
+    client_factory=_mcp_client_factory,
+    max_workers=_MCP_BLOCKING_WORKERS,
+)
 _warmup_task: asyncio.Task | None = None
 _idle_task: asyncio.Task | None = None
 _active_tool_calls = 0

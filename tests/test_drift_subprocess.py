@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -36,7 +37,7 @@ class _FakeProcess:
         self.waited = True
 
 
-def test_run_detect_drift_subprocess_success(monkeypatch):
+def test_run_detect_drift_subprocess_success(monkeypatch, tmp_path):
     from consolidation_memory import drift_subprocess
 
     payload = {
@@ -45,6 +46,7 @@ def test_run_detect_drift_subprocess_success(monkeypatch):
         "challenged_claim_ids": ["claim-1"],
         "impacts": [],
     }
+    repo_path = str(tmp_path)
     fake_process = _FakeProcess(stdout=json.dumps(payload).encode("utf-8"))
     seen: dict[str, object] = {}
 
@@ -68,7 +70,7 @@ def test_run_detect_drift_subprocess_success(monkeypatch):
     result = asyncio.run(
         drift_subprocess.run_detect_drift_subprocess(
             base_ref="origin/main",
-            repo_path="C:/repo",
+            repo_path=repo_path,
             timeout_seconds=1.0,
         )
     )
@@ -83,9 +85,9 @@ def test_run_detect_drift_subprocess_success(monkeypatch):
         "--base-ref",
         "origin/main",
         "--repo-path",
-        "C:/repo",
+        repo_path,
     )
-    assert seen["cwd"] == "C:\\repo"
+    assert seen["cwd"] == str(Path(repo_path).expanduser().resolve())
     assert "stdin" in seen["kwargs"]
     assert "stdout" in seen["kwargs"]
     assert "stderr" in seen["kwargs"]

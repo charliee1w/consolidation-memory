@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.14.0 - 2026-03-19
+
+### Highlights
+
+- Add outcome tracking model
+- Add strategy memory support
+- Fix timeout root cause
+- Fix timeout root causes
+- Fix mypy outcome_type errors
+- Fix mypy overload errors
+- Add reliability scoring for claims
+- Add reliability scoring
+- feat(claim-search): add trust-aware ranking for claim retrieval
+- fix(mcp): disable auto consolidation by default for server runtime
+- fix(claim-search): filter low-signal semantic-only temporal noise
+- fix(types): satisfy mypy optional claim vector assignment
+
+
 ## 0.13.7 - 2026-03-13
 
 ### Highlights

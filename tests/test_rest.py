@@ -4,8 +4,9 @@ Run with: python -m pytest tests/test_rest.py -v
 Requires: pip install consolidation-memory[rest,dev]
 """
 
+import asyncio
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -845,16 +846,25 @@ class TestDriftEndpoint:
             }],
         }
 
-        with patch("consolidation_memory.rest._run_detect_drift", return_value=expected) as mock_detect:
+        with patch(
+            "consolidation_memory.rest.run_detect_drift_subprocess",
+            new_callable=AsyncMock,
+            return_value=expected,
+        ) as mock_detect:
             resp = api_client.post("/memory/detect-drift", json={"base_ref": "origin/main"})
 
         assert resp.status_code == 200
         assert resp.json() == expected
-        mock_detect.assert_called_once_with(base_ref="origin/main", repo_path=None)
+        mock_detect.assert_awaited_once_with(
+            base_ref="origin/main",
+            repo_path=None,
+            timeout_seconds=ANY,
+        )
 
     def test_detect_drift_runtime_error_returns_400(self, api_client):
         with patch(
-            "consolidation_memory.rest._run_detect_drift",
+            "consolidation_memory.rest.run_detect_drift_subprocess",
+            new_callable=AsyncMock,
             side_effect=RuntimeError("git diff failed"),
         ):
             resp = api_client.post("/memory/detect-drift", json={})
@@ -863,10 +873,10 @@ class TestDriftEndpoint:
         assert "git diff failed" in resp.json()["detail"]
 
     def test_detect_drift_timeout_returns_fallback_payload(self, api_client):
-        def _slow_detect(*args, **kwargs):
-            base_ref = kwargs.get("base_ref")
-            if base_ref is not None:
-                time.sleep(0.05)
+        async def _detect(*args, **kwargs):
+            del args
+            if kwargs.get("base_ref") is not None:
+                raise asyncio.TimeoutError()
             return {
                 "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/fallback.py"}],
                 "impacted_claim_ids": [],
@@ -875,7 +885,11 @@ class TestDriftEndpoint:
             }
 
         with (
-            patch("consolidation_memory.rest._run_detect_drift", side_effect=_slow_detect),
+            patch(
+                "consolidation_memory.rest.run_detect_drift_subprocess",
+                new_callable=AsyncMock,
+                side_effect=_detect,
+            ),
             patch("consolidation_memory.rest._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
         ):
             resp = api_client.post("/memory/detect-drift", json={"base_ref": "origin/main"})
@@ -888,13 +902,16 @@ class TestDriftEndpoint:
         assert "timed out after" in data["message"]
 
     def test_detect_drift_timeout_without_base_ref_returns_degraded_payload(self, api_client):
-        def _slow_detect(*args, **kwargs):
+        async def _slow_detect(*args, **kwargs):
             del args, kwargs
-            time.sleep(0.05)
-            return {}
+            raise asyncio.TimeoutError()
 
         with (
-            patch("consolidation_memory.rest._run_detect_drift", side_effect=_slow_detect),
+            patch(
+                "consolidation_memory.rest.run_detect_drift_subprocess",
+                new_callable=AsyncMock,
+                side_effect=_slow_detect,
+            ),
             patch("consolidation_memory.rest._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
         ):
             resp = api_client.post("/memory/detect-drift", json={})

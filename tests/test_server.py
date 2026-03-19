@@ -10,7 +10,7 @@ import json
 import threading
 import time
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -105,22 +105,28 @@ class TestMCPDetectDriftTool:
             }],
         }
 
-        with patch("consolidation_memory.drift.detect_code_drift", return_value=expected) as mock_detect:
+        with patch(
+            "consolidation_memory.server.run_detect_drift_subprocess",
+            new_callable=AsyncMock,
+            return_value=expected,
+        ) as mock_detect:
             output = asyncio.run(
                 memory_detect_drift(base_ref="origin/main", repo_path="C:/repo")
             )
 
         assert json.loads(output) == expected
-        mock_detect.assert_called_once_with(
+        mock_detect.assert_awaited_once_with(
             base_ref="origin/main",
             repo_path="C:/repo",
+            timeout_seconds=ANY,
         )
 
     def test_memory_detect_drift_returns_error_json(self):
         from consolidation_memory.server import memory_detect_drift
 
         with patch(
-            "consolidation_memory.drift.detect_code_drift",
+            "consolidation_memory.server.run_detect_drift_subprocess",
+            new_callable=AsyncMock,
             side_effect=RuntimeError("git diff failed"),
         ):
             output = asyncio.run(memory_detect_drift())
@@ -132,10 +138,10 @@ class TestMCPDetectDriftTool:
     def test_memory_detect_drift_timeout_returns_fallback_json(self):
         from consolidation_memory.server import memory_detect_drift
 
-        def _slow_detect(*args, **kwargs):
-            base_ref = kwargs.get("base_ref")
-            if base_ref is not None:
-                time.sleep(0.05)
+        async def _detect(*args, **kwargs):
+            del args
+            if kwargs.get("base_ref") is not None:
+                raise asyncio.TimeoutError()
             return {
                 "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/fallback.py"}],
                 "impacted_claim_ids": [],
@@ -144,7 +150,11 @@ class TestMCPDetectDriftTool:
             }
 
         with (
-            patch("consolidation_memory.drift.detect_code_drift", side_effect=_slow_detect),
+            patch(
+                "consolidation_memory.server.run_detect_drift_subprocess",
+                new_callable=AsyncMock,
+                side_effect=_detect,
+            ),
             patch("consolidation_memory.server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
         ):
             output = asyncio.run(memory_detect_drift(base_ref="origin/main"))
@@ -159,13 +169,16 @@ class TestMCPDetectDriftTool:
     def test_memory_detect_drift_timeout_without_base_ref_returns_degraded_json(self):
         from consolidation_memory.server import memory_detect_drift
 
-        def _slow_detect(*args, **kwargs):
+        async def _slow_detect(*args, **kwargs):
             del args, kwargs
-            time.sleep(0.05)
-            return {}
+            raise asyncio.TimeoutError()
 
         with (
-            patch("consolidation_memory.drift.detect_code_drift", side_effect=_slow_detect),
+            patch(
+                "consolidation_memory.server.run_detect_drift_subprocess",
+                new_callable=AsyncMock,
+                side_effect=_slow_detect,
+            ),
             patch("consolidation_memory.server._MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS", 0.01),
         ):
             output = asyncio.run(memory_detect_drift())
@@ -192,7 +205,11 @@ class TestMCPDetectDriftTool:
                 "consolidation_memory.server._get_client_with_timeout",
                 side_effect=AssertionError("memory client init should not be used"),
             ),
-            patch("consolidation_memory.drift.detect_code_drift", return_value=expected),
+            patch(
+                "consolidation_memory.server.run_detect_drift_subprocess",
+                new_callable=AsyncMock,
+                return_value=expected,
+            ),
         ):
             output = asyncio.run(memory_detect_drift())
 

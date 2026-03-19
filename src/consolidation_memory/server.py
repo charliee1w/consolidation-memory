@@ -25,9 +25,9 @@ from typing import Any, Awaitable, Callable, TypeAlias, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 
+from consolidation_memory.drift_subprocess import run_detect_drift_subprocess
 from consolidation_memory.runtime import MemoryRuntime
 from consolidation_memory.tool_dispatch import execute_tool_call
-from consolidation_memory.types import DriftOutput
 
 # Configure logging to stderr (stdout is the MCP JSON-RPC channel).
 logging.basicConfig(
@@ -640,24 +640,6 @@ async def _call_tool_json(
         return json.dumps({"error": str(exc)})
 
 
-def _run_detect_drift(
-    *,
-    base_ref: str | None = None,
-    repo_path: str | None = None,
-) -> DriftOutput:
-    from consolidation_memory.drift import detect_code_drift
-
-    result = detect_code_drift(base_ref=base_ref, repo_path=repo_path)
-    logger.info(
-        "Detect drift base_ref=%r repo_path=%r impacted=%d challenged=%d",
-        base_ref,
-        repo_path,
-        len(result.get("impacted_claim_ids", [])),
-        len(result.get("challenged_claim_ids", [])),
-    )
-    return result
-
-
 def _degraded_drift_output(*, message: str) -> dict[str, object]:
     return {
         "checked_anchors": [],
@@ -1017,11 +999,10 @@ async def memory_detect_drift(
     """Detect code drift and challenge impacted claims."""
     timeout_seconds = _drift_timeout_seconds()
     try:
-        result = await _run_blocking(
-            _run_detect_drift,
+        result = await run_detect_drift_subprocess(
             base_ref=base_ref,
             repo_path=repo_path,
-            timeout=timeout_seconds,
+            timeout_seconds=timeout_seconds,
         )
         return json.dumps(result, default=str)
     except (TimeoutError, asyncio.TimeoutError):
@@ -1033,11 +1014,10 @@ async def memory_detect_drift(
                 base_ref,
             )
             try:
-                fallback_result = await _run_blocking(
-                    _run_detect_drift,
+                fallback_result = await run_detect_drift_subprocess(
                     base_ref=None,
                     repo_path=repo_path,
-                    timeout=fallback_timeout,
+                    timeout_seconds=fallback_timeout,
                 )
                 payload: dict[str, object] = dict(fallback_result)
                 payload["message"] = (

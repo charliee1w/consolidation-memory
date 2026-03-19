@@ -37,9 +37,9 @@ except ImportError:
 from contextlib import asynccontextmanager
 
 from consolidation_memory import __version__
+from consolidation_memory.drift_subprocess import run_detect_drift_subprocess
 from consolidation_memory.runtime import MemoryRuntime
 from consolidation_memory.tool_dispatch import execute_tool_call
-from consolidation_memory.types import DriftOutput
 
 # Valid content types accepted by the memory system.
 _ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference"]
@@ -107,21 +107,6 @@ def _recall_fallback_timeout_seconds() -> float:
 def _client_init_timeout_seconds() -> float:
     configured = _CLIENT_INIT_TIMEOUT_SECONDS
     return configured if configured > 0 else 90.0
-
-
-def _run_detect_drift(
-    *,
-    base_ref: str | None = None,
-    repo_path: str | None = None,
-) -> DriftOutput:
-    # Drift detection uses git + claim DB state only, and does not require
-    # embedding/vector initialization.
-    from consolidation_memory.drift import detect_code_drift
-
-    return detect_code_drift(
-        base_ref=base_ref,
-        repo_path=repo_path,
-    )
 
 
 def _degraded_drift_output(*, message: str) -> dict[str, object]:
@@ -588,21 +573,19 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         """Detect code drift and challenge anchored claims."""
         timeout_seconds = _drift_timeout_seconds()
         try:
-            return await runtime.run_blocking(
-                _run_detect_drift,
+            return await run_detect_drift_subprocess(
                 base_ref=req.base_ref,
                 repo_path=req.repo_path,
-                timeout=timeout_seconds,
+                timeout_seconds=timeout_seconds,
             )
         except asyncio.TimeoutError:
             fallback_timeout = max(5.0, min(20.0, timeout_seconds * 0.2))
             if req.base_ref:
                 try:
-                    fallback = await runtime.run_blocking(
-                        _run_detect_drift,
+                    fallback = await run_detect_drift_subprocess(
                         base_ref=None,
                         repo_path=req.repo_path,
-                        timeout=fallback_timeout,
+                        timeout_seconds=fallback_timeout,
                     )
                     payload = dict(fallback)
                     payload["message"] = (

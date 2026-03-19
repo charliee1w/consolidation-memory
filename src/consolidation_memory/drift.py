@@ -448,7 +448,8 @@ def detect_code_drift(
     else:  # pragma: no cover - defensive
         raise RuntimeError("Failed to acquire or join drift detection run")
 
-    assert run_entry is not None  # pragma: no cover - loop guarantees assignment
+    if run_entry is None:  # pragma: no cover - defensive
+        raise RuntimeError("Failed to initialize drift singleflight entry")
 
     try:
         result = _detect_code_drift_once(base_ref=base_ref, repo_dir=repo_dir, scope=effective_scope)

@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess  # nosec B404
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,8 +50,11 @@ class CommitMessage:
 
 
 def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    git_executable = shutil.which("git")
+    if not git_executable:
+        raise RuntimeError("git executable not found in PATH")
     return subprocess.run(  # nosec B603
-        ["git", *args],
+        [str(Path(git_executable).resolve()), *args],
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -59,8 +63,11 @@ def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _get_latest_tag() -> str | None:
+    git_executable = shutil.which("git")
+    if not git_executable:
+        raise RuntimeError("git executable not found in PATH")
     result = subprocess.run(  # nosec B603
-        ["git", "describe", "--tags", "--abbrev=0"],
+        [str(Path(git_executable).resolve()), "describe", "--tags", "--abbrev=0"],
         cwd=str(ROOT),
         check=False,
         capture_output=True,

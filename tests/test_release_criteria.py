@@ -6,6 +6,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _load_release_criteria_module():
     script_path = Path(__file__).resolve().parents[1] / "scripts" / "release_criteria.py"
@@ -88,3 +90,30 @@ def test_decide_release_ignores_non_releasable_commit_types():
     result = module.decide_release(commits)
     assert result["should_release"] is False
     assert result["bump"] is None
+
+
+def test_run_git_raises_when_git_missing(monkeypatch):
+    module = _load_release_criteria_module()
+    monkeypatch.setattr(module.shutil, "which", lambda _: None)
+
+    with pytest.raises(RuntimeError, match="git executable not found"):
+        module._run_git(["status"])
+
+
+def test_run_git_resolves_absolute_git_path(monkeypatch):
+    module = _load_release_criteria_module()
+    monkeypatch.setattr(module.shutil, "which", lambda _: "bin/git")
+
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = dict(kwargs)
+        return module.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module._run_git(["status"])
+
+    assert captured["cmd"][0] == str(Path("bin/git").resolve())
+    assert captured["cmd"][1:] == ["status"]

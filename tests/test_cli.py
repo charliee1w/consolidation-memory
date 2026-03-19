@@ -277,14 +277,13 @@ class TestDetectDriftCommand:
             }],
         }
 
-        with patch("consolidation_memory.client.MemoryClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value
-            mock_client.__enter__.return_value = mock_client
-            mock_client.detect_drift.return_value = expected
-
+        with patch(
+            "consolidation_memory.drift_worker.run_detect_drift_worker",
+            return_value=expected,
+        ) as mock_run:
             cmd_detect_drift(base_ref="origin/main", repo_path="C:/repo")
 
-            mock_client.detect_drift.assert_called_once_with(
+            mock_run.assert_called_once_with(
                 base_ref="origin/main",
                 repo_path="C:/repo",
             )
@@ -295,11 +294,10 @@ class TestDetectDriftCommand:
     def test_cmd_detect_drift_exits_on_runtime_error(self, capsys):
         from consolidation_memory.cli import cmd_detect_drift
 
-        with patch("consolidation_memory.client.MemoryClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value
-            mock_client.__enter__.return_value = mock_client
-            mock_client.detect_drift.side_effect = RuntimeError("git diff failed")
-
+        with patch(
+            "consolidation_memory.drift_worker.run_detect_drift_worker",
+            side_effect=RuntimeError("git diff failed"),
+        ):
             with pytest.raises(SystemExit) as exc_info:
                 cmd_detect_drift()
 

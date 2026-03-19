@@ -392,11 +392,10 @@ def cmd_consolidate():
 
 def cmd_detect_drift(base_ref: str | None = None, repo_path: str | None = None):
     """Detect code drift and challenge impacted claims."""
-    from consolidation_memory.client import MemoryClient
+    from consolidation_memory.drift_worker import run_detect_drift_worker
 
     try:
-        with MemoryClient(auto_consolidate=False) as client:
-            result = client.detect_drift(base_ref=base_ref, repo_path=repo_path)
+        result = run_detect_drift_worker(base_ref=base_ref, repo_path=repo_path)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)

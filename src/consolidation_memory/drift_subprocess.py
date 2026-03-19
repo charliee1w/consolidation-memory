@@ -32,11 +32,14 @@ def _resolve_python_executable() -> str:
 
 
 def _build_drift_command(*, base_ref: str | None, repo_path: str | None) -> list[str]:
+    from consolidation_memory.config import get_active_project
+
     cmd = [
         _resolve_python_executable(),
         "-m",
-        "consolidation_memory.cli",
-        "detect-drift",
+        "consolidation_memory.drift_worker",
+        "--project",
+        get_active_project(),
     ]
     if base_ref:
         cmd.extend(["--base-ref", base_ref])
@@ -71,10 +74,13 @@ async def run_detect_drift_subprocess(
     timeout_seconds: float,
 ) -> DriftOutput:
     cmd = _build_drift_command(base_ref=base_ref, repo_path=repo_path)
+    cwd = str(Path(repo_path).expanduser().resolve()) if repo_path else None
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
     )
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -82,7 +88,10 @@ async def run_detect_drift_subprocess(
             timeout=max(0.001, float(timeout_seconds)),
         )
     except asyncio.TimeoutError:
-        proc.kill()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
         await proc.wait()
         raise
 

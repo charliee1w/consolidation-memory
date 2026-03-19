@@ -46,11 +46,12 @@ def test_run_detect_drift_subprocess_success(monkeypatch):
         "impacts": [],
     }
     fake_process = _FakeProcess(stdout=json.dumps(payload).encode("utf-8"))
-    seen: dict[str, tuple[object, ...]] = {}
+    seen: dict[str, object] = {}
 
     async def _fake_create_subprocess_exec(*cmd, **kwargs):
         seen["cmd"] = cmd
         seen["kwargs"] = tuple(sorted(kwargs))
+        seen["cwd"] = kwargs.get("cwd")
         return fake_process
 
     monkeypatch.setattr(drift_subprocess, "_resolve_python_executable", lambda: "C:/Python/python.exe")
@@ -58,6 +59,10 @@ def test_run_detect_drift_subprocess_success(monkeypatch):
         drift_subprocess.asyncio,
         "create_subprocess_exec",
         _fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "consolidation_memory.config.get_active_project",
+        lambda: "universal",
     )
 
     result = asyncio.run(
@@ -72,13 +77,16 @@ def test_run_detect_drift_subprocess_success(monkeypatch):
     assert seen["cmd"] == (
         "C:/Python/python.exe",
         "-m",
-        "consolidation_memory.cli",
-        "detect-drift",
+        "consolidation_memory.drift_worker",
+        "--project",
+        "universal",
         "--base-ref",
         "origin/main",
         "--repo-path",
         "C:/repo",
     )
+    assert seen["cwd"] == "C:\\repo"
+    assert "stdin" in seen["kwargs"]
     assert "stdout" in seen["kwargs"]
     assert "stderr" in seen["kwargs"]
 
@@ -96,6 +104,10 @@ def test_run_detect_drift_subprocess_timeout_kills_process(monkeypatch):
         drift_subprocess.asyncio,
         "create_subprocess_exec",
         _fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        "consolidation_memory.config.get_active_project",
+        lambda: "universal",
     )
 
     with pytest.raises(asyncio.TimeoutError):
@@ -125,6 +137,10 @@ def test_run_detect_drift_subprocess_nonzero_exit_raises(monkeypatch):
         "create_subprocess_exec",
         _fake_create_subprocess_exec,
     )
+    monkeypatch.setattr(
+        "consolidation_memory.config.get_active_project",
+        lambda: "universal",
+    )
 
     with pytest.raises(RuntimeError, match="Isolated drift detection failed: git failed"):
         asyncio.run(
@@ -134,4 +150,3 @@ def test_run_detect_drift_subprocess_nonzero_exit_raises(monkeypatch):
                 timeout_seconds=1.0,
             )
         )
-

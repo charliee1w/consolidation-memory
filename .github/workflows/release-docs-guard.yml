@@ -1,0 +1,57 @@
+name: Release Docs Guard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release-on-main.yml
+      - scripts/release.py
+      - scripts/release_criteria.py
+      - scripts/check_release_docs.py
+      - docs/RELEASE_AUTOMATION.md
+      - README.md
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/release-on-main.yml
+      - scripts/release.py
+      - scripts/release_criteria.py
+      - scripts/check_release_docs.py
+      - docs/RELEASE_AUTOMATION.md
+      - README.md
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - id: refs
+        name: Resolve diff base
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "base=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            before="${{ github.event.before }}"
+            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
+              echo "base=$before" >> "$GITHUB_OUTPUT"
+            else
+              echo "base=HEAD^" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Enforce release docs freshness
+        run: |
+          python scripts/check_release_docs.py \
+            --base-ref "${{ steps.refs.outputs.base }}" \
+            --head-ref "HEAD"

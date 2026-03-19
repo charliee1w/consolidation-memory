@@ -17,6 +17,19 @@ Flow:
 4. The script updates version/changelog, commits, tags (`vX.Y.Z`), and pushes.
 5. The tag triggers `publish.yml`, which runs full gates and publishes release artifacts.
 
+## Quick Setup Checklist
+
+Do this once per repository:
+
+1. Create a classic GitHub PAT with `repo` scope.
+2. Add repo secret `RELEASE_AUTOMATION_PAT`.
+3. Keep this PAT available to `release-on-main.yml` only (least privilege where possible).
+4. Verify with a dry run:
+   - Push a conventional commit (for example `fix: ...`) to `main`, or
+   - Trigger `workflow_dispatch` with `patch`, `minor`, or `major`.
+
+If the `release` job appears and runs in `Automated Release On Main`, setup is complete.
+
 ## Criteria
 
 The criteria engine is deterministic:
@@ -38,6 +51,44 @@ Set repository secret:
 Use a PAT that can push commits and tags to this repository (`repo` scope for classic PAT).
 This is required so tag pushes can trigger downstream workflows reliably.
 
+## Troubleshooting
+
+### Release was skipped with missing PAT warning
+
+Symptoms:
+
+- `release_skipped_missing_pat` job runs.
+- `release` job is skipped.
+
+Fix:
+
+1. Add or update `RELEASE_AUTOMATION_PAT` in repo secrets.
+2. Re-run the latest `Automated Release On Main` workflow, or push a new commit to `main`.
+
+### Criteria matched but no release happened
+
+Check `decide` job output in `Automated Release On Main`:
+
+- `should_release`
+- `bump`
+- `reason`
+- `has_release_pat`
+
+Expected for an actual release:
+
+- `should_release=true`
+- `has_release_pat=true`
+
+### How to force one release now
+
+Use `workflow_dispatch` on `Automated Release On Main` and select:
+
+- `patch`
+- `minor`
+- `major`
+
+This bypasses auto detection for that run only.
+
 ## Guardrails
 
 - The automation no-ops when no releasable commits exist.
@@ -51,3 +102,11 @@ This is required so tag pushes can trigger downstream workflows reliably.
 - `patch`
 - `minor`
 - `major`
+
+## Operational Notes
+
+- Commit directive `[skip release]` on the head commit suppresses release.
+- Commit directive `[release major|minor|patch]` on the head commit forces a bump.
+- Release commit/tag pushes trigger downstream workflows:
+  - `Tests` on `main`
+  - `Publish to PyPI` on tag `v*`

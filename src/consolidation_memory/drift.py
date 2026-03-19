@@ -9,6 +9,8 @@ import logging
 import posixpath
 import subprocess  # nosec B404
 import threading
+import time
+from dataclasses import dataclass
 from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
@@ -21,9 +23,21 @@ logger = logging.getLogger(__name__)
 _GIT_COMMAND_TIMEOUT_SECONDS = 15.0
 _GIT_COMMAND_RETRY_TIMEOUT_SECONDS = 45.0
 _MAX_CHANGED_FILES = 2000
+_DRIFT_SINGLEFLIGHT_WAIT_TIMEOUT_SECONDS = 20.0
+_DRIFT_SINGLEFLIGHT_STALE_SECONDS = (
+    _GIT_COMMAND_TIMEOUT_SECONDS + _GIT_COMMAND_RETRY_TIMEOUT_SECONDS + 15.0
+)
 _DriftRunKey = tuple[str, str, str]
 _drift_singleflight_lock = threading.Lock()
-_drift_singleflight: dict[_DriftRunKey, concurrent.futures.Future[DriftOutput]] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class _DriftSingleflightEntry:
+    future: concurrent.futures.Future[DriftOutput]
+    started_monotonic: float
+
+
+_drift_singleflight: dict[_DriftRunKey, _DriftSingleflightEntry] = {}
 
 
 def _chunked(values: Sequence[str], size: int) -> Iterable[list[str]]:
@@ -189,15 +203,18 @@ def _acquire_drift_future(
     repo_dir: Path,
     base_ref: str | None,
     scope: Mapping[str, Any] | None,
-) -> tuple[concurrent.futures.Future[DriftOutput], bool]:
+) -> tuple[_DriftSingleflightEntry, bool]:
     key = _drift_run_key(repo_dir, base_ref, scope)
     with _drift_singleflight_lock:
         existing = _drift_singleflight.get(key)
         if existing is not None:
             return existing, False
-        future: concurrent.futures.Future[DriftOutput] = concurrent.futures.Future()
-        _drift_singleflight[key] = future
-        return future, True
+        entry = _DriftSingleflightEntry(
+            future=concurrent.futures.Future(),
+            started_monotonic=time.monotonic(),
+        )
+        _drift_singleflight[key] = entry
+        return entry, True
 
 
 def _release_drift_future(
@@ -205,13 +222,29 @@ def _release_drift_future(
     repo_dir: Path,
     base_ref: str | None,
     scope: Mapping[str, Any] | None,
-    future: concurrent.futures.Future[DriftOutput],
+    entry: _DriftSingleflightEntry,
 ) -> None:
     key = _drift_run_key(repo_dir, base_ref, scope)
     with _drift_singleflight_lock:
         current = _drift_singleflight.get(key)
-        if current is future:
+        if current is entry:
             _drift_singleflight.pop(key, None)
+
+
+def _evict_drift_future_if_current(
+    *,
+    repo_dir: Path,
+    base_ref: str | None,
+    scope: Mapping[str, Any] | None,
+    entry: _DriftSingleflightEntry,
+) -> bool:
+    key = _drift_run_key(repo_dir, base_ref, scope)
+    with _drift_singleflight_lock:
+        current = _drift_singleflight.get(key)
+        if current is not entry:
+            return False
+        _drift_singleflight.pop(key, None)
+    return True
 
 
 def _copy_drift_output(result: DriftOutput) -> DriftOutput:
@@ -371,34 +404,68 @@ def detect_code_drift(
         }
     else:
         effective_scope = scope
-    run_future, is_owner = _acquire_drift_future(
-        repo_dir=repo_dir,
-        base_ref=base_ref,
-        scope=effective_scope,
-    )
+    run_entry: _DriftSingleflightEntry | None = None
+    for _ in range(2):
+        run_entry, is_owner = _acquire_drift_future(
+            repo_dir=repo_dir,
+            base_ref=base_ref,
+            scope=effective_scope,
+        )
 
-    if not is_owner:
+        if is_owner:
+            break
+
         logger.info(
             "drift detection already in progress for base_ref=%r repo_path=%s; waiting for shared result",
             base_ref,
             repo_dir,
         )
-        return _copy_drift_output(run_future.result())
+        try:
+            return _copy_drift_output(
+                run_entry.future.result(timeout=_DRIFT_SINGLEFLIGHT_WAIT_TIMEOUT_SECONDS)
+            )
+        except concurrent.futures.TimeoutError as exc:
+            run_age_seconds = max(0.0, time.monotonic() - run_entry.started_monotonic)
+            if run_age_seconds >= _DRIFT_SINGLEFLIGHT_STALE_SECONDS and _evict_drift_future_if_current(
+                repo_dir=repo_dir,
+                base_ref=base_ref,
+                scope=effective_scope,
+                entry=run_entry,
+            ):
+                logger.warning(
+                    "Evicted stale in-flight drift run (base_ref=%r repo_path=%s age=%.1fs wait=%.1fs); retrying once",
+                    base_ref,
+                    repo_dir,
+                    run_age_seconds,
+                    _DRIFT_SINGLEFLIGHT_WAIT_TIMEOUT_SECONDS,
+                )
+                continue
+            raise RuntimeError(
+                "drift detection already in progress and did not complete within "
+                f"{_DRIFT_SINGLEFLIGHT_WAIT_TIMEOUT_SECONDS:.0f}s "
+                f"(run age {run_age_seconds:.0f}s)"
+            ) from exc
+    else:  # pragma: no cover - defensive
+        raise RuntimeError("Failed to acquire or join drift detection run")
+
+    assert run_entry is not None  # pragma: no cover - loop guarantees assignment
 
     try:
         result = _detect_code_drift_once(base_ref=base_ref, repo_dir=repo_dir, scope=effective_scope)
     except Exception as exc:
-        run_future.set_exception(exc)
+        if not run_entry.future.done():
+            run_entry.future.set_exception(exc)
         raise
     else:
-        run_future.set_result(result)
+        if not run_entry.future.done():
+            run_entry.future.set_result(result)
         return _copy_drift_output(result)
     finally:
         _release_drift_future(
             repo_dir=repo_dir,
             base_ref=base_ref,
             scope=effective_scope,
-            future=run_future,
+            entry=run_entry,
         )
 
 

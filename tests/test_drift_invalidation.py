@@ -293,6 +293,116 @@ class TestDriftDetection:
         assert len(results) == 2
         assert results[0] == results[1]
 
+    def test_detect_code_drift_evicts_stale_singleflight_run(self, monkeypatch, tmp_data_dir):
+        from consolidation_memory import drift
+
+        monkeypatch.setattr(drift, "_DRIFT_SINGLEFLIGHT_WAIT_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(drift, "_DRIFT_SINGLEFLIGHT_STALE_SECONDS", 0.0)
+
+        call_count = 0
+        call_count_lock = threading.Lock()
+        first_call_entered = threading.Event()
+        release_first_call = threading.Event()
+
+        def fake_get_changed_files(base_ref=None, repo_path=None):
+            del base_ref, repo_path
+            nonlocal call_count
+            with call_count_lock:
+                call_count += 1
+                call_index = call_count
+            if call_index == 1:
+                first_call_entered.set()
+                assert release_first_call.wait(timeout=2.0)
+            return ["src/app.py"]
+
+        monkeypatch.setattr(drift, "get_changed_files", fake_get_changed_files)
+        monkeypatch.setattr(
+            drift,
+            "map_changed_files_to_claims",
+            lambda changed_files, repo_path=None, scope=None: (
+                [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+                {},
+                {},
+            ),
+        )
+
+        first_result: list[dict[str, object]] = []
+        first_error: list[BaseException] = []
+
+        def _run_first() -> None:
+            try:
+                first_result.append(
+                    drift.detect_code_drift(base_ref="origin/main", repo_path=tmp_data_dir)
+                )
+            except BaseException as exc:  # pragma: no cover - defensive capture
+                first_error.append(exc)
+
+        first = threading.Thread(target=_run_first)
+        first.start()
+        assert first_call_entered.wait(timeout=2.0)
+
+        second_result = drift.detect_code_drift(base_ref="origin/main", repo_path=tmp_data_dir)
+        release_first_call.set()
+        first.join(timeout=2.0)
+
+        assert not first_error
+        assert not first.is_alive()
+        assert call_count == 2
+        assert second_result["checked_anchors"] == [
+            {"anchor_type": "path", "anchor_value": "src/app.py"}
+        ]
+        assert second_result == first_result[0]
+
+    def test_detect_code_drift_fails_fast_when_shared_run_is_not_stale(
+        self,
+        monkeypatch,
+        tmp_data_dir,
+    ):
+        from consolidation_memory import drift
+
+        monkeypatch.setattr(drift, "_DRIFT_SINGLEFLIGHT_WAIT_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(drift, "_DRIFT_SINGLEFLIGHT_STALE_SECONDS", 60.0)
+
+        first_call_entered = threading.Event()
+        release_first_call = threading.Event()
+
+        def fake_get_changed_files(base_ref=None, repo_path=None):
+            del base_ref, repo_path
+            first_call_entered.set()
+            assert release_first_call.wait(timeout=2.0)
+            return ["src/app.py"]
+
+        monkeypatch.setattr(drift, "get_changed_files", fake_get_changed_files)
+        monkeypatch.setattr(
+            drift,
+            "map_changed_files_to_claims",
+            lambda changed_files, repo_path=None, scope=None: (
+                [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+                {},
+                {},
+            ),
+        )
+
+        first_error: list[BaseException] = []
+
+        def _run_first() -> None:
+            try:
+                drift.detect_code_drift(base_ref="origin/main", repo_path=tmp_data_dir)
+            except BaseException as exc:  # pragma: no cover - defensive capture
+                first_error.append(exc)
+
+        first = threading.Thread(target=_run_first)
+        first.start()
+        assert first_call_entered.wait(timeout=2.0)
+
+        with pytest.raises(RuntimeError, match="did not complete within"):
+            drift.detect_code_drift(base_ref="origin/main", repo_path=tmp_data_dir)
+
+        release_first_call.set()
+        first.join(timeout=2.0)
+        assert not first_error
+        assert not first.is_alive()
+
     def test_detect_code_drift_does_not_share_singleflight_across_scopes(
         self,
         monkeypatch,

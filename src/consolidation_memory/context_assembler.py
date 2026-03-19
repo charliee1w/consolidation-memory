@@ -36,6 +36,7 @@ from consolidation_memory import backends
 from consolidation_memory import claim_cache
 from consolidation_memory.knowledge_paths import resolve_topic_path
 from consolidation_memory.query_semantics import (
+    claim_query_rank_profile as _claim_query_rank_profile,
     claim_reliability_profile as _claim_reliability_profile,
     coerce_numeric_float as _coerce_numeric_float,
     filter_claims_for_scope as _filter_claims_for_scope,
@@ -448,7 +449,8 @@ def _search_claims(
         sims = None
         warnings.append("Claim search fell back to keyword-only (embedding failed)")
 
-    query_words = set(query.lower().split())
+    query_lower = query.lower()
+    query_words = set(query_lower.split())
     claim_ids = [str(claim.get("id")) for claim in claims if claim.get("id")]
     claim_evidence = get_claim_outcome_evidence(
         claim_ids,
@@ -462,11 +464,8 @@ def _search_claims(
         text_lower = claim_texts[i].lower()
         kw_hits = sum(1 for w in query_words if w in text_lower)
         kw_score = kw_hits / len(query_words) if query_words else 0.0
-
-        relevance = sem_score * cfg.RECORDS_SEMANTIC_WEIGHT + kw_score * cfg.RECORDS_KEYWORD_WEIGHT
-
+        phrase_hit = 1.0 if query_lower and query_lower in text_lower else 0.0
         confidence = float(claim.get("confidence", 0.8) or 0.8)
-        relevance *= 0.5 + 0.5 * confidence
         claim_id = str(claim.get("id", ""))
         evidence_payload = {
             **claim_evidence.get(claim_id, {}),
@@ -478,20 +477,40 @@ def _search_claims(
             as_of=as_of,
             claim_updated_at=str(claim.get("updated_at") or ""),
         )
-        relevance *= _coerce_numeric_float(
-            reliability_profile.get("ranking_multiplier"),
-            default=1.0,
-        )
-
         strategy_profile: dict[str, object] | None = None
+        strategy_multiplier: float | None = None
         if claim.get("claim_type") == "strategy":
             strategy_profile = _strategy_reuse_profile(evidence_payload)
-            relevance *= _coerce_numeric_float(
+            strategy_multiplier = _coerce_numeric_float(
                 strategy_profile.get("reuse_multiplier"),
                 default=1.0,
             )
+        ranking_profile = _claim_query_rank_profile(
+            semantic_similarity=sem_score,
+            keyword_relevance=kw_score,
+            phrase_match=phrase_hit,
+            confidence=confidence,
+            reliability=reliability_profile,
+            evidence=evidence_payload,
+            claim_status=str(claim.get("status", "active")),
+            valid_from=claim.get("valid_from"),
+            valid_until=claim.get("valid_until"),
+            as_of=as_of,
+            semantic_weight=cfg.RECORDS_SEMANTIC_WEIGHT,
+            keyword_weight=cfg.RECORDS_KEYWORD_WEIGHT,
+            strategy_reuse_multiplier=strategy_multiplier,
+        )
+        relevance = _coerce_numeric_float(
+            ranking_profile.get("score"),
+            default=0.0,
+        )
         if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
-            continue
+            if phrase_hit > 0.0 or kw_score > 0.0:
+                # Keep directly-matching weak/stale claims inspectable without
+                # allowing them to outrank durable, supported claims.
+                relevance = max(relevance, 0.08)
+            else:
+                continue
 
         row = {
             "id": claim["id"],
@@ -504,6 +523,7 @@ def _search_claims(
             "valid_until": claim.get("valid_until"),
             "relevance": round(relevance, 3),
             "reliability": reliability_profile,
+            "ranking": ranking_profile,
         }
         if strategy_profile is not None:
             row["strategy_evidence"] = strategy_profile

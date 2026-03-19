@@ -492,8 +492,180 @@ def strategy_reuse_profile(evidence: Mapping[str, object] | None) -> dict[str, o
     }
 
 
+def _clamp_unit(value: object, *, default: float) -> float:
+    parsed = coerce_numeric_float(value, default=default)
+    return max(0.0, min(1.0, parsed))
+
+
+def _temporal_validity_score(
+    *,
+    valid_from: object,
+    valid_until: object,
+    as_of: str | None,
+) -> float:
+    reference_dt = _coerce_utc_datetime(as_of) or datetime.now(timezone.utc)
+    valid_from_dt = _coerce_utc_datetime(valid_from)
+    valid_until_dt = _coerce_utc_datetime(valid_until)
+
+    if valid_from_dt is not None and reference_dt < valid_from_dt:
+        return 0.05
+    if valid_until_dt is not None and reference_dt >= valid_until_dt:
+        return 0.05
+    if valid_until_dt is not None:
+        remaining_days = (valid_until_dt - reference_dt).total_seconds() / 86400.0
+        if remaining_days <= 1:
+            return 0.8
+        if remaining_days <= 7:
+            return 0.9
+    return 1.0
+
+
+def _outcome_support_score(evidence: Mapping[str, object]) -> float:
+    validation_count = max(0, _coerce_int_metric(evidence.get("validation_count", 0)))
+    success_count = max(0, _coerce_int_metric(evidence.get("success_count", 0)))
+    partial_success_count = max(0, _coerce_int_metric(evidence.get("partial_success_count", 0)))
+    failure_count = max(0, _coerce_int_metric(evidence.get("failure_count", 0)))
+    explicit_failure_count = max(0, _coerce_int_metric(evidence.get("explicit_failure_count", 0)))
+    reverted_count = max(0, _coerce_int_metric(evidence.get("reverted_count", 0)))
+    superseded_count = max(0, _coerce_int_metric(evidence.get("superseded_count", 0)))
+
+    weighted_success = success_count + (0.5 * partial_success_count)
+    negative_outcomes = max(
+        failure_count,
+        explicit_failure_count + reverted_count + superseded_count,
+    )
+    if validation_count == 0:
+        return 0.35
+
+    success_ratio = weighted_success / max(1.0, weighted_success + negative_outcomes)
+    support_density = min(1.0, validation_count / 5.0)
+    score = 0.35 + (success_ratio * 0.45) + (support_density * 0.2)
+    if negative_outcomes > weighted_success:
+        score -= min(0.2, (negative_outcomes - weighted_success) * 0.05)
+    return max(0.2, min(1.0, score))
+
+
+def _drift_challenge_penalty(
+    evidence: Mapping[str, object],
+    *,
+    claim_status: str,
+) -> float:
+    drift_event_count = max(0, _coerce_int_metric(evidence.get("drift_event_count", 0)))
+    challenged_count = max(0, _coerce_int_metric(evidence.get("challenged_count", 0)))
+    contradiction_count = max(0, _coerce_int_metric(evidence.get("contradiction_count", 0)))
+
+    status_penalty = 0.0
+    if claim_status == "challenged":
+        status_penalty = 0.22
+    elif claim_status == "expired":
+        status_penalty = 0.35
+
+    event_penalty = min(
+        0.45,
+        (drift_event_count * 0.07)
+        + (challenged_count * 0.05)
+        + (contradiction_count * 0.03),
+    )
+    return max(0.25, 1.0 - (status_penalty + event_penalty))
+
+
+def claim_query_rank_profile(
+    *,
+    semantic_similarity: float,
+    keyword_relevance: float,
+    phrase_match: float,
+    confidence: float,
+    reliability: Mapping[str, object] | None,
+    evidence: Mapping[str, object] | None,
+    claim_status: str | None,
+    valid_from: object,
+    valid_until: object,
+    as_of: str | None,
+    semantic_weight: float,
+    keyword_weight: float,
+    strategy_reuse_multiplier: float | None = None,
+) -> dict[str, object]:
+    """Compose an explainable, trust-aware ranking score for claim retrieval."""
+    reliability_payload = dict(reliability or {})
+    evidence_payload = dict(evidence or {})
+    normalized_status = _normalize_claim_status(claim_status)
+
+    semantic = _clamp_unit(semantic_similarity, default=0.0)
+    keyword = _clamp_unit(keyword_relevance, default=0.0)
+    phrase = _clamp_unit(phrase_match, default=0.0)
+    lexical_relevance = max(keyword, phrase * 0.85)
+
+    bounded_confidence = max(0.0, min(1.0, confidence))
+    confidence_factor = 0.5 + (0.5 * bounded_confidence)
+    base_relevance = (
+        (semantic * semantic_weight) + (lexical_relevance * keyword_weight)
+    ) * confidence_factor
+
+    reliability_score = _clamp_unit(
+        coerce_numeric_float(reliability_payload.get("score"), default=50.0) / 100.0,
+        default=0.5,
+    )
+    reliability_multiplier = max(
+        0.2,
+        min(
+            1.5,
+            coerce_numeric_float(reliability_payload.get("ranking_multiplier"), default=1.0),
+        ),
+    )
+    temporal_validity = _temporal_validity_score(
+        valid_from=valid_from,
+        valid_until=valid_until,
+        as_of=as_of,
+    )
+    outcome_support = _outcome_support_score(evidence_payload)
+    drift_challenge_penalty = _drift_challenge_penalty(
+        evidence_payload,
+        claim_status=normalized_status,
+    )
+
+    weights = {
+        "base_relevance": 0.55,
+        "reliability": 0.2,
+        "temporal_validity": 0.1,
+        "outcome_support": 0.15,
+    }
+    composite_score = (
+        (base_relevance * weights["base_relevance"])
+        + (reliability_score * weights["reliability"])
+        + (temporal_validity * weights["temporal_validity"])
+        + (outcome_support * weights["outcome_support"])
+    )
+    composite_score *= reliability_multiplier
+    composite_score *= drift_challenge_penalty
+
+    strategy_multiplier = 1.0
+    if strategy_reuse_multiplier is not None:
+        strategy_multiplier = max(0.2, min(1.5, strategy_reuse_multiplier))
+        composite_score *= strategy_multiplier
+
+    return {
+        "score": round(max(0.0, composite_score), 3),
+        "weights": weights,
+        "components": {
+            "semantic_similarity": round(semantic, 3),
+            "keyword_relevance": round(keyword, 3),
+            "phrase_match": round(phrase, 3),
+            "lexical_relevance": round(lexical_relevance, 3),
+            "base_relevance": round(base_relevance, 3),
+            "confidence_factor": round(confidence_factor, 3),
+            "reliability_score": round(reliability_score, 3),
+            "reliability_multiplier": round(reliability_multiplier, 3),
+            "temporal_validity": round(temporal_validity, 3),
+            "outcome_support": round(outcome_support, 3),
+            "drift_challenge_penalty": round(drift_challenge_penalty, 3),
+            "strategy_multiplier": round(strategy_multiplier, 3),
+        },
+    }
+
+
 __all__ = [
     "claim_reliability_profile",
+    "claim_query_rank_profile",
     "coerce_numeric_float",
     "filter_claims_for_scope",
     "matches_scope_filter",

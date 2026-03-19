@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from os import PathLike
 from typing import Mapping
 
+from consolidation_memory import backends, claim_cache
+from consolidation_memory.config import get_config
 from consolidation_memory.query_semantics import (
+    claim_query_rank_profile,
     claim_reliability_profile,
     coerce_numeric_float,
     filter_claims_for_scope,
@@ -286,8 +289,10 @@ class CanonicalQueryService:
                 as_of=query.as_of,
                 message="Query must not be empty.",
             )
+        cfg = get_config()
 
         page_size = min(max(bounded_limit * 5, 50), 250)
+        candidate_cap = min(max(page_size * 2, bounded_limit * 25, 500), 2000)
 
         def _fetch_rows(*, offset: int, limit: int) -> list[dict[str, object]]:
             if query.as_of:
@@ -322,14 +327,16 @@ class CanonicalQueryService:
 
         all_claims: list[dict[str, object]] = []
         offset = 0
-        while True:
+        while len(all_claims) < candidate_cap:
             rows = _fetch_rows(offset=offset, limit=page_size)
             if not rows:
                 break
             page_claims = _rows_to_claims(rows)
             if scope_filter:
                 page_claims = filter_claims_for_scope(page_claims, scope_filter)
-            all_claims.extend(page_claims)
+            if page_claims:
+                remaining = candidate_cap - len(all_claims)
+                all_claims.extend(page_claims[:remaining])
             offset += len(rows)
             if len(rows) < page_size:
                 break
@@ -343,8 +350,27 @@ class CanonicalQueryService:
                 as_of=query.as_of,
             )
 
+        claim_payloads, claim_texts = claim_cache.build_claim_texts(all_claims)
         query_lower = normalized_query.lower()
         query_terms = [term for term in query_lower.split() if term]
+        try:
+            query_vec = backends.encode_query(normalized_query)
+            if query.as_of:
+                # Temporal snapshots are query-specific; bypass global cache.
+                claim_vecs = backends.encode_documents(claim_texts)
+            else:
+                claim_vecs = claim_cache.get_claim_vecs(all_claims, claim_texts)
+            if claim_vecs is not None:
+                sims = (query_vec @ claim_vecs.T).flatten()
+            else:
+                sims = None
+        except (ConnectionError, RuntimeError, ValueError) as exc:
+            logger.warning(
+                "Semantic claim ranking failed, falling back to lexical/evidence scoring: %s",
+                exc,
+                exc_info=True,
+            )
+            sims = None
 
         scored: list[dict[str, object]] = []
         claim_ids = [str(claim["id"]) for claim in all_claims if claim.get("id")]
@@ -353,15 +379,15 @@ class CanonicalQueryService:
             as_of=query.as_of,
             scope_filter=scope_filter,
         )
-        for claim in all_claims:
-            payload_text = json.dumps(claim.get("payload", {}), sort_keys=True, default=str)
-            haystack = f"{claim.get('canonical_text', '')} {payload_text}".lower()
+        for index, claim in enumerate(all_claims):
+            haystack = claim_texts[index].lower()
             if not haystack.strip():
                 continue
 
+            sem_score = float(sims[index]) if sims is not None else 0.0
             phrase_hit = 1.0 if query_lower in haystack else 0.0
             term_hits = sum(1 for term in query_terms if term in haystack)
-            if phrase_hit == 0.0 and term_hits == 0:
+            if phrase_hit == 0.0 and term_hits == 0 and sem_score <= 0.0:
                 continue
 
             term_score = (term_hits / len(query_terms)) if query_terms else 0.0
@@ -377,7 +403,6 @@ class CanonicalQueryService:
                     confidence = 0.8
             else:
                 confidence = 0.8
-            relevance = (phrase_hit + term_score) * (0.5 + 0.5 * confidence)
 
             ranked = dict(claim)
             claim_id = str(ranked.get("id", ""))
@@ -392,18 +417,37 @@ class CanonicalQueryService:
                 claim_updated_at=str(ranked.get("updated_at") or ""),
             )
             ranked["reliability"] = reliability
-            relevance *= coerce_numeric_float(
-                reliability.get("ranking_multiplier"),
-                default=1.0,
-            )
+            strategy_profile: dict[str, object] | None = None
+            strategy_multiplier: float | None = None
             if ranked.get("claim_type") == "strategy":
                 strategy_profile = strategy_reuse_profile(evidence_payload)
-                ranked["strategy_evidence"] = strategy_profile
-                relevance *= coerce_numeric_float(
+                strategy_multiplier = coerce_numeric_float(
                     strategy_profile.get("reuse_multiplier"),
                     default=1.0,
                 )
+            ranking_profile = claim_query_rank_profile(
+                semantic_similarity=sem_score,
+                keyword_relevance=term_score,
+                phrase_match=phrase_hit,
+                confidence=confidence,
+                reliability=reliability,
+                evidence=evidence_payload,
+                claim_status=str(ranked.get("status", "active")),
+                valid_from=ranked.get("valid_from"),
+                valid_until=ranked.get("valid_until"),
+                as_of=query.as_of,
+                semantic_weight=cfg.RECORDS_SEMANTIC_WEIGHT,
+                keyword_weight=cfg.RECORDS_KEYWORD_WEIGHT,
+                strategy_reuse_multiplier=strategy_multiplier,
+            )
+            relevance = coerce_numeric_float(ranking_profile.get("score"), default=0.0)
+            if relevance <= 0.0:
+                continue
+            ranked["payload"] = claim_payloads[index]
             ranked["relevance"] = round(relevance, 3)
+            ranked["ranking"] = ranking_profile
+            if strategy_profile is not None:
+                ranked["strategy_evidence"] = strategy_profile
             scored.append(ranked)
 
         def _claim_sort_key(item: dict[str, object]) -> tuple[float, str]:

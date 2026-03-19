@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import numpy as np
+
 from consolidation_memory.query_service import (
     CanonicalQueryService,
     ClaimBrowseQuery,
@@ -13,6 +15,7 @@ from consolidation_memory.query_service import (
     OutcomeBrowseQuery,
     RecallQuery,
 )
+from tests.helpers import mock_encode
 
 
 class TestCanonicalQueryServiceRecall:
@@ -462,6 +465,273 @@ class TestCanonicalQueryServiceClaims:
         assert [claim["id"] for claim in result.claims] == ["claim-stable", "claim-drifted"]
         assert result.claims[0]["reliability"]["score"] > result.claims[1]["reliability"]["score"]
         assert result.claims[1]["reliability"]["recommendation"] in {"reuse_with_caution", "avoid_reuse"}
+
+    def test_search_claims_prefers_validated_strategy_when_semantics_are_equal(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        rows = [
+            {
+                "id": "strategy-validated",
+                "claim_type": "strategy",
+                "canonical_text": "stabilize flaky ci tests with deterministic reruns",
+                "payload": "{\"problem_pattern\":\"flaky ci tests\",\"strategy\":\"rerun deterministically\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-10T00:00:00+00:00",
+            },
+            {
+                "id": "strategy-weak",
+                "claim_type": "strategy",
+                "canonical_text": "stabilize flaky ci tests with deterministic reruns",
+                "payload": "{\"problem_pattern\":\"flaky ci tests\",\"strategy\":\"rerun deterministically\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-10T00:00:00+00:00",
+            },
+        ]
+        evidence = {
+            "strategy-validated": {
+                "validation_count": 4,
+                "success_count": 4,
+                "failure_count": 0,
+                "source_link_count": 3,
+                "source_episode_count": 1,
+                "source_topic_count": 1,
+                "source_record_count": 1,
+                "last_observed_at": "2026-03-12T00:00:00+00:00",
+            },
+            "strategy-weak": {
+                "validation_count": 1,
+                "success_count": 0,
+                "failure_count": 1,
+                "source_link_count": 1,
+                "source_episode_count": 1,
+                "source_topic_count": 0,
+                "source_record_count": 0,
+                "challenged_count": 1,
+                "last_observed_at": "2026-03-12T00:00:00+00:00",
+            },
+        }
+        query_vec = mock_encode(["flaky ci tests"])[0]
+
+        with (
+            patch("consolidation_memory.database.get_active_claims", side_effect=[rows, []]),
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value=evidence),
+            patch("consolidation_memory.query_service.backends.encode_query", return_value=query_vec),
+            patch(
+                "consolidation_memory.query_service.claim_cache.get_claim_vecs",
+                return_value=np.stack([query_vec, query_vec]),
+            ),
+        ):
+            result = service.search_claims(
+                ClaimSearchQuery(query="flaky ci tests", claim_type="strategy", limit=10)
+            )
+
+        assert [claim["id"] for claim in result.claims] == ["strategy-validated", "strategy-weak"]
+
+    def test_search_claims_demotes_stale_or_challenged_matches(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        rows = [
+            {
+                "id": "claim-current",
+                "claim_type": "fact",
+                "canonical_text": "debug flaky ci tests",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+            {
+                "id": "claim-stale-challenged",
+                "claim_type": "fact",
+                "canonical_text": "debug flaky ci tests",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "challenged",
+                "confidence": 0.9,
+                "valid_from": "2024-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+            },
+        ]
+        evidence = {
+            "claim-current": {
+                "validation_count": 3,
+                "success_count": 3,
+                "source_link_count": 2,
+                "source_episode_count": 1,
+                "source_topic_count": 1,
+                "last_observed_at": "2026-03-12T00:00:00+00:00",
+            },
+            "claim-stale-challenged": {
+                "validation_count": 3,
+                "success_count": 1,
+                "failure_count": 2,
+                "challenged_count": 1,
+                "drift_event_count": 2,
+                "source_link_count": 2,
+                "source_episode_count": 1,
+                "source_topic_count": 1,
+                "last_observed_at": "2025-01-01T00:00:00+00:00",
+            },
+        }
+        query_vec = mock_encode(["debug flaky ci tests"])[0]
+
+        with (
+            patch("consolidation_memory.database.get_active_claims", side_effect=[rows, []]),
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value=evidence),
+            patch("consolidation_memory.query_service.backends.encode_query", return_value=query_vec),
+            patch(
+                "consolidation_memory.query_service.claim_cache.get_claim_vecs",
+                return_value=np.stack([query_vec, query_vec]),
+            ),
+        ):
+            result = service.search_claims(ClaimSearchQuery(query="debug flaky ci tests", limit=10))
+
+        assert [claim["id"] for claim in result.claims] == ["claim-current", "claim-stale-challenged"]
+        assert (
+            result.claims[0]["ranking"]["components"]["drift_challenge_penalty"]
+            > result.claims[1]["ranking"]["components"]["drift_challenge_penalty"]
+        )
+
+    def test_search_claims_prefers_supported_active_claims_over_unsupported_matches(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        rows = [
+            {
+                "id": "claim-supported",
+                "claim_type": "fact",
+                "canonical_text": "target flaky ci tests quickly",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+            {
+                "id": "claim-unsupported",
+                "claim_type": "fact",
+                "canonical_text": "target flaky ci tests quickly",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+        ]
+        evidence = {
+            "claim-supported": {
+                "validation_count": 4,
+                "success_count": 4,
+                "source_link_count": 3,
+                "source_episode_count": 1,
+                "source_topic_count": 1,
+                "source_record_count": 1,
+                "last_observed_at": "2026-03-12T00:00:00+00:00",
+            },
+            "claim-unsupported": {
+                "validation_count": 0,
+                "success_count": 0,
+                "source_link_count": 0,
+                "source_episode_count": 0,
+                "source_topic_count": 0,
+                "source_record_count": 0,
+                "last_observed_at": None,
+            },
+        }
+        query_vec = mock_encode(["flaky ci tests"])[0]
+
+        with (
+            patch("consolidation_memory.database.get_active_claims", side_effect=[rows, []]),
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value=evidence),
+            patch("consolidation_memory.query_service.backends.encode_query", return_value=query_vec),
+            patch(
+                "consolidation_memory.query_service.claim_cache.get_claim_vecs",
+                return_value=np.stack([query_vec, query_vec]),
+            ),
+        ):
+            result = service.search_claims(ClaimSearchQuery(query="flaky ci tests", claim_type="fact"))
+
+        assert [claim["id"] for claim in result.claims] == ["claim-supported", "claim-unsupported"]
+        assert (
+            result.claims[0]["ranking"]["components"]["outcome_support"]
+            > result.claims[1]["ranking"]["components"]["outcome_support"]
+        )
+
+    def test_search_claims_preserves_temporal_and_scope_filtering_before_ranking(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        out_of_scope_page = [{
+            "id": f"claim-hidden-{i:02d}",
+            "claim_type": "fact",
+            "canonical_text": "shared build strategy",
+            "payload": "{}",
+            "status": "active",
+            "confidence": 0.8,
+            "valid_from": "2025-01-01T00:00:00+00:00",
+            "valid_until": None,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": "2026-03-12T00:00:00+00:00",
+        } for i in range(50)]
+        in_scope_page = [{
+            "id": "claim-visible",
+            "claim_type": "fact",
+            "canonical_text": "shared build strategy",
+            "payload": "{}",
+            "status": "active",
+            "confidence": 0.8,
+            "valid_from": "2025-01-01T00:00:00+00:00",
+            "valid_until": None,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": "2026-03-12T00:00:00+00:00",
+        }]
+        query_vec = mock_encode(["shared build strategy"])[0]
+
+        def _scope_side_effect(claims, _scope_filter):
+            if claims and claims[0]["id"].startswith("claim-hidden-"):
+                return []
+            return claims
+
+        with (
+            patch(
+                "consolidation_memory.database.get_claims_as_of",
+                side_effect=[out_of_scope_page, in_scope_page, []],
+            ) as mock_as_of,
+            patch("consolidation_memory.database.get_active_claims") as mock_active,
+            patch(
+                "consolidation_memory.query_service.filter_claims_for_scope",
+                side_effect=_scope_side_effect,
+            ),
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value={}),
+            patch("consolidation_memory.query_service.backends.encode_query", return_value=query_vec),
+            patch(
+                "consolidation_memory.query_service.backends.encode_documents",
+                side_effect=lambda texts: np.stack([query_vec for _ in texts]),
+            ),
+        ):
+            result = service.search_claims(
+                ClaimSearchQuery(
+                    query="shared build strategy",
+                    claim_type="fact",
+                    as_of="2026-03-01T00:00:00+00:00",
+                    limit=10,
+                ),
+                scope_filter={"project_slug": "repo-a"},
+            )
+
+        assert [claim["id"] for claim in result.claims] == ["claim-visible"]
+        assert mock_as_of.call_count >= 2
+        mock_active.assert_not_called()
 
 
 class TestCanonicalQueryServiceDrift:

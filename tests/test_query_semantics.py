@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from consolidation_memory.query_semantics import (
+    claim_query_rank_profile,
     claim_reliability_profile,
     coerce_numeric_float,
     strategy_reuse_profile,
@@ -244,3 +245,100 @@ def test_claim_reliability_explanation_payload_is_stable_and_ordered():
     ]
     assert profile["inputs"]["validation_count"] == 2
     assert profile["inputs"]["last_observed_at"] == "2026-03-10T00:00:00+00:00"
+
+
+def test_claim_query_rank_profile_demotes_stale_challenged_items():
+    reliable = claim_reliability_profile(
+        {"validation_count": 3, "success_count": 3, "last_observed_at": "2026-03-12T00:00:00+00:00"},
+        claim_status="active",
+        as_of="2026-03-13T00:00:00+00:00",
+    )
+    challenged = claim_reliability_profile(
+        {
+            "validation_count": 3,
+            "success_count": 1,
+            "failure_count": 2,
+            "challenged_count": 1,
+            "drift_event_count": 2,
+            "last_observed_at": "2025-01-01T00:00:00+00:00",
+        },
+        claim_status="challenged",
+        as_of="2026-03-13T00:00:00+00:00",
+    )
+
+    stable_rank = claim_query_rank_profile(
+        semantic_similarity=0.9,
+        keyword_relevance=1.0,
+        phrase_match=1.0,
+        confidence=0.9,
+        reliability=reliable,
+        evidence={"validation_count": 3, "success_count": 3},
+        claim_status="active",
+        valid_from="2025-01-01T00:00:00+00:00",
+        valid_until=None,
+        as_of="2026-03-13T00:00:00+00:00",
+        semantic_weight=0.9,
+        keyword_weight=0.1,
+    )
+    challenged_rank = claim_query_rank_profile(
+        semantic_similarity=0.9,
+        keyword_relevance=1.0,
+        phrase_match=1.0,
+        confidence=0.9,
+        reliability=challenged,
+        evidence={
+            "validation_count": 3,
+            "success_count": 1,
+            "failure_count": 2,
+            "challenged_count": 1,
+            "drift_event_count": 2,
+        },
+        claim_status="challenged",
+        valid_from="2025-01-01T00:00:00+00:00",
+        valid_until=None,
+        as_of="2026-03-13T00:00:00+00:00",
+        semantic_weight=0.9,
+        keyword_weight=0.1,
+    )
+
+    assert stable_rank["score"] > challenged_rank["score"]
+    assert challenged_rank["components"]["drift_challenge_penalty"] < 1.0
+
+
+def test_claim_query_rank_profile_prefers_supported_outcomes_on_equal_similarity():
+    reliability = claim_reliability_profile(
+        {"validation_count": 2, "success_count": 2, "last_observed_at": "2026-03-12T00:00:00+00:00"},
+        claim_status="active",
+        as_of="2026-03-13T00:00:00+00:00",
+    )
+    supported = claim_query_rank_profile(
+        semantic_similarity=0.7,
+        keyword_relevance=0.8,
+        phrase_match=1.0,
+        confidence=0.8,
+        reliability=reliability,
+        evidence={"validation_count": 3, "success_count": 3},
+        claim_status="active",
+        valid_from="2025-01-01T00:00:00+00:00",
+        valid_until=None,
+        as_of="2026-03-13T00:00:00+00:00",
+        semantic_weight=0.9,
+        keyword_weight=0.1,
+    )
+    unsupported = claim_query_rank_profile(
+        semantic_similarity=0.7,
+        keyword_relevance=0.8,
+        phrase_match=1.0,
+        confidence=0.8,
+        reliability=reliability,
+        evidence={"validation_count": 0, "success_count": 0},
+        claim_status="active",
+        valid_from="2025-01-01T00:00:00+00:00",
+        valid_until=None,
+        as_of="2026-03-13T00:00:00+00:00",
+        semantic_weight=0.9,
+        keyword_weight=0.1,
+    )
+
+    assert supported["score"] > unsupported["score"]
+    assert supported["components"]["outcome_support"] > unsupported["components"]["outcome_support"]

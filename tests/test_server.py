@@ -21,7 +21,11 @@ def _patched_server_runtime():
     from consolidation_memory.runtime import MemoryRuntime
 
     runtime = MemoryRuntime(max_workers=2)
-    with patch.object(server, "_runtime", runtime):
+    with (
+        patch.object(server, "_runtime", runtime),
+        patch.object(server, "_runtime_started", False),
+        patch.object(server, "_startup_error", None),
+    ):
         try:
             yield server, runtime
         finally:

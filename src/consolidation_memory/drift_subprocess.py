@@ -86,9 +86,13 @@ async def run_detect_drift_subprocess(
         await proc.wait()
         raise
 
-    if proc.returncode != 0:
+    return_code = proc.returncode
+    if return_code is None:  # pragma: no cover - process exited before communicate returned
+        raise RuntimeError("Isolated drift detection process did not report an exit code.")
+
+    if return_code != 0:
         details = _summarize_process_error(
-            returncode=int(proc.returncode),
+            returncode=return_code,
             stdout=stdout,
             stderr=stderr,
         )

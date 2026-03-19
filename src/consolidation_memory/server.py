@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import gc
 import hashlib
 import json
 import logging
@@ -464,6 +465,27 @@ def _runtime_has_background_activity() -> bool:
     return False
 
 
+def _recycle_idle_runtime() -> None:
+    """Release heavyweight runtime state without closing the stdio transport.
+
+    Exiting the MCP server process on idle makes the transport unusable until the
+    client explicitly reconnects. Instead, drop the client/executor state and let
+    the next tool call lazily restart the runtime in-process.
+    """
+    global _runtime_started, _startup_error
+
+    if not _runtime_started and _runtime.client is None:
+        _touch_activity()
+        return
+
+    logger.info("Recycling idle MCP runtime state without exiting the process")
+    _runtime.shutdown()
+    _runtime_started = False
+    _startup_error = None
+    _touch_activity()
+    gc.collect()
+
+
 def _acquire_parent_scoped_stdio_singleton_guard(project: str) -> _StdioSingletonGuard | None:
     """Ensure a parent process owns at most one stdio MCP server per project."""
     if not _STDIO_SINGLETON_ENABLED:
@@ -551,7 +573,7 @@ def _preload_numeric_backends() -> None:
 
 
 async def _idle_shutdown_monitor() -> None:
-    """Exit long-idle MCP server processes to prevent stale-process buildup."""
+    """Recycle long-idle runtime state without breaking the stdio transport."""
     timeout_seconds = _idle_timeout_seconds()
     if timeout_seconds <= 0:
         return
@@ -567,11 +589,11 @@ async def _idle_shutdown_monitor() -> None:
         if idle_for < timeout_seconds:
             continue
         logger.info(
-            "MCP server idle for %.1fs (threshold %.1fs); shutting down process",
+            "MCP server idle for %.1fs (threshold %.1fs); recycling runtime state",
             idle_for,
             timeout_seconds,
         )
-        os._exit(0)
+        _recycle_idle_runtime()
 
 
 async def _warm_client_background() -> None:

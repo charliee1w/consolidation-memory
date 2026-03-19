@@ -590,6 +590,47 @@ class TestMCPServerLifecycle:
         ):
             assert server._runtime_has_background_activity() is False
 
+    def test_recycle_idle_runtime_shuts_down_runtime_without_exiting_transport(self):
+        import consolidation_memory.server as server_module
+
+        with _patched_server_runtime() as (server, runtime):
+            mock_client = MagicMock()
+            runtime._client = mock_client
+            runtime._blocking_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            with patch.object(server_module, "_runtime_started", True):
+                server._recycle_idle_runtime()
+
+            mock_client.close.assert_called_once_with()
+            assert runtime.client is None
+            assert runtime.blocking_executor is None
+            assert server._runtime_started is False
+            assert server._startup_error is None
+
+    def test_idle_shutdown_monitor_recycles_runtime_instead_of_exiting(self):
+        import consolidation_memory.server as server
+
+        sleep_calls = 0
+
+        async def _fake_sleep(_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls > 1:
+                raise asyncio.CancelledError()
+
+        with (
+            patch("consolidation_memory.server._IDLE_TIMEOUT_SECONDS", 1.0),
+            patch("consolidation_memory.server._IDLE_CHECK_INTERVAL_SECONDS", 0.0),
+            patch.object(server, "_active_tool_calls", 0),
+            patch.object(server, "_last_activity_monotonic", time.monotonic() - 5.0),
+            patch("consolidation_memory.server._runtime_has_background_activity", return_value=False),
+            patch("consolidation_memory.server._recycle_idle_runtime") as mock_recycle,
+            patch("consolidation_memory.server.asyncio.sleep", side_effect=_fake_sleep),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(server._idle_shutdown_monitor())
+
+        mock_recycle.assert_called_once_with()
+
 
 class TestMCPRecallTool:
     def test_memory_recall_calls_canonical_query_service(self):

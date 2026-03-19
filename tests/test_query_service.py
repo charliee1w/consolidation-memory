@@ -669,6 +669,52 @@ class TestCanonicalQueryServiceClaims:
             > result.claims[1]["ranking"]["components"]["outcome_support"]
         )
 
+    def test_search_claims_filters_low_similarity_semantic_only_noise(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        rows = [
+            {
+                "id": "claim-lexical-match",
+                "claim_type": "fact",
+                "canonical_text": "python runtime stability old series",
+                "payload": "{}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+            {
+                "id": "claim-semantic-noise",
+                "claim_type": "fact",
+                "canonical_text": "postgres migration old track",
+                "payload": "{}",
+                "status": "active",
+                "confidence": 0.9,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+        ]
+        with (
+            patch("consolidation_memory.database.get_active_claims", side_effect=[rows, []]),
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value={}),
+            patch(
+                "consolidation_memory.query_service.backends.encode_query",
+                return_value=np.array([1.0, 0.0], dtype=np.float32),
+            ),
+            patch(
+                "consolidation_memory.query_service.claim_cache.get_claim_vecs",
+                return_value=np.array([[0.0, 1.0], [0.15, 0.98]], dtype=np.float32),
+            ),
+        ):
+            result = service.search_claims(
+                ClaimSearchQuery(query="python runtime stability", claim_type="fact", limit=5)
+            )
+
+        assert [claim["id"] for claim in result.claims] == ["claim-lexical-match"]
+
     def test_search_claims_preserves_temporal_and_scope_filtering_before_ranking(self):
         service = CanonicalQueryService(vector_store=MagicMock())
         out_of_scope_page = [{

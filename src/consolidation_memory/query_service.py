@@ -353,6 +353,10 @@ class CanonicalQueryService:
         claim_payloads, claim_texts = claim_cache.build_claim_texts(all_claims)
         query_lower = normalized_query.lower()
         query_terms = [term for term in query_lower.split() if term]
+        semantic_only_min_score = max(
+            0.0,
+            min(1.0, cfg.RECORDS_RELEVANCE_THRESHOLD / 1.5),
+        )
         try:
             query_vec = backends.encode_query(normalized_query)
             if query.as_of:
@@ -387,7 +391,11 @@ class CanonicalQueryService:
             sem_score = float(sims[index]) if sims is not None else 0.0
             phrase_hit = 1.0 if query_lower in haystack else 0.0
             term_hits = sum(1 for term in query_terms if term in haystack)
-            if phrase_hit == 0.0 and term_hits == 0 and sem_score <= 0.0:
+            if (
+                phrase_hit == 0.0
+                and term_hits == 0
+                and sem_score < semantic_only_min_score
+            ):
                 continue
 
             term_score = (term_hits / len(query_terms)) if query_terms else 0.0

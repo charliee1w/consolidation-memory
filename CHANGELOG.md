@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.2 - 2026-03-19
+
+### Highlights
+
+- fix: keep mcp transport alive on idle
+- Merge remote-tracking branch 'origin/main'
+- test: stabilize server lifecycle runtime state isolation
+
+
 ## 0.14.1 - 2026-03-19
 
 ### Highlights

@@ -1672,7 +1672,10 @@ class TestConfigDefaults:
     def test_consolidation_tuning_defaults(self):
         from consolidation_memory.config import get_config
         cfg = get_config()
-        assert cfg.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD == 0.75
+        assert cfg.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD == 0.84
+        assert cfg.CONSOLIDATION_TOPIC_TITLE_OVERLAP_THRESHOLD == 0.34
+        assert cfg.CONSOLIDATION_TOPIC_FORCE_SEMANTIC_THRESHOLD == 0.9
+        assert cfg.CONTRADICTION_MAX_CANDIDATE_PAIRS == 24
         assert cfg.CONSOLIDATION_CONFIDENCE_COHERENCE_W == 0.6
         assert cfg.CONSOLIDATION_CONFIDENCE_SURPRISE_W == 0.4
 

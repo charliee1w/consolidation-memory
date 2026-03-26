@@ -94,16 +94,49 @@ class LMStudioLLMBackend:
             "presence_penalty": 0.0,
         }
 
-    def _chat_completion(self, payload: dict) -> str:
+    def _chat_completion(
+        self,
+        payload: dict,
+        *,
+        allow_reasoning_content_fallback: bool = False,
+    ) -> str:
         response = httpx.post(
             f"{self._api_base}/chat/completions",
             json=payload,
             timeout=120.0,
         )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        payload_json = response.json()
+        try:
+            message = payload_json["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError("LLM returned malformed response (missing choices[0].message)") from exc
+
+        content = message.get("content")
+        if isinstance(content, str):
+            if content.strip():
+                return content
+            if allow_reasoning_content_fallback:
+                reasoning = message.get("reasoning_content")
+                if isinstance(reasoning, str) and reasoning.strip():
+                    logger.warning(
+                        "LM Studio returned empty message.content for structured output; "
+                        "using message.reasoning_content fallback."
+                    )
+                    return reasoning
+            raise ValueError("LLM returned empty response (message.content is empty)")
+
         if content is None:
+            if allow_reasoning_content_fallback:
+                reasoning = message.get("reasoning_content")
+                if isinstance(reasoning, str) and reasoning.strip():
+                    logger.warning(
+                        "LM Studio returned message.content=None for structured output; "
+                        "using message.reasoning_content fallback."
+                    )
+                    return reasoning
             raise ValueError("LLM returned empty response (message.content is None)")
+
         return str(content)
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
@@ -141,17 +174,16 @@ class LMStudioLLMBackend:
 
         def _do() -> str:
             try:
-                return self._chat_completion(payload)
+                return self._chat_completion(payload, allow_reasoning_content_fallback=True)
             except httpx.HTTPStatusError as e:
-                # Some OpenAI-compatible servers reject response_format=json_schema.
                 if e.response.status_code in {400, 404, 415, 422}:
-                    logger.warning(
-                        "Structured output unsupported by LM Studio server (%s); "
-                        "retrying without response_format",
-                        e.response.status_code,
+                    body_snippet = e.response.text[:300] if e.response.text else ""
+                    raise ValueError(
+                        "LM Studio rejected response_format=json_schema "
+                        f"(HTTP {e.response.status_code}). "
+                        "This backend requires structured output for extraction. "
+                        f"Response body: {body_snippet}"
                     )
-                    fallback_payload = self._build_payload(system_prompt, user_prompt)
-                    return self._chat_completion(fallback_payload)
                 raise
 
         result: str = retry_with_backoff(

@@ -8,7 +8,11 @@ import numpy as np
 
 from consolidation_memory.claim_graph import claim_from_record
 from consolidation_memory.config import override_config
-from consolidation_memory.consolidation.engine import _merge_into_existing, _process_cluster
+from consolidation_memory.consolidation.engine import (
+    _build_deterministic_merge_payload,
+    _merge_into_existing,
+    _process_cluster,
+)
 from consolidation_memory.database import (
     ensure_schema,
     get_connection,
@@ -34,6 +38,24 @@ class TestClaimEmission:
         vec = rng.randn(8).astype(np.float32)
         vec /= np.linalg.norm(vec)
         return vec
+
+    def test_deterministic_merge_fallback_keeps_existing_topic_identity(self, tmp_data_dir):
+        title, summary, tags, records = _build_deterministic_merge_payload(
+            existing_records=[{"type": "fact", "subject": "Old", "info": "A"}],
+            new_records=[{"type": "fact", "subject": "New", "info": "B"}],
+            existing_title="Stable Topic",
+            existing_summary="Stable summary",
+            existing_tags=["stable"],
+            extraction_data={
+                "title": "Drifted Topic",
+                "summary": "Drifted summary",
+                "tags": ["new-tag"],
+            },
+        )
+        assert title == "Stable Topic"
+        assert summary == "Stable summary"
+        assert set(tags) == {"stable", "new-tag"}
+        assert len(records) == 2
 
     def test_claims_emitted_on_topic_create(self, tmp_data_dir):
         ensure_schema()

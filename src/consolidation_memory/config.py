@@ -191,7 +191,9 @@ class Config:
     CONSOLIDATION_PRUNE_AFTER_DAYS: int = 30
     DECAY_POLICIES: dict[str, int] = field(default_factory=dict)  # tag -> days (-1=never)
     CONSOLIDATION_MAX_EPISODES_PER_RUN: int = 200
-    CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD: float = 0.75
+    CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD: float = 0.84
+    CONSOLIDATION_TOPIC_TITLE_OVERLAP_THRESHOLD: float = 0.34
+    CONSOLIDATION_TOPIC_FORCE_SEMANTIC_THRESHOLD: float = 0.9
     CONSOLIDATION_CONFIDENCE_COHERENCE_W: float = 0.6
     CONSOLIDATION_CONFIDENCE_SURPRISE_W: float = 0.4
     CONSOLIDATION_MAX_DURATION: float = 1800
@@ -207,6 +209,7 @@ class Config:
     )
     CONTRADICTION_SIMILARITY_THRESHOLD: float = 0.7
     CONTRADICTION_LLM_ENABLED: bool = True
+    CONTRADICTION_MAX_CANDIDATE_PAIRS: int = 24
     MERGE_DROP_DETECTION_ENABLED: bool = True
     MERGE_DROP_SIMILARITY_THRESHOLD: float = 0.5
     CONSOLIDATION_STOPWORDS: frozenset[str] = field(default_factory=lambda: _DEFAULT_STOPWORDS)
@@ -443,7 +446,13 @@ def _build_config(
         CONSOLIDATION_PRUNE_AFTER_DAYS=int(_consol.get("prune_after_days", 30)),
         DECAY_POLICIES={k: int(v) for k, v in cfg.get("decay_policies", {}).get("overrides", {}).items()},
         CONSOLIDATION_MAX_EPISODES_PER_RUN=int(_consol.get("max_episodes_per_run", 200)),
-        CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD=float(_consol.get("topic_semantic_match_threshold", 0.75)),
+        CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD=float(_consol.get("topic_semantic_match_threshold", 0.84)),
+        CONSOLIDATION_TOPIC_TITLE_OVERLAP_THRESHOLD=float(
+            _consol.get("topic_title_overlap_threshold", 0.34)
+        ),
+        CONSOLIDATION_TOPIC_FORCE_SEMANTIC_THRESHOLD=float(
+            _consol.get("topic_force_semantic_threshold", 0.9)
+        ),
         CONSOLIDATION_CONFIDENCE_COHERENCE_W=float(_consol.get("cluster_confidence_coherence_weight", 0.6)),
         CONSOLIDATION_CONFIDENCE_SURPRISE_W=float(_consol.get("cluster_confidence_surprise_weight", 0.4)),
         CONSOLIDATION_MAX_DURATION=float(_consol.get("max_duration", 1800)),
@@ -460,6 +469,7 @@ def _build_config(
         ),
         CONTRADICTION_SIMILARITY_THRESHOLD=float(_consol.get("contradiction_similarity_threshold", 0.7)),
         CONTRADICTION_LLM_ENABLED=_coerce_bool(_consol.get("contradiction_llm_enabled", True)),
+        CONTRADICTION_MAX_CANDIDATE_PAIRS=int(_consol.get("contradiction_max_candidate_pairs", 24)),
         MERGE_DROP_DETECTION_ENABLED=_coerce_bool(_consol.get("merge_drop_detection_enabled", True)),
         MERGE_DROP_SIMILARITY_THRESHOLD=float(_consol.get("merge_drop_similarity_threshold", 0.5)),
         CONSOLIDATION_STOPWORDS=stopwords,
@@ -733,6 +743,31 @@ def _validate_config(c: Config) -> None:
         errors.append(
             f"consolidation.cluster_threshold = {c.CONSOLIDATION_CLUSTER_THRESHOLD}, "
             f"must be in (0, 1]"
+        )
+    if not (0.0 < c.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD <= 1.0):
+        errors.append(
+            "consolidation.topic_semantic_match_threshold = "
+            f"{c.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD}, must be in (0, 1]"
+        )
+    if not (0.0 <= c.CONSOLIDATION_TOPIC_TITLE_OVERLAP_THRESHOLD <= 1.0):
+        errors.append(
+            "consolidation.topic_title_overlap_threshold = "
+            f"{c.CONSOLIDATION_TOPIC_TITLE_OVERLAP_THRESHOLD}, must be in [0, 1]"
+        )
+    if not (0.0 < c.CONSOLIDATION_TOPIC_FORCE_SEMANTIC_THRESHOLD <= 1.0):
+        errors.append(
+            "consolidation.topic_force_semantic_threshold = "
+            f"{c.CONSOLIDATION_TOPIC_FORCE_SEMANTIC_THRESHOLD}, must be in (0, 1]"
+        )
+    if c.CONSOLIDATION_TOPIC_FORCE_SEMANTIC_THRESHOLD < c.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD:
+        errors.append(
+            "consolidation.topic_force_semantic_threshold must be >= "
+            "consolidation.topic_semantic_match_threshold"
+        )
+    if c.CONTRADICTION_MAX_CANDIDATE_PAIRS <= 0:
+        errors.append(
+            "consolidation.contradiction_max_candidate_pairs = "
+            f"{c.CONTRADICTION_MAX_CANDIDATE_PAIRS}, must be > 0"
         )
     if not (0.0 < c.DEDUP_SIMILARITY_THRESHOLD <= 1.0):
         errors.append(

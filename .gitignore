@@ -62,3 +62,4 @@ benchmarks/data/*.json
 benchmarks/results/*.json
 !benchmarks/data/.gitkeep
 !benchmarks/results/.gitkeep
+.aider*

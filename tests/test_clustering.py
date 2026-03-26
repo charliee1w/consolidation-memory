@@ -104,3 +104,58 @@ class TestFindSimilarTopic:
 
         assert result is not None
         assert result["id"] == "t1"
+
+    @patch("consolidation_memory.backends.encode_documents")
+    @patch("consolidation_memory.consolidation.clustering.topic_cache.get_topic_vecs")
+    def test_rejects_semantic_match_when_title_overlap_is_too_low(
+        self,
+        mock_topic_vecs,
+        mock_encode_documents,
+    ):
+        mock_topic_vecs.return_value = (
+            [{"id": "t1", "title": "Legacy Security Hardening"}],
+            np.array([[1.0, 0.0]], dtype=np.float32),
+        )
+        mock_encode_documents.return_value = np.array([[0.86, 0.0]], dtype=np.float32)
+
+        with override_config(
+            CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD=0.8,
+            CONSOLIDATION_TOPIC_TITLE_OVERLAP_THRESHOLD=0.5,
+            CONSOLIDATION_TOPIC_FORCE_SEMANTIC_THRESHOLD=0.95,
+            CONSOLIDATION_STOPWORDS=frozenset(),
+        ):
+            result = _find_similar_topic(
+                "Release Automation Workflow",
+                "summary",
+                [],
+            )
+
+        assert result is None
+
+    @patch("consolidation_memory.backends.encode_documents")
+    @patch("consolidation_memory.consolidation.clustering.topic_cache.get_topic_vecs")
+    def test_allows_low_overlap_match_when_force_semantic_threshold_is_met(
+        self,
+        mock_topic_vecs,
+        mock_encode_documents,
+    ):
+        mock_topic_vecs.return_value = (
+            [{"id": "t1", "title": "Legacy Security Hardening"}],
+            np.array([[1.0, 0.0]], dtype=np.float32),
+        )
+        mock_encode_documents.return_value = np.array([[0.97, 0.0]], dtype=np.float32)
+
+        with override_config(
+            CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD=0.8,
+            CONSOLIDATION_TOPIC_TITLE_OVERLAP_THRESHOLD=0.5,
+            CONSOLIDATION_TOPIC_FORCE_SEMANTIC_THRESHOLD=0.95,
+            CONSOLIDATION_STOPWORDS=frozenset(),
+        ):
+            result = _find_similar_topic(
+                "Release Automation Workflow",
+                "summary",
+                [],
+            )
+
+        assert result is not None
+        assert result["id"] == "t1"

@@ -72,40 +72,79 @@ from consolidation_memory.utils import parse_json_list
 
 logger = logging.getLogger(__name__)
 
+_SCOPE_STRICT_KEYS: frozenset[str] = frozenset(
+    {
+        "namespace_slug",
+        "namespace_sharing_mode",
+        "app_client_name",
+        "app_client_type",
+        "app_client_provider",
+        "app_client_external_key",
+        "agent_name",
+        "agent_external_key",
+        "session_external_key",
+        "session_kind",
+        "project_slug",
+    }
+)
+
+
+def _normalize_scope_value(field: str, value: object) -> str | None:
+    """Normalize scope values so equivalent paths/remotes compare consistently."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if field in {"project_root_uri", "project_repo_remote"}:
+        text = text.replace("\\", "/").rstrip("/")
+        # Normalize Windows drive letter casing (C:/... == c:/...)
+        if len(text) >= 2 and text[1] == ":":
+            text = text[0].lower() + text[1:]
+    return text
+
 
 def _episode_scope_row(episode: dict[str, object]) -> dict[str, str | None]:
     """Extract canonical scope columns from an episode row."""
     return {
-        "namespace_slug": str(episode.get("namespace_slug") or "default"),
-        "namespace_sharing_mode": str(episode.get("namespace_sharing_mode") or "private"),
-        "app_client_name": str(episode.get("app_client_name") or "legacy_client"),
-        "app_client_type": str(episode.get("app_client_type") or "python_sdk"),
-        "app_client_provider": str(episode.get("app_client_provider")) if episode.get("app_client_provider") else None,
-        "app_client_external_key": (
-            str(episode.get("app_client_external_key"))
-            if episode.get("app_client_external_key")
-            else None
+        "namespace_slug": _normalize_scope_value("namespace_slug", episode.get("namespace_slug") or "default"),
+        "namespace_sharing_mode": _normalize_scope_value(
+            "namespace_sharing_mode",
+            episode.get("namespace_sharing_mode") or "private",
         ),
-        "agent_name": str(episode.get("agent_name")) if episode.get("agent_name") else None,
-        "agent_external_key": (
-            str(episode.get("agent_external_key")) if episode.get("agent_external_key") else None
+        "app_client_name": _normalize_scope_value(
+            "app_client_name",
+            episode.get("app_client_name") or "legacy_client",
         ),
-        "session_external_key": (
-            str(episode.get("session_external_key"))
-            if episode.get("session_external_key")
-            else None
+        "app_client_type": _normalize_scope_value(
+            "app_client_type",
+            episode.get("app_client_type") or "python_sdk",
         ),
-        "session_kind": str(episode.get("session_kind")) if episode.get("session_kind") else None,
-        "project_slug": str(episode.get("project_slug") or "default"),
-        "project_display_name": (
-            str(episode.get("project_display_name")) if episode.get("project_display_name") else None
+        "app_client_provider": _normalize_scope_value("app_client_provider", episode.get("app_client_provider")),
+        "app_client_external_key": _normalize_scope_value(
+            "app_client_external_key",
+            episode.get("app_client_external_key"),
         ),
-        "project_root_uri": str(episode.get("project_root_uri")) if episode.get("project_root_uri") else None,
-        "project_repo_remote": (
-            str(episode.get("project_repo_remote")) if episode.get("project_repo_remote") else None
+        "agent_name": _normalize_scope_value("agent_name", episode.get("agent_name")),
+        "agent_external_key": _normalize_scope_value("agent_external_key", episode.get("agent_external_key")),
+        "session_external_key": _normalize_scope_value(
+            "session_external_key",
+            episode.get("session_external_key"),
         ),
-        "project_default_branch": (
-            str(episode.get("project_default_branch")) if episode.get("project_default_branch") else None
+        "session_kind": _normalize_scope_value("session_kind", episode.get("session_kind")),
+        "project_slug": _normalize_scope_value("project_slug", episode.get("project_slug") or "default"),
+        "project_display_name": _normalize_scope_value(
+            "project_display_name",
+            episode.get("project_display_name"),
+        ),
+        "project_root_uri": _normalize_scope_value("project_root_uri", episode.get("project_root_uri")),
+        "project_repo_remote": _normalize_scope_value(
+            "project_repo_remote",
+            episode.get("project_repo_remote"),
+        ),
+        "project_default_branch": _normalize_scope_value(
+            "project_default_branch",
+            episode.get("project_default_branch"),
         ),
     }
 
@@ -128,6 +167,34 @@ def _default_scope_row() -> dict[str, str | None]:
         "project_repo_remote": None,
         "project_default_branch": None,
     }
+
+
+def _cluster_scope_row(cluster_episodes: list[dict[str, object]]) -> dict[str, str | None]:
+    """Derive a stable scope for a cluster from all its episodes, not just the first."""
+    if not cluster_episodes:
+        return _default_scope_row()
+    episode_scopes = [_episode_scope_row(ep) for ep in cluster_episodes]
+    resolved = _default_scope_row()
+    for key in resolved:
+        values = {scope.get(key) for scope in episode_scopes if scope.get(key) is not None}
+        if len(values) == 1:
+            resolved[key] = next(iter(values))
+            continue
+        if len(values) > 1:
+            # Scope-isolation fields should be deterministic for a cluster.
+            # Keep the first normalized value when drift exists; drop optional
+            # project metadata to avoid accidental broad matching.
+            if key in _SCOPE_STRICT_KEYS:
+                resolved[key] = episode_scopes[0].get(key)
+            else:
+                resolved[key] = None
+            continue
+        # No non-null values observed across the cluster.
+        if key in _SCOPE_STRICT_KEYS:
+            resolved[key] = episode_scopes[0].get(key) or resolved[key]
+        else:
+            resolved[key] = None
+    return resolved
 
 
 def _scope_key(scope: dict[str, str | None]) -> tuple[str, ...]:
@@ -240,29 +307,41 @@ def _detect_contradictions(
     # Compute similarities
     sims = new_vecs @ existing_vecs.T  # shape: (len(new), len(existing))
 
-    # Find candidate pairs above threshold
-    candidate_pairs: list[tuple[int, int]] = []
+    cfg = get_config()
+
+    # Find candidate pairs above threshold and score by similarity.
+    candidate_pairs: list[tuple[int, int, float]] = []
     for new_idx in range(len(new_records)):
         for ex_idx in range(len(existing_records)):
-            if float(sims[new_idx, ex_idx]) >= get_config().CONTRADICTION_SIMILARITY_THRESHOLD:
-                candidate_pairs.append((new_idx, ex_idx))
+            sim = float(sims[new_idx, ex_idx])
+            if sim >= cfg.CONTRADICTION_SIMILARITY_THRESHOLD:
+                candidate_pairs.append((new_idx, ex_idx, sim))
 
     if not candidate_pairs:
         return []
 
+    candidate_pairs.sort(key=lambda pair: pair[2], reverse=True)
+    if len(candidate_pairs) > cfg.CONTRADICTION_MAX_CANDIDATE_PAIRS:
+        logger.info(
+            "Contradiction detection: truncating candidate pairs from %d to %d",
+            len(candidate_pairs),
+            cfg.CONTRADICTION_MAX_CANDIDATE_PAIRS,
+        )
+        candidate_pairs = candidate_pairs[: cfg.CONTRADICTION_MAX_CANDIDATE_PAIRS]
+
     logger.info(
         "Contradiction detection: %d candidate pairs above threshold %.2f",
         len(candidate_pairs),
-        get_config().CONTRADICTION_SIMILARITY_THRESHOLD,
+        cfg.CONTRADICTION_SIMILARITY_THRESHOLD,
     )
 
-    if not get_config().CONTRADICTION_LLM_ENABLED:
+    if not cfg.CONTRADICTION_LLM_ENABLED:
         # Without LLM, treat all high-similarity pairs as contradictions
-        return [(new_idx, existing_records[ex_idx]["id"]) for new_idx, ex_idx in candidate_pairs]
+        return [(new_idx, existing_records[ex_idx]["id"]) for new_idx, ex_idx, _ in candidate_pairs]
 
     # Build pair contents for LLM verification
     pair_contents: list[tuple[dict, dict]] = []
-    for new_idx, ex_idx in candidate_pairs:
+    for new_idx, ex_idx, _ in candidate_pairs:
         ex_content = existing_records[ex_idx].get("content", {})
         if isinstance(ex_content, str):
             try:
@@ -298,7 +377,7 @@ def _detect_contradictions(
         )
 
     contradictions = []
-    for (new_idx, ex_idx), verdict in zip(candidate_pairs, verdicts):
+    for (new_idx, ex_idx, _), verdict in zip(candidate_pairs, verdicts):
         if isinstance(verdict, str) and "CONTRADICT" in verdict.upper():
             contradictions.append((new_idx, existing_records[ex_idx]["id"]))
 
@@ -450,8 +529,11 @@ def _build_deterministic_merge_payload(
 ) -> tuple[str, str, list[str], list[dict]]:
     """Fallback merge that never calls the LLM."""
     merged_records = _dedupe_records([*existing_records, *new_records])
-    merged_title = extraction_data.get("title") or existing_title
-    merged_summary = extraction_data.get("summary") or existing_summary
+    # Deterministic fallback must keep existing topic identity stable.
+    # If the LLM merge path failed, replacing title/summary here can cause
+    # cross-domain title drift on broad clusters.
+    merged_title = existing_title
+    merged_summary = existing_summary or extraction_data.get("summary") or ""
     merged_tags = _merge_tags(existing_tags, extraction_data.get("tags", []))
     return merged_title, merged_summary, merged_tags, merged_records
 
@@ -719,7 +801,7 @@ def _merge_into_existing(
         Exception: Propagated from LLM or file I/O failures (caller handles).
     """
     if cluster_scope is None:
-        cluster_scope = _episode_scope_row(cluster_episodes[0]) if cluster_episodes else _default_scope_row()
+        cluster_scope = _cluster_scope_row(cluster_episodes)
 
     state = _load_existing_topic_merge_state(existing, cluster_ep_ids=cluster_ep_ids)
     if state is None:
@@ -1076,7 +1158,7 @@ def _process_cluster(
         "Extracting records from cluster %d (%d episodes)...", cluster_id, len(cluster_episodes)
     )
     cluster_ep_ids = [ep["id"] for ep in cluster_episodes]
-    cluster_scope = _episode_scope_row(cluster_episodes[0]) if cluster_episodes else _default_scope_row()
+    cluster_scope = _cluster_scope_row(cluster_episodes)
     api_calls = 0
 
     try:

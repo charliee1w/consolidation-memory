@@ -329,6 +329,84 @@ class TestOpenAILLMBackend:
         assert mock_client.chat.completions.create.call_count == 2
 
 
+# ── LM Studio Backend ────────────────────────────────────────────────────────
+
+class TestLMStudioLLMBackend:
+    @patch("consolidation_memory.backends.lmstudio.httpx.post")
+    def test_generate_json_uses_reasoning_content_when_content_empty(self, mock_post):
+        from consolidation_memory.backends.lmstudio import LMStudioLLMBackend
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "reasoning_content": '{"title":"x","summary":"y","tags":[],"records":[]}',
+                    }
+                }
+            ]
+        }
+        mock_post.return_value = mock_response
+
+        backend = LMStudioLLMBackend(api_base="http://localhost:1234/v1", model="test-model")
+        result = backend.generate_json("system", "user", {"type": "object"})
+
+        assert result == '{"title":"x","summary":"y","tags":[],"records":[]}'
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["response_format"]["type"] == "json_schema"
+
+    @patch("consolidation_memory.backends.lmstudio.httpx.post")
+    def test_generate_json_raises_when_structured_output_rejected(self, mock_post):
+        import httpx
+        from consolidation_memory.backends.lmstudio import LMStudioLLMBackend
+
+        request = httpx.Request("POST", "http://localhost:1234/v1/chat/completions")
+        response = httpx.Response(
+            422,
+            request=request,
+            text='{"error":"unsupported response_format"}',
+        )
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "unprocessable entity",
+            request=request,
+            response=response,
+        )
+        mock_post.return_value = mock_response
+
+        backend = LMStudioLLMBackend(api_base="http://localhost:1234/v1", model="test-model")
+        with pytest.raises(ValueError, match="rejected response_format=json_schema"):
+            backend.generate_json("system", "user", {"type": "object"})
+
+        # No silent fallback request without response_format.
+        assert mock_post.call_count == 1
+
+    @patch("consolidation_memory.backends.lmstudio.httpx.post")
+    def test_generate_json_raises_when_content_and_reasoning_empty(self, mock_post):
+        from consolidation_memory.backends.lmstudio import LMStudioLLMBackend
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "   ",
+                        "reasoning_content": "   ",
+                    }
+                }
+            ]
+        }
+        mock_post.return_value = mock_response
+
+        backend = LMStudioLLMBackend(api_base="http://localhost:1234/v1", model="test-model")
+        with pytest.raises(ValueError, match="message\\.content is empty"):
+            backend.generate_json("system", "user", {"type": "object"})
+
+
 # ── Backend Factory ───────────────────────────────────────────────────────────
 
 class TestBackendFactory:

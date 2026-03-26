@@ -555,6 +555,42 @@ class TestContradictionDetection:
             )
         assert result == []
 
+    def test_caps_llm_candidate_pairs(self, tmp_data_dir):
+        """Large candidate sets should be truncated before LLM verification."""
+        from consolidation_memory.consolidation.engine import _detect_contradictions
+
+        dim = 384
+        new_vecs = np.random.randn(2, dim).astype(np.float32)
+        new_vecs /= np.linalg.norm(new_vecs, axis=1, keepdims=True)
+        existing_vecs = np.copy(new_vecs[[0, 1]])
+        existing_vecs = np.vstack([existing_vecs, existing_vecs[0:1]])
+
+        with (
+            patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode,
+            patch("consolidation_memory.consolidation.engine._call_llm") as mock_llm,
+            override_config(
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.1,
+                CONTRADICTION_MAX_CANDIDATE_PAIRS=2,
+            ),
+        ):
+            mock_encode.side_effect = [new_vecs, existing_vecs]
+            mock_llm.return_value = '["CONTRADICTS", "CONTRADICTS"]'
+
+            result = _detect_contradictions(
+                new_records=[
+                    {"type": "fact", "subject": "A", "info": "1", "embedding_text": "A: 1"},
+                    {"type": "fact", "subject": "B", "info": "1", "embedding_text": "B: 1"},
+                ],
+                existing_records=[
+                    {"id": "ex1", "content": '{"type":"fact","subject":"A","info":"2"}', "embedding_text": "A: 2"},
+                    {"id": "ex2", "content": '{"type":"fact","subject":"B","info":"2"}', "embedding_text": "B: 2"},
+                    {"id": "ex3", "content": '{"type":"fact","subject":"C","info":"2"}', "embedding_text": "C: 2"},
+                ],
+            )
+
+        assert len(result) == 2
+        assert mock_llm.call_count == 1
+
 
 # ── Contradiction prompt ──────────────────────────────────────────────────────
 

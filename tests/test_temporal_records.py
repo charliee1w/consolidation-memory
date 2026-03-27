@@ -732,3 +732,92 @@ class TestContradictionPrompt:
         assert "NEW:" in prompt
         assert "3.11" in prompt
         assert "3.12" in prompt
+
+    def test_prompt_truncates_large_records(self):
+        from consolidation_memory.consolidation.prompting import _build_contradiction_prompt
+
+        large = {"type": "fact", "subject": "Python", "info": "x" * 4000}
+        prompt = _build_contradiction_prompt(
+            [(large, large)],
+            max_record_chars=120,
+        )
+        assert "truncated" in prompt.lower()
+
+
+class TestContradictionBatching:
+    def test_batches_llm_contradiction_verification(self, tmp_data_dir):
+        from consolidation_memory.consolidation.engine import _detect_contradictions
+
+        dim = 384
+        new_vec = np.random.randn(1, dim).astype(np.float32)
+        new_vec /= np.linalg.norm(new_vec)
+        existing_vecs = np.vstack([new_vec for _ in range(5)])
+
+        with (
+            patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode,
+            patch("consolidation_memory.consolidation.engine._call_llm") as mock_llm,
+            override_config(
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.1,
+                CONTRADICTION_MAX_CANDIDATE_PAIRS=10,
+                CONTRADICTION_LLM_BATCH_SIZE=2,
+                CONTRADICTION_LLM_MAX_RETRIES=1,
+            ),
+        ):
+            mock_encode.side_effect = [new_vec, existing_vecs]
+            mock_llm.side_effect = [
+                '["COMPATIBLE", "COMPATIBLE"]',
+                '["CONTRADICTS", "COMPATIBLE"]',
+                '["CONTRADICTS"]',
+            ]
+
+            result = _detect_contradictions(
+                new_records=[{"type": "fact", "subject": "A", "info": "1", "embedding_text": "A:1"}],
+                existing_records=[
+                    {"id": "ex1", "content": '{"type":"fact","subject":"A","info":"2"}', "embedding_text": "A:2"},
+                    {"id": "ex2", "content": '{"type":"fact","subject":"A","info":"3"}', "embedding_text": "A:3"},
+                    {"id": "ex3", "content": '{"type":"fact","subject":"A","info":"4"}', "embedding_text": "A:4"},
+                    {"id": "ex4", "content": '{"type":"fact","subject":"A","info":"5"}', "embedding_text": "A:5"},
+                    {"id": "ex5", "content": '{"type":"fact","subject":"A","info":"6"}', "embedding_text": "A:6"},
+                ],
+            )
+
+        assert len(result) == 2
+        assert mock_llm.call_count == 3
+
+    def test_splits_batch_when_llm_returns_400_like_error(self, tmp_data_dir):
+        from consolidation_memory.consolidation.engine import _detect_contradictions
+
+        dim = 384
+        new_vec = np.random.randn(1, dim).astype(np.float32)
+        new_vec /= np.linalg.norm(new_vec)
+        existing_vecs = np.vstack([new_vec for _ in range(4)])
+
+        with (
+            patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode,
+            patch("consolidation_memory.consolidation.engine._call_llm") as mock_llm,
+            override_config(
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.1,
+                CONTRADICTION_MAX_CANDIDATE_PAIRS=10,
+                CONTRADICTION_LLM_BATCH_SIZE=4,
+                CONTRADICTION_LLM_MAX_RETRIES=1,
+            ),
+        ):
+            mock_encode.side_effect = [new_vec, existing_vecs]
+            mock_llm.side_effect = [
+                RuntimeError("400 Bad Request"),
+                '["CONTRADICTS", "COMPATIBLE"]',
+                '["COMPATIBLE", "CONTRADICTS"]',
+            ]
+
+            result = _detect_contradictions(
+                new_records=[{"type": "fact", "subject": "A", "info": "1", "embedding_text": "A:1"}],
+                existing_records=[
+                    {"id": "ex1", "content": '{"type":"fact","subject":"A","info":"2"}', "embedding_text": "A:2"},
+                    {"id": "ex2", "content": '{"type":"fact","subject":"A","info":"3"}', "embedding_text": "A:3"},
+                    {"id": "ex3", "content": '{"type":"fact","subject":"A","info":"4"}', "embedding_text": "A:4"},
+                    {"id": "ex4", "content": '{"type":"fact","subject":"A","info":"5"}', "embedding_text": "A:5"},
+                ],
+            )
+
+        assert len(result) == 2
+        assert mock_llm.call_count == 3

@@ -333,6 +333,22 @@ class TestOpenAILLMBackend:
 
 class TestLMStudioLLMBackend:
     @patch("consolidation_memory.backends.lmstudio.httpx.post")
+    def test_generate_does_not_retry_http_400(self, mock_post):
+        import httpx
+        from consolidation_memory.backends.lmstudio import LMStudioLLMBackend
+
+        request = httpx.Request("POST", "http://localhost:1234/v1/chat/completions")
+        response = httpx.Response(400, request=request, text='{"error":"bad request"}')
+        err = httpx.HTTPStatusError("bad request", request=request, response=response)
+        mock_post.side_effect = err
+
+        backend = LMStudioLLMBackend(api_base="http://localhost:1234/v1", model="test-model")
+        with pytest.raises(httpx.HTTPStatusError):
+            backend.generate("system", "user")
+
+        assert mock_post.call_count == 1
+
+    @patch("consolidation_memory.backends.lmstudio.httpx.post")
     def test_generate_json_uses_reasoning_content_when_content_empty(self, mock_post):
         from consolidation_memory.backends.lmstudio import LMStudioLLMBackend
 

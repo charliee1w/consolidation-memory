@@ -210,6 +210,9 @@ class Config:
     CONTRADICTION_SIMILARITY_THRESHOLD: float = 0.7
     CONTRADICTION_LLM_ENABLED: bool = True
     CONTRADICTION_MAX_CANDIDATE_PAIRS: int = 24
+    CONTRADICTION_LLM_BATCH_SIZE: int = 6
+    CONTRADICTION_LLM_MAX_RETRIES: int = 1
+    CONTRADICTION_PROMPT_RECORD_CHAR_LIMIT: int = 700
     MERGE_DROP_DETECTION_ENABLED: bool = True
     MERGE_DROP_SIMILARITY_THRESHOLD: float = 0.5
     CONSOLIDATION_STOPWORDS: frozenset[str] = field(default_factory=lambda: _DEFAULT_STOPWORDS)
@@ -470,6 +473,11 @@ def _build_config(
         CONTRADICTION_SIMILARITY_THRESHOLD=float(_consol.get("contradiction_similarity_threshold", 0.7)),
         CONTRADICTION_LLM_ENABLED=_coerce_bool(_consol.get("contradiction_llm_enabled", True)),
         CONTRADICTION_MAX_CANDIDATE_PAIRS=int(_consol.get("contradiction_max_candidate_pairs", 24)),
+        CONTRADICTION_LLM_BATCH_SIZE=int(_consol.get("contradiction_llm_batch_size", 6)),
+        CONTRADICTION_LLM_MAX_RETRIES=int(_consol.get("contradiction_llm_max_retries", 1)),
+        CONTRADICTION_PROMPT_RECORD_CHAR_LIMIT=int(
+            _consol.get("contradiction_prompt_record_char_limit", 700)
+        ),
         MERGE_DROP_DETECTION_ENABLED=_coerce_bool(_consol.get("merge_drop_detection_enabled", True)),
         MERGE_DROP_SIMILARITY_THRESHOLD=float(_consol.get("merge_drop_similarity_threshold", 0.5)),
         CONSOLIDATION_STOPWORDS=stopwords,
@@ -769,6 +777,21 @@ def _validate_config(c: Config) -> None:
             "consolidation.contradiction_max_candidate_pairs = "
             f"{c.CONTRADICTION_MAX_CANDIDATE_PAIRS}, must be > 0"
         )
+    if c.CONTRADICTION_LLM_BATCH_SIZE <= 0:
+        errors.append(
+            "consolidation.contradiction_llm_batch_size = "
+            f"{c.CONTRADICTION_LLM_BATCH_SIZE}, must be > 0"
+        )
+    if c.CONTRADICTION_LLM_MAX_RETRIES <= 0:
+        errors.append(
+            "consolidation.contradiction_llm_max_retries = "
+            f"{c.CONTRADICTION_LLM_MAX_RETRIES}, must be > 0"
+        )
+    if c.CONTRADICTION_PROMPT_RECORD_CHAR_LIMIT < 128:
+        errors.append(
+            "consolidation.contradiction_prompt_record_char_limit = "
+            f"{c.CONTRADICTION_PROMPT_RECORD_CHAR_LIMIT}, must be >= 128"
+        )
     if not (0.0 < c.DEDUP_SIMILARITY_THRESHOLD <= 1.0):
         errors.append(
             f"dedup.similarity_threshold = {c.DEDUP_SIMILARITY_THRESHOLD}, "
@@ -796,8 +819,8 @@ def _validate_config(c: Config) -> None:
         )
     if c.LLM_CALL_TIMEOUT <= 0:
         errors.append(f"llm.call_timeout = {c.LLM_CALL_TIMEOUT}, must be > 0")
-    if c.CONSOLIDATION_MIN_CLUSTER_SIZE < 2:
-        errors.append(f"consolidation.min_cluster_size = {c.CONSOLIDATION_MIN_CLUSTER_SIZE}, must be >= 2")
+    if c.CONSOLIDATION_MIN_CLUSTER_SIZE < 1:
+        errors.append(f"consolidation.min_cluster_size = {c.CONSOLIDATION_MIN_CLUSTER_SIZE}, must be >= 1")
     if c.CONSOLIDATION_MAX_CLUSTER_SIZE < c.CONSOLIDATION_MIN_CLUSTER_SIZE:
         errors.append(
             f"consolidation.max_cluster_size = {c.CONSOLIDATION_MAX_CLUSTER_SIZE}, "

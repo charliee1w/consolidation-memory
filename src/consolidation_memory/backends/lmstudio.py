@@ -13,7 +13,9 @@ from consolidation_memory.backends.base import normalize_l2
 
 logger = logging.getLogger(__name__)
 
-_TRANSIENT = (httpx.HTTPError, httpx.TimeoutException, ConnectionError, TimeoutError, OSError)
+# Retry only transport/timeouts. HTTPStatusError for 4xx/5xx should be handled
+# by caller logic, not blindly retried as transient.
+_TRANSIENT = (httpx.TransportError, httpx.TimeoutException, ConnectionError, TimeoutError, OSError)
 
 
 class LMStudioEmbeddingBackend:

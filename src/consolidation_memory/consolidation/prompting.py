@@ -443,7 +443,20 @@ Output this exact JSON structure:
 {{"title": "...", "summary": "...", "tags": [...], "records": [...]}}"""
 
 
-def _build_contradiction_prompt(pairs: list[tuple[dict, dict]]) -> str:
+def _truncate_json_for_prompt(payload: dict, max_chars: int) -> str:
+    """Render compact JSON and hard-cap size for contradiction prompts."""
+    raw = json.dumps(payload, separators=(",", ":"), default=str)
+    if len(raw) <= max_chars:
+        return raw
+    suffix = "...<truncated>"
+    return raw[: max(0, max_chars - len(suffix))] + suffix
+
+
+def _build_contradiction_prompt(
+    pairs: list[tuple[dict, dict]],
+    *,
+    max_record_chars: int = 700,
+) -> str:
     """Build an LLM prompt to verify which record pairs are contradictions."""
     lines = [
         "You are a contradiction detector. For each numbered pair of knowledge records, "
@@ -459,8 +472,10 @@ def _build_contradiction_prompt(pairs: list[tuple[dict, dict]]) -> str:
     ]
     for i, (existing_rec, new_rec) in enumerate(pairs):
         lines.append(f"\nPair {i + 1}:")
-        lines.append(f"  EXISTING: {_sanitize_for_prompt(json.dumps(existing_rec, default=str))}")
-        lines.append(f"  NEW: {_sanitize_for_prompt(json.dumps(new_rec, default=str))}")
+        existing_json = _truncate_json_for_prompt(existing_rec, max_chars=max_record_chars)
+        new_json = _truncate_json_for_prompt(new_rec, max_chars=max_record_chars)
+        lines.append(f"  EXISTING: {_sanitize_for_prompt(existing_json)}")
+        lines.append(f"  NEW: {_sanitize_for_prompt(new_json)}")
 
     lines.append("\nOutput JSON array of verdicts:")
     return "\n".join(lines)

@@ -353,33 +353,76 @@ def _detect_contradictions(
         new_for_llm = {k: v for k, v in new_content.items() if k != "embedding_text"}
         pair_contents.append((ex_content, new_for_llm))
 
-    prompt = _build_contradiction_prompt(pair_contents)
+    def _is_prompt_size_like_failure(err: Exception) -> bool:
+        msg = str(err).lower()
+        markers = ("400", "bad request", "context", "token", "too long", "length")
+        return any(marker in msg for marker in markers)
 
-    try:
-        raw = _call_llm(prompt, max_retries=2)
-        verdicts = json.loads(_strip_code_fences(raw))
-    except Exception as e:
-        logger.warning("LLM contradiction verification failed: %s", e)
-        return []
+    contradictions: list[tuple[int, str]] = []
+    max_retries = max(1, int(cfg.CONTRADICTION_LLM_MAX_RETRIES))
+    prompt_record_limit = max(128, int(cfg.CONTRADICTION_PROMPT_RECORD_CHAR_LIMIT))
+    batch_size = max(1, int(cfg.CONTRADICTION_LLM_BATCH_SIZE))
 
-    if not isinstance(verdicts, list):
-        logger.warning(
-            "LLM returned non-list (%s) for contradiction verdicts. Skipping.",
-            type(verdicts).__name__,
+    def _process_pairs_range(start: int, end: int) -> None:
+        if start >= end:
+            return
+        local_pairs = pair_contents[start:end]
+        local_candidates = candidate_pairs[start:end]
+        prompt = _build_contradiction_prompt(
+            local_pairs,
+            max_record_chars=prompt_record_limit,
         )
-        return []
+        try:
+            raw = _call_llm(prompt, max_retries=max_retries)
+            verdicts = json.loads(_strip_code_fences(raw))
+        except Exception as e:
+            if (end - start) > 1 and _is_prompt_size_like_failure(e):
+                mid = start + ((end - start) // 2)
+                logger.warning(
+                    "Contradiction verification batch %d-%d failed (%s); splitting into %d-%d and %d-%d",
+                    start,
+                    end,
+                    e,
+                    start,
+                    mid,
+                    mid,
+                    end,
+                )
+                _process_pairs_range(start, mid)
+                _process_pairs_range(mid, end)
+                return
+            logger.warning(
+                "LLM contradiction verification failed for batch %d-%d: %s",
+                start,
+                end,
+                e,
+            )
+            return
 
-    if len(verdicts) != len(candidate_pairs):
-        logger.warning(
-            "LLM returned %d verdicts for %d pairs; processing available verdicts.",
-            len(verdicts),
-            len(candidate_pairs),
-        )
+        if not isinstance(verdicts, list):
+            logger.warning(
+                "LLM returned non-list (%s) for contradiction verdicts in batch %d-%d; skipping batch.",
+                type(verdicts).__name__,
+                start,
+                end,
+            )
+            return
 
-    contradictions = []
-    for (new_idx, ex_idx, _), verdict in zip(candidate_pairs, verdicts):
-        if isinstance(verdict, str) and "CONTRADICT" in verdict.upper():
-            contradictions.append((new_idx, existing_records[ex_idx]["id"]))
+        if len(verdicts) != len(local_candidates):
+            logger.warning(
+                "LLM returned %d verdicts for %d pairs in batch %d-%d; processing available verdicts.",
+                len(verdicts),
+                len(local_candidates),
+                start,
+                end,
+            )
+
+        for (new_idx, ex_idx, _), verdict in zip(local_candidates, verdicts):
+            if isinstance(verdict, str) and "CONTRADICT" in verdict.upper():
+                contradictions.append((new_idx, existing_records[ex_idx]["id"]))
+
+    for start in range(0, len(candidate_pairs), batch_size):
+        _process_pairs_range(start, min(start + batch_size, len(candidate_pairs)))
 
     logger.info(
         "Contradiction detection: %d/%d candidate pairs confirmed as contradictions",

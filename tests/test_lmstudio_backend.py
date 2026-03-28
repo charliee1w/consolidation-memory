@@ -62,7 +62,7 @@ class TestLMStudioEmbeddingBackend:
 
 class TestLMStudioLLMBackend:
     @patch("consolidation_memory.backends.lmstudio.httpx.post")
-    def test_generate_json_falls_back_when_structured_output_unsupported(self, mock_post):
+    def test_generate_json_raises_when_structured_output_unsupported(self, mock_post):
         request = httpx.Request("POST", "http://localhost:1234/v1/chat/completions")
         unsupported_response = httpx.Response(422, request=request)
         unsupported_error = httpx.HTTPStatusError(
@@ -70,25 +70,19 @@ class TestLMStudioLLMBackend:
             request=request,
             response=unsupported_response,
         )
-
-        fallback_ok = MagicMock()
-        fallback_ok.raise_for_status = MagicMock()
-        fallback_ok.json.return_value = {"choices": [{"message": {"content": '{"ok":true}'}}]}
-        mock_post.side_effect = [unsupported_error, fallback_ok]
+        mock_post.side_effect = unsupported_error
 
         backend = LMStudioLLMBackend(
             api_base="http://localhost:1234/v1",
             model="qwen2.5-14b-instruct",
         )
 
-        result = backend.generate_json("system", "user", {"type": "object"})
+        with pytest.raises(ValueError, match="requires structured output"):
+            backend.generate_json("system", "user", {"type": "object"})
 
-        assert result == '{"ok":true}'
-        assert mock_post.call_count == 2
-        first_payload = mock_post.call_args_list[0].kwargs["json"]
-        second_payload = mock_post.call_args_list[1].kwargs["json"]
-        assert "response_format" in first_payload
-        assert "response_format" not in second_payload
+        assert mock_post.call_count == 1
+        payload = mock_post.call_args.kwargs["json"]
+        assert "response_format" in payload
 
     @patch("consolidation_memory.backends.lmstudio.httpx.post")
     def test_generate_raises_on_empty_message_content(self, mock_post):

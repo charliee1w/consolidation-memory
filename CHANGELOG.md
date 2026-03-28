@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.0 - 2026-03-28
+
+### Highlights
+
+- feat: add initial greet function
+- Harden LM Studio consolidation reliability and topic merge quality
+- Merge branch 'main' of https://github.com/charliee1w/consolidation-memory
+- Harden contradiction verification and improve consolidation tail handling
+- Process singleton consolidation tails and guard contradiction verifier failures
+- Align LM Studio backend test with strict structured-output behavior
+
+
 ## 0.14.2 - 2026-03-19
 
 ### Highlights

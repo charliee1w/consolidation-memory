@@ -784,6 +784,122 @@ class TestContradictionBatching:
         assert len(result) == 2
         assert mock_llm.call_count == 3
 
+    def test_stops_after_first_nonrecoverable_llm_failure(self, tmp_data_dir):
+        from consolidation_memory.consolidation.engine import _detect_contradictions
+
+        dim = 384
+        new_vec = np.random.randn(1, dim).astype(np.float32)
+        new_vec /= np.linalg.norm(new_vec)
+        existing_vecs = np.vstack([new_vec for _ in range(5)])
+
+        with (
+            patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode,
+            patch("consolidation_memory.consolidation.engine._call_llm") as mock_llm,
+            override_config(
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.1,
+                CONTRADICTION_MAX_CANDIDATE_PAIRS=10,
+                CONTRADICTION_LLM_BATCH_SIZE=1,
+                CONTRADICTION_LLM_MAX_RETRIES=1,
+            ),
+        ):
+            mock_encode.side_effect = [new_vec, existing_vecs]
+            mock_llm.side_effect = RuntimeError("LLM backend unavailable")
+
+            result = _detect_contradictions(
+                new_records=[{"type": "fact", "subject": "A", "info": "1", "embedding_text": "A:1"}],
+                existing_records=[
+                    {"id": "ex1", "content": '{"type":"fact","subject":"A","info":"2"}', "embedding_text": "A:2"},
+                    {"id": "ex2", "content": '{"type":"fact","subject":"A","info":"3"}', "embedding_text": "A:3"},
+                    {"id": "ex3", "content": '{"type":"fact","subject":"A","info":"4"}', "embedding_text": "A:4"},
+                    {"id": "ex4", "content": '{"type":"fact","subject":"A","info":"5"}', "embedding_text": "A:5"},
+                    {"id": "ex5", "content": '{"type":"fact","subject":"A","info":"6"}', "embedding_text": "A:6"},
+                ],
+            )
+
+        assert result == []
+        assert mock_llm.call_count == 1
+
+
+class _SingletonVectorStore:
+    def reconstruct_batch(self, episode_ids):
+        vecs = np.ones((len(episode_ids), 384), dtype=np.float32)
+        return list(episode_ids), vecs
+
+
+class TestSingletonTailConsolidation:
+    def test_processes_singleton_when_min_cluster_size_is_one(self, tmp_data_dir):
+        from consolidation_memory.consolidation.engine import run_consolidation
+
+        episode = {"id": "ep-singleton", "tags": "[]", "content": "singleton tail"}
+        vs = _SingletonVectorStore()
+
+        with (
+            override_config(CONSOLIDATION_MIN_CLUSTER_SIZE=1),
+            patch(
+                "consolidation_memory.consolidation.engine.get_unconsolidated_episodes",
+                return_value=[episode],
+            ),
+            patch(
+                "consolidation_memory.consolidation.engine.start_consolidation_run",
+                return_value="run-singleton",
+            ),
+            patch("consolidation_memory.consolidation.engine.complete_consolidation_run"),
+            patch(
+                "consolidation_memory.consolidation.engine._process_cluster",
+                return_value={"status": "created", "api_calls": 1},
+            ) as mock_process_cluster,
+            patch("consolidation_memory.consolidation.engine._update_index"),
+            patch(
+                "consolidation_memory.consolidation.engine._adjust_surprise_scores",
+                return_value=0,
+            ),
+            patch(
+                "consolidation_memory.consolidation.engine._maybe_prune_and_compact",
+                return_value=[],
+            ),
+            patch(
+                "consolidation_memory.consolidation.engine.reset_stale_consolidation_attempts",
+                return_value=0,
+            ),
+            patch("consolidation_memory.consolidation.engine.insert_consolidation_metrics"),
+        ):
+            report = run_consolidation(vector_store=vs)
+
+        assert report["clusters_total"] == 1
+        assert report["clusters_valid"] == 1
+        assert report["topics_created"] == 1
+        assert report["topics_updated"] == 0
+        assert report["episodes_with_vectors"] == 1
+        assert mock_process_cluster.call_count == 1
+
+    def test_keeps_nothing_to_consolidate_behavior_when_min_cluster_size_gt_one(
+        self, tmp_data_dir
+    ):
+        from consolidation_memory.consolidation.engine import run_consolidation
+
+        episode = {"id": "ep-singleton", "tags": "[]", "content": "singleton tail"}
+        vs = _SingletonVectorStore()
+
+        with (
+            override_config(CONSOLIDATION_MIN_CLUSTER_SIZE=2),
+            patch(
+                "consolidation_memory.consolidation.engine.get_unconsolidated_episodes",
+                return_value=[episode],
+            ),
+            patch(
+                "consolidation_memory.consolidation.engine.start_consolidation_run",
+                return_value="run-singleton",
+            ),
+            patch("consolidation_memory.consolidation.engine.complete_consolidation_run"),
+            patch(
+                "consolidation_memory.consolidation.engine.reset_stale_consolidation_attempts",
+                return_value=0,
+            ),
+        ):
+            report = run_consolidation(vector_store=vs)
+
+        assert report["status"] == "nothing_to_consolidate"
+
     def test_splits_batch_when_llm_returns_400_like_error(self, tmp_data_dir):
         from consolidation_memory.consolidation.engine import _detect_contradictions
 

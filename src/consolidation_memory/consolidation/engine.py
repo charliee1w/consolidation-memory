@@ -359,11 +359,15 @@ def _detect_contradictions(
         return any(marker in msg for marker in markers)
 
     contradictions: list[tuple[int, str]] = []
+    abort_verification = False
     max_retries = max(1, int(cfg.CONTRADICTION_LLM_MAX_RETRIES))
     prompt_record_limit = max(128, int(cfg.CONTRADICTION_PROMPT_RECORD_CHAR_LIMIT))
     batch_size = max(1, int(cfg.CONTRADICTION_LLM_BATCH_SIZE))
 
     def _process_pairs_range(start: int, end: int) -> None:
+        nonlocal abort_verification
+        if abort_verification:
+            return
         if start >= end:
             return
         local_pairs = pair_contents[start:end]
@@ -389,6 +393,8 @@ def _detect_contradictions(
                     end,
                 )
                 _process_pairs_range(start, mid)
+                if abort_verification:
+                    return
                 _process_pairs_range(mid, end)
                 return
             logger.warning(
@@ -397,6 +403,7 @@ def _detect_contradictions(
                 end,
                 e,
             )
+            abort_verification = True
             return
 
         if not isinstance(verdicts, list):
@@ -422,6 +429,13 @@ def _detect_contradictions(
                 contradictions.append((new_idx, existing_records[ex_idx]["id"]))
 
     for start in range(0, len(candidate_pairs), batch_size):
+        if abort_verification:
+            logger.warning(
+                "Aborting contradiction verification after LLM failure; "
+                "%d candidate pairs left unverified.",
+                len(candidate_pairs) - start,
+            )
+            break
         _process_pairs_range(start, min(start + batch_size, len(candidate_pairs)))
 
     logger.info(
@@ -1525,18 +1539,43 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             id_to_episode = {ep["id"]: ep for ep in episodes}
             valid_episodes = [id_to_episode[uid] for uid in found_ids if uid in id_to_episode]
 
+            if not valid_episodes:
+                logger.warning("No valid episodes with vectors after reconstruction.")
+                complete_consolidation_run(
+                    run_id, status=RUN_STATUS_FAILED, error_message="No valid episodes with vectors"
+                )
+                early_report_nv2: ConsolidationReport = {
+                    "status": "error",
+                    "message": "No valid episodes with vectors",
+                    "run_id": run_id,
+                }
+                get_plugin_manager().fire("on_consolidation_complete", report=early_report_nv2)
+                return early_report_nv2
+
             sim_matrix, dist_matrix = _build_scope_isolated_similarity(valid_episodes, vectors)
 
-            if len(valid_episodes) < 2:
-                logger.info("Only 1 valid episode — skipping clustering.")
-                complete_consolidation_run(
-                    run_id, status=RUN_STATUS_COMPLETED, episodes_processed=1
-                )
-                early_report_fe: ConsolidationReport = {"status": "too_few_episodes"}
-                get_plugin_manager().fire("on_consolidation_complete", report=early_report_fe)
-                return early_report_fe
-
-            clusters, valid_clusters = _build_clusters_from_distance(valid_episodes, dist_matrix)
+            if len(valid_episodes) == 1:
+                if cfg.CONSOLIDATION_MIN_CLUSTER_SIZE <= 1:
+                    logger.info(
+                        "Only 1 valid episode — processing singleton cluster "
+                        "(min_cluster_size=%d).",
+                        cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
+                    )
+                    clusters = {1: [(valid_episodes[0], 0)]}
+                    valid_clusters = dict(clusters)
+                else:
+                    logger.info(
+                        "Only 1 valid episode and min_cluster_size=%d — skipping clustering.",
+                        cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
+                    )
+                    complete_consolidation_run(
+                        run_id, status=RUN_STATUS_COMPLETED, episodes_processed=1
+                    )
+                    early_report_fe: ConsolidationReport = {"status": "too_few_episodes"}
+                    get_plugin_manager().fire("on_consolidation_complete", report=early_report_fe)
+                    return early_report_fe
+            else:
+                clusters, valid_clusters = _build_clusters_from_distance(valid_episodes, dist_matrix)
 
             logger.info(
                 "Formed %d clusters, %d valid (>=%d episodes)",

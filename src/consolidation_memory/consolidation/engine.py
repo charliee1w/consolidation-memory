@@ -11,6 +11,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
@@ -1205,6 +1206,31 @@ def _merge_into_existing(
     return "updated", merge_calls
 
 
+def _coerce_extraction_payload(
+    extraction_data: dict[str, object],
+    *,
+    cluster_id: int,
+    tag_counts: list[tuple[str, int]],
+) -> tuple[str, str, list[str], list[dict[Any, Any]]]:
+    """Normalize LLM/fast-path extraction payloads for typed cluster handling."""
+    title_value = extraction_data.get("title", f"Topic {cluster_id}")
+    title = str(title_value) if title_value is not None else f"Topic {cluster_id}"
+    summary = str(extraction_data.get("summary") or "")
+    default_tags = [tag for tag, _ in tag_counts]
+    tags_raw = extraction_data.get("tags", default_tags)
+    if isinstance(tags_raw, list):
+        tags = [str(tag) for tag in tags_raw]
+    else:
+        tags = default_tags
+    records_raw = extraction_data.get("records", [])
+    records: list[dict[Any, Any]] = []
+    if isinstance(records_raw, list):
+        for item in records_raw:
+            if isinstance(item, dict):
+                records.append(item)
+    return title, summary, tags, records
+
+
 # ── Cluster processing ────────────────────────────────────────────────────────
 
 
@@ -1262,6 +1288,7 @@ def _process_cluster(
     api_calls = 0
     deterministic_only = False
 
+    extraction_data: dict[str, object]
     fast_path_result = try_fast_path_extraction(cluster_episodes)
     if fast_path_result is not None:
         extraction_data = fast_path_result["extraction_data"]
@@ -1280,7 +1307,8 @@ def _process_cluster(
             len(cluster_episodes),
         )
         try:
-            extraction_data, calls = _llm_extract_with_validation(prompt, cluster_episodes)
+            llm_extraction_data, calls = _llm_extract_with_validation(prompt, cluster_episodes)
+            extraction_data = cast(dict[str, object], llm_extraction_data)
             api_calls += calls
         except Exception as e:
             logger.error("LLM extraction failed for cluster %d: %s", cluster_id, e, exc_info=True)
@@ -1292,10 +1320,11 @@ def _process_cluster(
                 "fast_path": False,
             }
 
-    title = extraction_data.get("title", f"Topic {cluster_id}")
-    summary = extraction_data.get("summary", "")
-    tags = extraction_data.get("tags", [t for t, _ in tag_counts])
-    records = extraction_data.get("records", [])
+    title, summary, tags, records = _coerce_extraction_payload(
+        extraction_data,
+        cluster_id=cluster_id,
+        tag_counts=tag_counts,
+    )
 
     existing = _find_similar_topic(title, summary, tags, scope=cluster_scope)
 

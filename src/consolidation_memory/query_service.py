@@ -450,7 +450,7 @@ class CanonicalQueryService:
                 semantic_weight=cfg.RECORDS_SEMANTIC_WEIGHT,
                 keyword_weight=cfg.RECORDS_KEYWORD_WEIGHT,
                 strategy_reuse_multiplier=strategy_multiplier,
-                precision=float(ranked.get("precision", 1.0) or 1.0),
+                precision=coerce_numeric_float(ranked.get("precision"), default=1.0),
             )
             relevance = coerce_numeric_float(ranking_profile.get("score"), default=0.0)
             if relevance <= 0.0:

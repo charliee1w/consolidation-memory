@@ -294,10 +294,17 @@ def _merge_tags(tags: list[str]) -> list[str]:
     return merged[:8]
 
 
+def _episode_tags(episode: dict[str, object]) -> list:
+    raw_tags = episode.get("tags")
+    if isinstance(raw_tags, (str, list)) or raw_tags is None:
+        return parse_json_list(raw_tags)
+    return parse_json_list(None)
+
+
 def _extract_record_from_episode(episode: dict[str, object]) -> tuple[dict[str, object] | None, str | None]:
     content = str(episode.get("content") or "")
     content_type = str(episode.get("content_type") or "exchange").strip().lower()
-    tags = parse_json_list(episode.get("tags"))
+    tags = _episode_tags(episode)
 
     record = _try_parse_structured_json(content)
     kind = "structured" if record else None
@@ -345,7 +352,7 @@ def try_fast_path_extraction(cluster_episodes: list[dict[str, object]]) -> FastP
             return None
         records.append(record)
         kinds.append(kind)
-        all_tags.extend(parse_json_list(episode.get("tags")))
+        all_tags.extend(_episode_tags(episode))
 
     deduped = _dedupe_records(records)
     if not deduped:

@@ -1780,6 +1780,7 @@ class MemoryClient:
         if cfg.DB_PATH.exists():
             db_size_mb = round(cfg.DB_PATH.stat().st_size / (1024 * 1024), 2)
 
+        knowledge_consistency: dict[str, Any]
         if use_lightweight:
             knowledge_consistency = {
                 "lightweight": True,
@@ -1886,10 +1887,15 @@ class MemoryClient:
             except (ValueError, TypeError):
                 lease_stale = False
 
-        score_value = utility_state.get("score")
-        utility_score = float(score_value) if isinstance(score_value, (int, float)) else 0.0
-        raw_signals_obj = utility_state.get("raw_signals")
-        raw_signals = raw_signals_obj if isinstance(raw_signals_obj, dict) else None
+        utility_breakdown = parse_consolidation_utility_breakdown(utility_state)
+        utility_score = utility_breakdown["score"] if utility_breakdown is not None else 0.0
+        weighted_components = (
+            utility_breakdown["weighted_components"] if utility_breakdown is not None else None
+        )
+        normalized_signals = (
+            utility_breakdown["normalized_signals"] if utility_breakdown is not None else None
+        )
+        raw_signals = utility_breakdown["raw_signals"] if utility_breakdown is not None else None
         should_run_now, trigger_reason = self._should_trigger_scheduler_run(
             scheduler_state=scheduler_state,
             utility_score=utility_score,
@@ -1908,16 +1914,8 @@ class MemoryClient:
             trigger_reason=trigger_reason,
             utility_score=utility_score,
             threshold=cfg.CONSOLIDATION_UTILITY_THRESHOLD,
-            weighted_components=(
-                utility_state["weighted_components"]
-                if isinstance(utility_state.get("weighted_components"), dict)
-                else None
-            ),
-            normalized_signals=(
-                utility_state["normalized_signals"]
-                if isinstance(utility_state.get("normalized_signals"), dict)
-                else None
-            ),
+            weighted_components=weighted_components,
+            normalized_signals=normalized_signals,
             raw_signals=raw_signals,
             force_thresholds=force_thresholds,
         )
@@ -1935,14 +1933,8 @@ class MemoryClient:
             "weighted_components": utility_state["weighted_components"],
             "raw_signals": utility_state["raw_signals"],
             "dominant_components": top_weighted_utility_components(
-                utility_state["weighted_components"]
-                if isinstance(utility_state.get("weighted_components"), dict)
-                else None,
-                normalized_signals=(
-                    utility_state["normalized_signals"]
-                    if isinstance(utility_state.get("normalized_signals"), dict)
-                    else None
-                ),
+                weighted_components,
+                normalized_signals=normalized_signals,
             ),
             "next_due_at": scheduler_state.get("next_due_at"),
             "last_status": scheduler_state.get("last_status"),
@@ -1961,14 +1953,8 @@ class MemoryClient:
                 "reason": trigger_reason,
                 "explanation": run_explanation,
                 "dominant_components": top_weighted_utility_components(
-                    utility_state["weighted_components"]
-                    if isinstance(utility_state.get("weighted_components"), dict)
-                    else None,
-                    normalized_signals=(
-                        utility_state["normalized_signals"]
-                        if isinstance(utility_state.get("normalized_signals"), dict)
-                        else None
-                    ),
+                    weighted_components,
+                    normalized_signals=normalized_signals,
                 ),
             },
             "last_run_trigger": last_run_trigger,
@@ -3175,7 +3161,7 @@ class MemoryClient:
         last_run: dict[str, object] | None,
         interval_hours: float,
         compaction_threshold: float,
-        knowledge_consistency: dict[str, object] | None = None,
+        knowledge_consistency: dict[str, Any] | None = None,
     ) -> HealthStatus:
         return _compute_health_runtime(
             self,

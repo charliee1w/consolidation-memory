@@ -8,6 +8,7 @@
 
 ### Bug Fixes
 
+- fix: resolve mypy arg-type errors in client and consolidation paths
 - fix(ci): commit changelog update after refresh step writes file
 - fix: make schema migrations v18-v20 idempotent on replay
 

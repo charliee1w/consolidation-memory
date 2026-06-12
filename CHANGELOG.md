@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- feat: complete M1-M3 trust substrate, changelog automation, and monetization plan
+- feat: add initial greet function
+
+### Bug Fixes
+
+- fix: make schema migrations v18-v20 idempotent on replay
+- fix: keep mcp transport alive on idle
+- fix: harden drift detection subprocess
+
+### Internal
+
+- test: stabilize server lifecycle runtime state isolation
+- test: fix drift subprocess cwd assertion
+
+### Other
+
+- Align LM Studio backend test with strict structured-output behavior
+- Process singleton consolidation tails and guard contradiction verifier failures
+- Harden contradiction verification and improve consolidation tail handling
+- Harden LM Studio consolidation reliability and topic merge quality
+- Fix docs guard git path for bandit
+- Document release setup and enforce docs freshness
+
+
 ## 0.15.0 - 2026-03-28
 
 ### Highlights

@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-### Other
+### Documentation
 
-- Maintenance release.
+- docs: rewrite README for trust positioning and visual clarity
 
 ## 0.16.0 - 2026-06-12
 

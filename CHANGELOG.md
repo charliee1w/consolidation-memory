@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Other
+
+- Maintenance release.
+
+
 ## 0.16.0 - 2026-06-12
 
 ### Features

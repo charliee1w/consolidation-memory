@@ -25,7 +25,7 @@ Store what happened. Consolidate what you learned. Recall with provenance — an
 | Sharing | Hope the filter works | **Scope envelopes** + persisted policy/ACL primitives |
 | Consolidation | Always calls an LLM | **Fast path** for structured episodes; LLM only for residue |
 
-**Product wedge:** [drift-aware debugging memory](docs/NOVELTY_WEDGE.md) — preserve fixes, recall with trust signals, degrade gracefully after refactors.
+**Focus:** drift-aware debugging memory — preserve fixes, recall with trust signals, degrade gracefully after refactors.
 
 ---
 
@@ -265,19 +265,7 @@ Set `llm.backend = "disabled"` and store episodes in [fast-path shapes](docs/FAS
 
 ---
 
-## Open source and commercial boundary
-
-The **MIT core** — local engine, trust semantics, MCP/REST/Python parity, drift, release gates — stays free. That is the adoption surface.
-
-Planned **Team / Enterprise** capabilities (hosted sync, policy admin UI, compliance exports) are described in [docs/MONETIZATION.md](docs/MONETIZATION.md). Drift detection, provenance, and solo local use are not paywalled.
-
-Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) · living engineering backlog: [docs/AGENT_GOAL.md](docs/AGENT_GOAL.md)
-
----
-
 ## Documentation
-
-### Start here
 
 | Doc | Why read it |
 | --- | --- |
@@ -286,40 +274,7 @@ Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) · living engineering backlog: [docs
 | [Model support](docs/MODEL_SUPPORT.md) | Embedding and LLM backends |
 | [Examples](examples/README.md) | Cursor, REST, LangGraph, plugins |
 
-### Trust and quality
-
-| Doc | Why read it |
-| --- | --- |
-| [Novelty wedge](docs/NOVELTY_WEDGE.md) | Product focus and measurable claims |
-| [Release gates](docs/RELEASE_GATES.md) | Pre-publish requirements |
-| [Novelty metrics](docs/NOVELTY_METRICS.md) | Evaluation harness |
-| [Release automation](docs/RELEASE_AUTOMATION.md) | Changelog and release CI |
-
-### Building and operating
-
-| Doc | Why read it |
-| --- | --- |
-| [Agent session guide](AGENTS.md) | Contributor / coding-agent workflow |
-| [Vibecoding guide](docs/VIBECODING.md) | Trust invariants for code changes |
-| [Builder baseline](docs/BUILDER_BASELINE.md) | Smoke and integration checks |
-
-Long-horizon design notes (not the day-to-day backlog): [docs/strategy/](docs/strategy/)
-
----
-
-## Development
-
-```bash
-git clone https://github.com/charliee1w/consolidation-memory
-cd consolidation-memory
-pip install -e ".[all,dev]"
-python scripts/smoke_builder_base.py
-pytest tests/ -q
-ruff check src tests
-mypy src/consolidation_memory/
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for PR expectations.
+Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

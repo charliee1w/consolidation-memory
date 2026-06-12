@@ -4,6 +4,7 @@
 
 ### Documentation
 
+- docs: remove internal strategy and agent-ops docs from public repo
 - docs: trim README to user-facing content only
 - docs: rewrite README for trust positioning and visual clarity
 

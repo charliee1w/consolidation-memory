@@ -15,7 +15,9 @@ This repository supports automated stable releases from `main`.
 Flow:
 
 1. A push lands on `main`.
-2. `changelog-on-main.yml` refreshes the `## Unreleased` section in `CHANGELOG.md` and commits it with `[skip release]` when needed.
+2. `changelog-on-main.yml` refreshes the `## Unreleased` section in `CHANGELOG.md` and, when the file changed, commits and pushes it with `[skip release]`.
+   - Step 1 runs `python scripts/update_changelog.py` to rewrite `## Unreleased`.
+   - Step 2 runs `git add` / `git commit` / `git push` on the already-updated file (it does **not** re-run `--commit`, because step 1 leaves `CHANGELOG.md` dirty).
 3. `release-on-main.yml` evaluates commits since the latest tag.
 4. If eligible, it runs `scripts/release.py --bump <major|minor|patch>`.
 5. The script bumps `pyproject.toml`, promotes `## Unreleased` into a versioned entry (or falls back to git commits since the tag), commits, tags (`vX.Y.Z`), and pushes.
@@ -50,7 +52,10 @@ Commit locally when ready:
 
 ```bash
 python scripts/update_changelog.py --commit
+python scripts/update_changelog.py --commit --push
 ```
+
+`--commit` allows a dirty tree when **only** `CHANGELOG.md` changed (for example after running the updater once, then committing in a second command). Other uncommitted files still block `--commit`.
 
 ## Criteria
 
@@ -100,6 +105,31 @@ Expected for an actual release:
 
 - `should_release=true`
 - `has_release_pat=true`
+
+### Changelog workflow failed with "Working tree is not clean"
+
+Symptoms:
+
+- `Update Changelog On Main` fails in the **Commit changelog update** step.
+- Log shows `Working tree is not clean. Commit or stash changes before --commit.`
+
+Cause:
+
+- An older workflow reran `update_changelog.py --commit --push` after step 1 had already written `CHANGELOG.md`.
+
+Fix:
+
+- Ensure `changelog-on-main.yml` commits via `git add` / `git commit` / `git push` after the refresh step, or run a single local `python scripts/update_changelog.py --commit --push` from a clean tree.
+
+### Release docs guard failed in CI
+
+Symptoms:
+
+- `Release Docs Guard` fails with `Release automation files changed without docs updates`.
+
+Fix:
+
+- Update `docs/RELEASE_AUTOMATION.md` or `README.md` in the **same commit** whenever you change release automation scripts or workflows (`release-on-main.yml`, `changelog-on-main.yml`, `update_changelog.py`, etc.).
 
 ### How to force one release now
 

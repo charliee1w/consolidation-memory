@@ -11,6 +11,10 @@
 - fix(ci): commit changelog update after refresh step writes file
 - fix: make schema migrations v18-v20 idempotent on replay
 
+### Documentation
+
+- docs: document changelog CI commit flow and docs guard
+
 ## 0.15.0 - 2026-03-28
 
 ### Highlights

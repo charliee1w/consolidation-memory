@@ -274,6 +274,7 @@ def compute_consolidation_utility(
     from consolidation_memory.database import (
         count_active_challenged_claims,
         count_contradictions_since,
+        get_outcome_failure_rate_since,
         get_stats,
     )
 
@@ -291,6 +292,10 @@ def compute_consolidation_utility(
     pending_backlog = int(stats["episodic_buffer"]["pending_consolidation"])
     contradiction_count = count_contradictions_since(contradictions_since)
     challenged_backlog = count_active_challenged_claims(as_of=now_wallclock.isoformat())
+    outcome_stats = get_outcome_failure_rate_since(contradictions_since)
+    failure_count = int(outcome_stats["failure_count"])
+    outcome_total_count = int(outcome_stats["total_count"])
+    outcome_failure_rate = float(outcome_stats["failure_rate"])
 
     score_breakdown = compute_utility_score(
         unconsolidated_backlog=pending_backlog,
@@ -298,6 +303,7 @@ def compute_consolidation_utility(
         recall_fallback_count=fallback_count,
         contradiction_count=contradiction_count,
         challenged_claim_backlog=challenged_backlog,
+        outcome_failure_rate=outcome_failure_rate,
         weights=cfg.CONSOLIDATION_UTILITY_WEIGHTS,
         backlog_target=max(1, cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN),
         recall_signal_target=3,
@@ -315,6 +321,9 @@ def compute_consolidation_utility(
             "recall_fallback_count": fallback_count,
             "contradiction_count": contradiction_count,
             "challenged_claim_backlog": challenged_backlog,
+            "outcome_failure_count": failure_count,
+            "outcome_total_count": outcome_total_count,
+            "outcome_failure_rate": outcome_failure_rate,
             "lookback_seconds": lookback_seconds,
         },
     }
@@ -531,6 +540,7 @@ def submit_auto_consolidation(
             owner=client._scheduler_owner,
             trigger_reason=trigger_reason,
             utility_score=utility_score,
+            trigger_breakdown=utility_state,
         )
         if client._consolidation_pool is None:
             client._consolidation_pool = ThreadPoolExecutor(
@@ -722,6 +732,7 @@ def consolidation_loop(
                 owner=client._scheduler_owner,
                 trigger_reason=trigger_reason,
                 utility_score=utility_score,
+                trigger_breakdown=utility_state,
             )
 
             logger.info(

@@ -1,8 +1,17 @@
 """Tests for claim graph database layer."""
 
 import json
+from datetime import datetime, timezone
 
+import pytest
+
+from consolidation_memory.claim_graph import (
+    DEFAULT_CLAIM_PRECISION,
+    claim_from_record,
+    normalize_claim_precision,
+)
 from consolidation_memory.database import (
+    CURRENT_SCHEMA_VERSION,
     auto_expire_stale_challenged_claims,
     ensure_schema,
     expire_claim,
@@ -16,6 +25,7 @@ from consolidation_memory.database import (
     insert_episode_anchors,
     mark_claims_challenged_by_ids,
     mark_claims_challenged_by_anchors,
+    record_action_outcome,
     upsert_claim,
 )
 
@@ -417,3 +427,218 @@ class TestClaimGraphMethods:
             anchor_type="path", anchor_value="src/main.py",
         )
         assert {row["id"] for row in by_anchor_after_expire} == set()
+
+
+class TestClaimPrecisionMigration:
+    def test_migration_adds_precision_column(self, tmp_data_dir):
+        ensure_schema()
+        with get_connection() as conn:
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(claims)").fetchall()
+            }
+            version = conn.execute(
+                "SELECT MAX(version) AS v FROM schema_version",
+            ).fetchone()["v"]
+        assert "precision" in columns
+        assert version == CURRENT_SCHEMA_VERSION
+
+    def test_migration_from_v18_backfills_default_precision(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-pre-v19",
+            claim_type="fact",
+            canonical_text="legacy claim",
+            payload={"k": "v"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+
+        with get_connection() as conn:
+            conn.execute("DELETE FROM schema_version WHERE version >= 19")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (18, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.execute("ALTER TABLE claims DROP COLUMN precision")
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT precision FROM claims WHERE id = ?",
+                ("claim-pre-v19",),
+            ).fetchone()
+            version = conn.execute(
+                "SELECT MAX(version) AS v FROM schema_version",
+            ).fetchone()["v"]
+
+        assert row is not None
+        assert row["precision"] == DEFAULT_CLAIM_PRECISION
+        assert version == CURRENT_SCHEMA_VERSION
+
+
+class TestClaimPrecisionPersistence:
+    def test_upsert_defaults_precision_to_one(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-default-precision",
+            claim_type="fact",
+            canonical_text="default precision",
+            payload={"k": "v"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT precision FROM claims WHERE id = ?",
+                ("claim-default-precision",),
+            ).fetchone()
+
+        assert row is not None
+        assert row["precision"] == DEFAULT_CLAIM_PRECISION
+
+    def test_upsert_preserves_precision_when_not_provided(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-preserve-precision",
+            claim_type="fact",
+            canonical_text="first write",
+            payload={"k": "v"},
+            precision=0.42,
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-preserve-precision",
+            claim_type="fact",
+            canonical_text="refresh without precision",
+            payload={"k": "v2"},
+            confidence=0.95,
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT precision, confidence FROM claims WHERE id = ?",
+                ("claim-preserve-precision",),
+            ).fetchone()
+
+        assert row is not None
+        assert row["precision"] == 0.42
+        assert row["confidence"] == 0.95
+
+    def test_upsert_updates_precision_when_explicit(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-update-precision",
+            claim_type="fact",
+            canonical_text="initial",
+            payload={"k": "v"},
+            precision=0.8,
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-update-precision",
+            claim_type="fact",
+            canonical_text="updated",
+            payload={"k": "v"},
+            precision=0.25,
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT precision FROM claims WHERE id = ?",
+                ("claim-update-precision",),
+            ).fetchone()
+
+        assert row is not None
+        assert row["precision"] == 0.25
+
+
+class TestClaimPrecisionCanonicalization:
+    def test_claim_from_record_defaults_precision(self):
+        claim = claim_from_record(
+            {"type": "fact", "subject": "Python", "info": "3.12"},
+        )
+        assert claim["precision"] == DEFAULT_CLAIM_PRECISION
+
+    def test_claim_from_record_clamps_precision(self):
+        claim = claim_from_record(
+            {
+                "type": "fact",
+                "subject": "Python",
+                "info": "3.12",
+                "precision": 1.5,
+            },
+        )
+        assert claim["precision"] == 1.0
+
+    def test_normalize_claim_precision_bounds(self):
+        assert normalize_claim_precision(None) == DEFAULT_CLAIM_PRECISION
+        assert normalize_claim_precision(-0.2) == 0.0
+        assert normalize_claim_precision(0.73) == 0.73
+
+
+class TestClaimPrecisionUpdates:
+    def _claim_precision(self, claim_id: str) -> float:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT precision FROM claims WHERE id = ?",
+                (claim_id,),
+            ).fetchone()
+        assert row is not None
+        return float(row["precision"])
+
+    def test_failure_outcome_lowers_precision(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-outcome-failure",
+            claim_type="solution",
+            canonical_text="run tests",
+            payload={"fix": "pytest"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        assert self._claim_precision("claim-outcome-failure") == DEFAULT_CLAIM_PRECISION
+
+        record_action_outcome(
+            action_summary="Run pytest",
+            outcome_type="failure",
+            source_claim_ids=["claim-outcome-failure"],
+            observed_at="2026-03-10T10:00:00+00:00",
+        )
+
+        assert self._claim_precision("claim-outcome-failure") == 0.88
+
+    def test_challenged_claim_lowers_precision(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-challenged",
+            claim_type="fact",
+            canonical_text="stale fact",
+            payload={"k": "v"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        mark_claims_challenged_by_ids(
+            ["claim-challenged"],
+            challenged_at="2026-03-10T10:00:00+00:00",
+        )
+
+        assert self._claim_precision("claim-challenged") == pytest.approx(0.69)
+
+    def test_contradiction_event_lowers_precision(self, tmp_data_dir):
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-contradiction",
+            claim_type="fact",
+            canonical_text="conflicting fact",
+            payload={"k": "v"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_event(
+            "claim-contradiction",
+            event_type="contradiction",
+            details={"role": "old"},
+            created_at="2026-03-10T10:00:00+00:00",
+        )
+
+        assert self._claim_precision("claim-contradiction") == 0.85

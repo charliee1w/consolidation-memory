@@ -39,7 +39,9 @@ _fts5_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 17
+CURRENT_SCHEMA_VERSION = 20
+
+_DEFAULT_CLAIM_PRECISION = 1.0
 
 _DEFAULT_NAMESPACE_SLUG = "default"
 _DEFAULT_NAMESPACE_SHARING_MODE = "private"
@@ -282,6 +284,16 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_action_outcome_refs_outcome ON action_outcome_refs(outcome_id)",
         "CREATE INDEX IF NOT EXISTS idx_action_outcome_refs_lookup ON action_outcome_refs(ref_type, ref_value)",
+    ],
+    18: [
+        "ALTER TABLE consolidation_metrics ADD COLUMN fast_path_hits INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE consolidation_metrics ADD COLUMN llm_fallbacks INTEGER NOT NULL DEFAULT 0",
+    ],
+    19: [
+        "ALTER TABLE claims ADD COLUMN precision REAL NOT NULL DEFAULT 1.0",
+    ],
+    20: [
+        "ALTER TABLE consolidation_scheduler ADD COLUMN last_trigger_breakdown TEXT",
     ],
 }
 
@@ -1013,6 +1025,8 @@ def _repair_schema_invariants(conn: sqlite3.Connection) -> None:
     """
     _apply_topic_storage_migration(conn)
     _apply_episode_index_visibility_migration(conn)
+    _apply_claim_precision_migration(conn)
+    _apply_scheduler_trigger_breakdown_migration(conn)
 
 
 def _apply_scope_migration(conn: sqlite3.Connection) -> None:
@@ -1258,6 +1272,42 @@ def _apply_episode_index_visibility_migration(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_indexed ON episodes(indexed)")
 
 
+def _apply_claim_precision_migration(conn: sqlite3.Connection) -> None:
+    """Apply schema v19: persisted trust precision on claims."""
+    _add_column_if_missing(
+        conn,
+        table_name="claims",
+        column_name="precision",
+        column_sql="precision REAL NOT NULL DEFAULT 1.0",
+    )
+
+
+def _apply_scheduler_trigger_breakdown_migration(conn: sqlite3.Connection) -> None:
+    """Apply schema v20: persisted utility breakdown for last consolidation trigger."""
+    _add_column_if_missing(
+        conn,
+        table_name="consolidation_scheduler",
+        column_name="last_trigger_breakdown",
+        column_sql="last_trigger_breakdown TEXT",
+    )
+
+
+def _serialize_trigger_breakdown(breakdown: Mapping[str, object] | None) -> str | None:
+    if breakdown is None:
+        return None
+    return json.dumps(dict(breakdown), separators=(",", ":"), sort_keys=True)
+
+
+def _deserialize_trigger_breakdown(raw: object) -> dict[str, object] | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 # ── Episode CRUD ─────────────────────────────────────────────────────────────
 
 def insert_episode(
@@ -1460,14 +1510,33 @@ def get_existing_record_ids(
     return {str(row["id"]) for row in rows}
 
 
-def get_unconsolidated_episodes(limit: int = 200, max_attempts: int = 5) -> list[dict[str, Any]]:
+def get_unconsolidated_episodes(
+    limit: int = 200,
+    max_attempts: int = 5,
+    priority_episode_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    priority_ids = _normalize_id_tokens(priority_episode_ids)
     with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT * FROM episodes
-               WHERE consolidated = 0 AND deleted = 0 AND indexed = 1 AND consolidation_attempts < ?
-               ORDER BY created_at DESC LIMIT ?""",
-            (max_attempts, limit),
-        ).fetchall()
+        if priority_ids:
+            priority_placeholders = ",".join("?" for _ in priority_ids)
+            rows = conn.execute(
+                f"""SELECT * FROM episodes
+                   WHERE consolidated = 0 AND deleted = 0 AND indexed = 1
+                     AND consolidation_attempts < ?
+                   ORDER BY
+                     CASE WHEN id IN ({priority_placeholders}) THEN 0 ELSE 1 END,
+                     created_at DESC
+                   LIMIT ?""",
+                [max_attempts, *priority_ids, limit],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM episodes
+                   WHERE consolidated = 0 AND deleted = 0 AND indexed = 1
+                     AND consolidation_attempts < ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (max_attempts, limit),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -2264,6 +2333,57 @@ def count_contradictions_since(since: str) -> int:
     return int(row["c"]) if row else 0
 
 
+def get_outcome_failure_rate_since(since: str) -> dict[str, int | float]:
+    """Return failure/total outcome counts and failure rate since observed_at."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT
+                   COUNT(*) AS total_count,
+                   COALESCE(
+                       SUM(CASE WHEN outcome_type = 'failure' THEN 1 ELSE 0 END),
+                       0
+                   ) AS failure_count
+               FROM action_outcomes
+               WHERE observed_at >= ?""",
+            (since,),
+        ).fetchone()
+    total_count = int(row["total_count"]) if row else 0
+    failure_count = int(row["failure_count"]) if row else 0
+    failure_rate = failure_count / total_count if total_count > 0 else 0.0
+    return {
+        "failure_count": failure_count,
+        "total_count": total_count,
+        "failure_rate": failure_rate,
+    }
+
+
+def get_failure_linked_episode_ids_since(since: str) -> frozenset[str]:
+    """Return episode IDs linked to failed outcomes via outcome or claim provenance."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT aos.source_episode_id AS episode_id
+               FROM action_outcome_sources aos
+               JOIN action_outcomes ao ON ao.id = aos.outcome_id
+               WHERE ao.outcome_type = 'failure'
+                 AND ao.observed_at >= ?
+                 AND aos.source_episode_id IS NOT NULL
+               UNION
+               SELECT DISTINCT cs.source_episode_id AS episode_id
+               FROM action_outcome_sources aos
+               JOIN action_outcomes ao ON ao.id = aos.outcome_id
+               JOIN claim_sources cs ON cs.claim_id = aos.source_claim_id
+               WHERE ao.outcome_type = 'failure'
+                 AND ao.observed_at >= ?
+                 AND cs.source_episode_id IS NOT NULL""",
+            (since, since),
+        ).fetchall()
+    return frozenset(
+        str(row["episode_id"])
+        for row in rows
+        if row and row["episode_id"]
+    )
+
+
 def update_tag_cooccurrence(tags: list[str]) -> None:
     """Update co-occurrence counts for all tag pairs in a set.
 
@@ -2523,6 +2643,69 @@ def get_record_count(include_expired: bool = False) -> int:
 
 # -- Claim Graph CRUD ---------------------------------------------------------
 
+def claim_exists(claim_id: str) -> bool:
+    """Return True when a claim row already exists."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT 1 FROM claims WHERE id = ? LIMIT 1", (claim_id,)).fetchone()
+    return row is not None
+
+
+def _bound_claim_precision(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+_PRECISION_REFRESH_EVENT_TYPES = frozenset({
+    "contradiction",
+    "challenged",
+    "code_drift_detected",
+})
+
+
+def update_claim_precision(claim_id: str, precision: float) -> None:
+    """Persist a bounded precision value for one claim."""
+    token = str(claim_id or "").strip()
+    if not token:
+        return
+    bounded = _bound_claim_precision(precision)
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE claims SET precision = ?, updated_at = ? WHERE id = ?",
+            (bounded, _now(), token),
+        )
+
+
+def recompute_claim_precision(claim_id: str) -> float | None:
+    """Recompute and persist claim precision from aggregated trust evidence."""
+    from consolidation_memory.query_semantics import claim_precision_from_evidence
+
+    token = str(claim_id or "").strip()
+    if not token:
+        return None
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT status FROM claims WHERE id = ?",
+            (token,),
+        ).fetchone()
+    if row is None:
+        return None
+
+    evidence = get_claim_outcome_evidence([token]).get(token, {})
+    new_precision = claim_precision_from_evidence(
+        evidence,
+        claim_status=str(row["status"]),
+    )
+    update_claim_precision(token, new_precision)
+    return new_precision
+
+
+def _refresh_claim_precisions(claim_ids: Sequence[str]) -> None:
+    """Recompute precision for each unique claim ID."""
+    for claim_id in dict.fromkeys(str(claim_id or "").strip() for claim_id in claim_ids):
+        if claim_id:
+            recompute_claim_precision(claim_id)
+
+
 def upsert_claim(
     claim_id: str,
     claim_type: str,
@@ -2532,27 +2715,42 @@ def upsert_claim(
     confidence: float = 0.8,
     valid_from: str | None = None,
     valid_until: str | None = None,
+    precision: float | None = None,
 ) -> str:
-    """Insert or update a claim row by ID."""
+    """Insert or update a claim row by ID.
+
+    When ``precision`` is omitted on conflict, the existing stored precision is
+    preserved so consolidation refreshes do not reset trust adjustments.
+    """
     now = _now()
     payload_text = payload if isinstance(payload, str) else json.dumps(payload or {})
     valid_from_ts = valid_from or now
+    insert_precision = (
+        _DEFAULT_CLAIM_PRECISION
+        if precision is None
+        else _bound_claim_precision(precision)
+    )
+    update_sets = [
+        "claim_type = excluded.claim_type",
+        "canonical_text = excluded.canonical_text",
+        "payload = excluded.payload",
+        "status = excluded.status",
+        "confidence = excluded.confidence",
+        "valid_from = excluded.valid_from",
+        "valid_until = excluded.valid_until",
+        "updated_at = excluded.updated_at",
+    ]
+    if precision is not None:
+        update_sets.append("precision = excluded.precision")
 
     with get_connection() as conn:
         conn.execute(
-            """INSERT INTO claims
+            f"""INSERT INTO claims
                (id, claim_type, canonical_text, payload, status, confidence,
-                valid_from, valid_until, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                valid_from, valid_until, created_at, updated_at, precision)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
-                   claim_type = excluded.claim_type,
-                   canonical_text = excluded.canonical_text,
-                   payload = excluded.payload,
-                   status = excluded.status,
-                   confidence = excluded.confidence,
-                   valid_from = excluded.valid_from,
-                   valid_until = excluded.valid_until,
-                   updated_at = excluded.updated_at""",
+                   {", ".join(update_sets)}""",
             (
                 claim_id,
                 claim_type,
@@ -2564,6 +2762,7 @@ def upsert_claim(
                 valid_until,
                 now,
                 now,
+                insert_precision,
             ),
         )
     return claim_id
@@ -3170,6 +3369,8 @@ def insert_claim_event(
                VALUES (?, ?, ?, ?, ?)""",
             (eid, claim_id, event_type, details_text, ts),
         )
+    if event_type in _PRECISION_REFRESH_EVENT_TYPES:
+        recompute_claim_precision(claim_id)
     return eid
 
 
@@ -3211,6 +3412,12 @@ def insert_claim_events(events: Sequence[Mapping[str, Any]]) -> list[str]:
             normalized_rows,
         )
 
+    refresh_ids = [
+        claim_id
+        for _, claim_id, event_type, _, _ in normalized_rows
+        if event_type in _PRECISION_REFRESH_EVENT_TYPES
+    ]
+    _refresh_claim_precisions(refresh_ids)
     return inserted_ids
 
 
@@ -3434,6 +3641,7 @@ def mark_claims_challenged_by_ids(
             )
             challenged_ids.extend(active_ids)
 
+    _refresh_claim_precisions(challenged_ids)
     return sorted(challenged_ids)
 
 
@@ -3513,6 +3721,7 @@ def mark_claims_challenged_by_anchors(
             ],
         )
 
+    _refresh_claim_precisions(claim_ids)
     return claim_ids
 
 
@@ -3720,6 +3929,7 @@ def mark_consolidation_scheduler_started(
     *,
     trigger_reason: str,
     utility_score: float | None = None,
+    trigger_breakdown: Mapping[str, object] | None = None,
     started_at: str | None = None,
 ) -> None:
     """Persist scheduler state when a consolidation run starts."""
@@ -3729,6 +3939,7 @@ def mark_consolidation_scheduler_started(
 
     ts = started_at or _now()
     score_value = float(utility_score) if utility_score is not None else None
+    breakdown_json = _serialize_trigger_breakdown(trigger_breakdown)
     with get_connection() as conn:
         _ensure_consolidation_scheduler_row(conn)
         conn.execute(
@@ -3738,6 +3949,7 @@ def mark_consolidation_scheduler_started(
                    last_error = NULL,
                    last_trigger = ?,
                    last_utility_score = ?,
+                   last_trigger_breakdown = ?,
                    updated_at = ?
                WHERE id = ?
                  AND (lease_owner = ? OR lease_owner IS NULL)""",
@@ -3746,6 +3958,7 @@ def mark_consolidation_scheduler_started(
                 RUN_STATUS_RUNNING,
                 trigger_reason,
                 score_value,
+                breakdown_json,
                 ts,
                 _SCHEDULER_ROW_ID,
                 owner_token,
@@ -4056,6 +4269,7 @@ def record_action_outcome(
                 ref_rows,
             )
 
+    _refresh_claim_precisions(claim_ids)
     return resolved_outcome_id
 
 
@@ -5044,6 +5258,8 @@ def insert_consolidation_metrics(
     topics_created: int,
     topics_updated: int,
     episodes_pruned: int,
+    fast_path_hits: int = 0,
+    llm_fallbacks: int = 0,
 ) -> str:
     """Insert a consolidation run metrics record."""
     metric_id = str(uuid.uuid4())
@@ -5052,11 +5268,25 @@ def insert_consolidation_metrics(
             "INSERT INTO consolidation_metrics "
             "(id, run_id, timestamp, clusters_succeeded, clusters_failed, "
             "avg_confidence, episodes_processed, duration_seconds, api_calls, "
-            "topics_created, topics_updated, episodes_pruned) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (metric_id, run_id, _now(), clusters_succeeded, clusters_failed,
-             avg_confidence, episodes_processed, duration_seconds, api_calls,
-             topics_created, topics_updated, episodes_pruned),
+            "topics_created, topics_updated, episodes_pruned, fast_path_hits, "
+            "llm_fallbacks) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                metric_id,
+                run_id,
+                _now(),
+                clusters_succeeded,
+                clusters_failed,
+                avg_confidence,
+                episodes_processed,
+                duration_seconds,
+                api_calls,
+                topics_created,
+                topics_updated,
+                episodes_pruned,
+                max(0, int(fast_path_hits)),
+                max(0, int(llm_fallbacks)),
+            ),
         )
     return metric_id
 

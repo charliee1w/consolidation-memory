@@ -35,7 +35,9 @@ from consolidation_memory.database import (
 from consolidation_memory import backends
 from consolidation_memory import claim_cache
 from consolidation_memory.knowledge_paths import resolve_topic_path
+from consolidation_memory.claim_graph import claim_from_record
 from consolidation_memory.query_semantics import (
+    claim_precision_multiplier as _claim_precision_multiplier,
     claim_query_rank_profile as _claim_query_rank_profile,
     claim_reliability_profile as _claim_reliability_profile,
     coerce_numeric_float as _coerce_numeric_float,
@@ -405,6 +407,33 @@ def _get_claim_search_candidates(
     return collected[:fetch_limit]
 
 
+def _claim_precisions_by_id(claim_ids: list[str]) -> dict[str, float]:
+    """Load persisted precision values for a set of claim IDs."""
+    unique_ids = sorted({str(claim_id).strip() for claim_id in claim_ids if str(claim_id).strip()})
+    if not unique_ids:
+        return {}
+    try:
+        with get_connection() as conn:
+            placeholders = ",".join("?" for _ in unique_ids)
+            rows = conn.execute(
+                f"SELECT id, precision FROM claims WHERE id IN ({placeholders})",
+                unique_ids,
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {str(row["id"]): float(row["precision"]) for row in rows}
+
+
+def _record_claim_id(record_content: object) -> str | None:
+    """Resolve the deterministic claim ID for a structured record payload."""
+    if not isinstance(record_content, dict):
+        return None
+    try:
+        return str(claim_from_record(record_content)["id"])
+    except (TypeError, ValueError):
+        return None
+
+
 def _search_claims(
     query: str,
     query_vec: np.ndarray | None = None,
@@ -499,6 +528,7 @@ def _search_claims(
             semantic_weight=cfg.RECORDS_SEMANTIC_WEIGHT,
             keyword_weight=cfg.RECORDS_KEYWORD_WEIGHT,
             strategy_reuse_multiplier=strategy_multiplier,
+            precision=float(claim.get("precision", 1.0) or 1.0),
         )
         relevance = _coerce_numeric_float(
             ranking_profile.get("score"),
@@ -1100,6 +1130,21 @@ def _search_records(
     # Detect task-oriented queries that benefit from procedure records
     _is_task_query = bool(query_words & _TASK_INDICATORS)
 
+    record_claim_ids: list[str] = []
+    parsed_contents: list[dict] = []
+    for rec in records:
+        try:
+            content = json.loads(rec["content"]) if isinstance(rec["content"], str) else rec["content"]
+        except (json.JSONDecodeError, TypeError):
+            content = {}
+        if not isinstance(content, dict):
+            content = {}
+        parsed_contents.append(content)
+        claim_id = _record_claim_id(content)
+        if claim_id:
+            record_claim_ids.append(claim_id)
+    precision_by_claim_id = _claim_precisions_by_id(record_claim_ids)
+
     scored_records = []
     for i, rec in enumerate(records):
         sem_score = float(sims[i]) if sims is not None else 0.0
@@ -1123,13 +1168,13 @@ def _search_records(
         rec_access = rec.get("access_count", 0)
         relevance *= 1.0 + math.log1p(rec_access) * cfg.CONSOLIDATION_PRIORITY_WEIGHTS["access_frequency"]
 
+        content = parsed_contents[i]
+        claim_id = _record_claim_id(content)
+        if claim_id:
+            relevance *= _claim_precision_multiplier(precision_by_claim_id.get(claim_id))
+
         if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
             continue
-
-        try:
-            content = json.loads(rec["content"]) if isinstance(rec["content"], str) else rec["content"]
-        except (json.JSONDecodeError, TypeError):
-            content = {}
 
         # Parse source_episodes for deduplication downstream
         src_eps: list[str] = parse_json_list(rec.get("source_episodes"))

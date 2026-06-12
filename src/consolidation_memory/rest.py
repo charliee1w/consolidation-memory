@@ -608,7 +608,7 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
 
     @app.get("/memory/status")
     async def status():
-        """Get memory system statistics."""
+        """Get memory system statistics, including fast-path consolidation metrics."""
         return await _execute("memory_status", {})
 
     @app.delete("/memory/episodes/{episode_id}")

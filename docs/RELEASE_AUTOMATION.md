@@ -4,18 +4,22 @@ This repository supports automated stable releases from `main`.
 
 ## Workflow
 
+- Changelog builder: `scripts/changelog_builder.py`
+- Changelog updater: `scripts/update_changelog.py`
 - Criteria evaluator: `scripts/release_criteria.py`
-- Automation workflow: `.github/workflows/release-on-main.yml`
+- Changelog workflow: `.github/workflows/changelog-on-main.yml`
+- Release workflow: `.github/workflows/release-on-main.yml`
 - Publish workflow: `.github/workflows/publish.yml` (tag-driven)
 - Release script: `scripts/release.py`
 
 Flow:
 
 1. A push lands on `main`.
-2. `release-on-main.yml` evaluates commits since the latest tag.
-3. If eligible, it runs `scripts/release.py --bump <major|minor|patch>`.
-4. The script updates version/changelog, commits, tags (`vX.Y.Z`), and pushes.
-5. The tag triggers `publish.yml`, which runs full gates and publishes release artifacts.
+2. `changelog-on-main.yml` refreshes the `## Unreleased` section in `CHANGELOG.md` and commits it with `[skip release]` when needed.
+3. `release-on-main.yml` evaluates commits since the latest tag.
+4. If eligible, it runs `scripts/release.py --bump <major|minor|patch>`.
+5. The script bumps `pyproject.toml`, promotes `## Unreleased` into a versioned entry (or falls back to git commits since the tag), commits, tags (`vX.Y.Z`), and pushes.
+6. The tag triggers `publish.yml`, which runs full gates and publishes release artifacts.
 
 ## Quick Setup Checklist
 
@@ -23,12 +27,30 @@ Do this once per repository:
 
 1. Create a classic GitHub PAT with `repo` scope.
 2. Add repo secret `RELEASE_AUTOMATION_PAT`.
-3. Keep this PAT available to `release-on-main.yml` only (least privilege where possible).
-4. Verify with a dry run:
-   - Push a conventional commit (for example `fix: ...`) to `main`, or
-   - Trigger `workflow_dispatch` with `patch`, `minor`, or `major`.
+3. Keep this PAT available to `changelog-on-main.yml` and `release-on-main.yml` (least privilege where possible).
+4. Verify changelog automation:
+   - Push a conventional commit (for example `fix: ...`) to `main`.
+   - Confirm `Update Changelog On Main` commits an updated `## Unreleased` section when needed.
+5. Verify release automation:
+   - Trigger `workflow_dispatch` on `Automated Release On Main` with `patch`, `minor`, or `major`, or
+   - Push another releasable conventional commit and wait for the release job.
 
-If the `release` job appears and runs in `Automated Release On Main`, setup is complete.
+If both workflows run successfully, setup is complete.
+
+## Local Changelog Preview
+
+Refresh the unreleased section without releasing:
+
+```bash
+python scripts/update_changelog.py --dry-run
+python scripts/update_changelog.py
+```
+
+Commit locally when ready:
+
+```bash
+python scripts/update_changelog.py --commit
+```
 
 ## Criteria
 

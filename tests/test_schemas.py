@@ -77,6 +77,8 @@ class TestSchemaStructure:
         assert "trust posture" in description
         assert "claim coverage" in description
         assert "provenance coverage" in description
+        assert "fast_path_hits" in description
+        assert "llm_fallbacks" in description
 
     def test_forget_schema_requires_episode_id(self):
         forget = next(t for t in openai_tools if t["function"]["name"] == "memory_forget")
@@ -257,10 +259,21 @@ class TestDispatch:
 
     def test_dispatch_status(self):
         client = MagicMock()
-        client.status.return_value = StatusResult(version="0.1.0", embedding_backend="fastembed")
+        client.status.return_value = StatusResult(
+            version="0.1.0",
+            embedding_backend="fastembed",
+            fast_path_hits=2,
+            llm_fallbacks=1,
+        )
 
         result = dispatch_tool_call(client, "memory_status", {})
         assert result["version"] == "0.1.0"
+        assert result["fast_path_hits"] == 2
+        assert result["llm_fallbacks"] == 1
+        client.status.assert_called_once_with(lightweight=None)
+
+        dispatch_tool_call(client, "memory_status", {"lightweight": True})
+        client.status.assert_called_with(lightweight=True)
 
     def test_dispatch_forget(self):
         client = MagicMock()

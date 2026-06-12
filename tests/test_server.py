@@ -468,6 +468,21 @@ class TestMCPServerLifecycle:
                 with patch("consolidation_memory.server._WARMUP_START_DELAY_SECONDS", 0.0):
                     asyncio.run(server._warm_client_background())
 
+    def test_warm_recall_caches_skips_record_and_claim_prime_by_default(self):
+        import consolidation_memory.server as server
+
+        with (
+            patch("consolidation_memory.backends.get_embedding_backend") as mock_embed,
+            patch("consolidation_memory.topic_cache.get_topic_vecs", return_value=([], None)),
+            patch("consolidation_memory.record_cache.get_record_vecs") as mock_records,
+            patch("consolidation_memory.claim_cache.warm_active_claim_vecs") as mock_claims,
+        ):
+            server._warm_recall_caches()
+
+        mock_embed.assert_called_once()
+        mock_records.assert_not_called()
+        mock_claims.assert_not_called()
+
     def test_run_server_acquires_and_releases_stdio_singleton_guard(self):
         import consolidation_memory.server as server
 

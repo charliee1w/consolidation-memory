@@ -597,7 +597,9 @@ def execute_tool_call(
 
     if name == "memory_status":
         client = _require_client(client, name)
-        return dataclasses.asdict(client.status())
+        lightweight_arg = arguments.get("lightweight")
+        lightweight = bool(lightweight_arg) if lightweight_arg is not None else None
+        return dataclasses.asdict(client.status(lightweight=lightweight))
 
     if name == "memory_forget":
         client = _require_client(client, name)

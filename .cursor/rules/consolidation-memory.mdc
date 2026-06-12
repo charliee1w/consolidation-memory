@@ -1,0 +1,34 @@
+---
+description: Consolidation-memory development rules — trust invariants, milestone order, verification
+alwaysApply: true
+---
+
+# consolidation-memory agent rules
+
+You are working on **consolidation-memory**: a local-first, trust-calibrated belief layer for coding agents.
+
+## Startup (every session)
+
+1. Read `docs/AGENT_GOAL.md` — pick the **first unchecked task** in the current milestone unless the user specifies otherwise.
+2. Read `docs/VIBECODING.md` — follow trust invariants and task sizing; this overrides vague instructions.
+3. Call MCP `memory_recall` with the active goal before coding.
+4. Read `AGENTS.md` for session workflow and verification policy.
+
+## Non-negotiable
+
+- Preserve temporal correctness, provenance, contradiction visibility, drift auditability, scope isolation, surface parity.
+- Prefer **deterministic** consolidation (`consolidation/fast_path.py`) over new LLM prompts.
+- One focused slice per session (~300 lines max for trust-impacting changes).
+- Add tests; run targeted `pytest` + `ruff check src tests` before claiming done.
+- Update `docs/AGENT_GOAL.md` when a backlog item is completed.
+
+## Do not
+
+- Rewrite `client.py` or `consolidation/engine.py` in one pass.
+- Ship schema changes without `CURRENT_SCHEMA_VERSION` migration.
+- Add MCP/REST features without `schemas.py` parity.
+- Skip tests or novelty considerations for trust behavior changes.
+
+## Mantra
+
+Vibe deterministic belief maintenance; LLMs only for unstructured residue; tests prove trust.

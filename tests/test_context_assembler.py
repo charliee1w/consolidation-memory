@@ -160,6 +160,95 @@ class TestConfidenceAwareRanking:
         low = next(r for r in records if r["id"] == "rec-low")
         assert high["relevance"] > low["relevance"]
 
+    def test_high_precision_record_ranks_higher(self, tmp_data_dir):
+        """Records linked to higher-precision claims should rank above peers."""
+        import numpy as np
+
+        from consolidation_memory.claim_graph import claim_from_record
+        from consolidation_memory.context_assembler import _search_records
+        from consolidation_memory.database import ensure_schema, insert_knowledge_records, upsert_claim, upsert_knowledge_topic
+
+        ensure_schema()
+        high_content = {"type": "fact", "subject": "Python runtime", "info": "3.12"}
+        low_content = {"type": "fact", "subject": "Python runtime", "info": "3.11"}
+        high_claim = claim_from_record(high_content)
+        low_claim = claim_from_record(low_content)
+        upsert_claim(
+            claim_id=high_claim["id"],
+            claim_type=high_claim["claim_type"],
+            canonical_text=high_claim["canonical_text"],
+            payload=high_claim["payload"],
+            precision=1.0,
+        )
+        upsert_claim(
+            claim_id=low_claim["id"],
+            claim_type=low_claim["claim_type"],
+            canonical_text=low_claim["canonical_text"],
+            payload=low_claim["payload"],
+            precision=0.8,
+        )
+        topic_id = upsert_knowledge_topic(
+            filename="python-runtime.md",
+            title="Python runtime",
+            summary="Runtime facts",
+            source_episodes=[],
+            fact_count=2,
+        )
+        insert_knowledge_records(
+            topic_id,
+            [
+                {
+                    "record_type": "fact",
+                    "content": high_content,
+                    "embedding_text": "python runtime version",
+                    "confidence": 0.8,
+                },
+                {
+                    "record_type": "fact",
+                    "content": low_content,
+                    "embedding_text": "python runtime version",
+                    "confidence": 0.8,
+                },
+            ],
+            source_episodes=[],
+        )
+
+        query_vec = np.ones(384, dtype=np.float32)
+        query_vec = query_vec / np.linalg.norm(query_vec)
+        high_conf_rec = {
+            "id": "rec-high-precision",
+            "record_type": "fact",
+            "content": high_content,
+            "embedding_text": "python runtime version",
+            "topic_title": "Python runtime",
+            "topic_filename": "python-runtime.md",
+            "confidence": 0.8,
+            "source_episodes": "[]",
+        }
+        low_conf_rec = {
+            "id": "rec-low-precision",
+            "record_type": "fact",
+            "content": low_content,
+            "embedding_text": "python runtime version",
+            "topic_title": "Python runtime",
+            "topic_filename": "python-runtime.md",
+            "confidence": 0.8,
+            "source_episodes": "[]",
+        }
+        rec_vecs = np.stack([query_vec, query_vec])
+
+        with (
+            patch("consolidation_memory.context_assembler.record_cache") as mock_rc,
+            patch("consolidation_memory.context_assembler.increment_record_access"),
+        ):
+            mock_rc.get_record_vecs.return_value = ([high_conf_rec, low_conf_rec], rec_vecs)
+            records, _ = _search_records("python runtime version", query_vec)
+
+        assert len(records) == 2
+        high = next(r for r in records if r["id"] == "rec-high-precision")
+        low = next(r for r in records if r["id"] == "rec-low-precision")
+        assert high["relevance"] > low["relevance"]
+
 
 class TestTaskIndicators:
     """Test task-oriented query detection."""

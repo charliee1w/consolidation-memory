@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from consolidation_memory.claim_graph import DEFAULT_CLAIM_PRECISION
 from consolidation_memory.query_semantics import (
+    claim_precision_from_evidence,
+    claim_precision_multiplier,
     claim_query_rank_profile,
     claim_reliability_profile,
     coerce_numeric_float,
@@ -342,3 +345,61 @@ def test_claim_query_rank_profile_prefers_supported_outcomes_on_equal_similarity
 
     assert supported["score"] > unsupported["score"]
     assert supported["components"]["outcome_support"] > unsupported["components"]["outcome_support"]
+
+
+def test_claim_precision_multiplier_defaults_to_full():
+    assert claim_precision_multiplier(None) == DEFAULT_CLAIM_PRECISION
+    assert claim_precision_multiplier(0.42) == 0.42
+
+
+def test_claim_query_rank_profile_demotes_low_precision_claims():
+    reliability = claim_reliability_profile(
+        {"validation_count": 2, "success_count": 2},
+        claim_status="active",
+    )
+    shared_kwargs = {
+        "semantic_similarity": 0.8,
+        "keyword_relevance": 0.9,
+        "phrase_match": 1.0,
+        "confidence": 0.9,
+        "reliability": reliability,
+        "evidence": {"validation_count": 2, "success_count": 2},
+        "claim_status": "active",
+        "valid_from": "2025-01-01T00:00:00+00:00",
+        "valid_until": None,
+        "as_of": "2026-03-13T00:00:00+00:00",
+        "semantic_weight": 0.9,
+        "keyword_weight": 0.1,
+    }
+    high_precision = claim_query_rank_profile(**shared_kwargs, precision=1.0)
+    low_precision = claim_query_rank_profile(**shared_kwargs, precision=0.25)
+
+    assert high_precision["score"] > low_precision["score"]
+    assert low_precision["components"]["precision_multiplier"] == 0.25
+
+
+def test_claim_precision_defaults_to_full_without_evidence():
+    assert claim_precision_from_evidence({}, claim_status="active") == DEFAULT_CLAIM_PRECISION
+
+
+def test_claim_precision_lowers_on_failures_and_contradictions():
+    baseline = claim_precision_from_evidence({}, claim_status="active")
+    degraded = claim_precision_from_evidence(
+        {
+            "failure_count": 2,
+            "contradiction_count": 1,
+            "drift_event_count": 1,
+            "challenged_count": 1,
+        },
+        claim_status="challenged",
+    )
+    assert degraded < baseline
+    assert degraded == pytest.approx(0.3075)
+
+
+def test_claim_precision_success_outcomes_do_not_exceed_one():
+    boosted = claim_precision_from_evidence(
+        {"success_count": 10, "partial_success_count": 5},
+        claim_status="active",
+    )
+    assert boosted == DEFAULT_CLAIM_PRECISION

@@ -17,12 +17,20 @@ import re
 import subprocess  # nosec B404
 import sys
 import tempfile
-from datetime import date
 from pathlib import Path
 from typing import NamedTuple
 from urllib import error, request
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.changelog_builder import (  # noqa: E402
+    collect_release_subjects,
+    extract_unreleased_subjects,
+    insert_version_entry,
+    remove_unreleased_section,
+)
 PYPROJECT = ROOT / "pyproject.toml"
 CHANGELOG = ROOT / "CHANGELOG.md"
 PACKAGE_NAME = "consolidation-memory"
@@ -130,41 +138,20 @@ def collect_release_notes(previous_tag: str | None) -> list[str]:
     if previous_tag:
         cmd.append(f"{previous_tag}..HEAD")
     result = run(cmd, capture=True)
-    notes: list[str] = []
-    seen: set[str] = set()
-    for line in result.stdout.splitlines():
-        subject = line.strip()
-        if not subject:
-            continue
-        if re.match(r"^v\d+\.\d+\.\d+\b", subject):
-            continue
-        if subject in seen:
-            continue
-        seen.add(subject)
-        notes.append(subject)
-    notes.reverse()
-    return notes[:12]
-
-
-def render_changelog_entry(new_version: str, notes: list[str]) -> str:
-    today = date.today().isoformat()
-    cleaned = [note.strip() for note in notes if note.strip()]
-    if not cleaned:
-        cleaned = ["Maintenance release."]
-    bullets = "\n".join(f"- {note}" for note in cleaned)
-    return f"## {new_version} - {today}\n\n### Highlights\n\n{bullets}\n"
+    subjects = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    subjects.reverse()
+    return collect_release_subjects(subjects)
 
 
 def add_changelog_entry(new_version: str, notes: list[str]) -> bool:
     text = CHANGELOG.read_text(encoding="utf-8")
-    marker = "# Changelog\n"
-    if marker not in text:
-        raise RuntimeError("Could not find '# Changelog' header in CHANGELOG.md")
-    if re.search(rf"^##\s+{re.escape(new_version)}\b", text, flags=re.MULTILINE):
+    unreleased_notes = extract_unreleased_subjects(text)
+    release_notes = unreleased_notes or notes
+    updated, inserted = insert_version_entry(text, new_version, release_notes)
+    if not inserted:
         print(f"  Changelog already has entry for {new_version}, skipping insertion")
         return False
-    entry = render_changelog_entry(new_version, notes)
-    updated = text.replace(marker, f"{marker}\n{entry}\n", 1)
+    updated = remove_unreleased_section(updated)
     CHANGELOG.write_text(updated, encoding="utf-8")
     return True
 

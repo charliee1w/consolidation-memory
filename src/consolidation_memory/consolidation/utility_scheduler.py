@@ -9,6 +9,7 @@ UTILITY_WEIGHT_KEYS = (
     "recall_miss_fallback",
     "contradiction_spike",
     "challenged_claim_backlog",
+    "outcome_failure_rate",
 )
 
 
@@ -31,6 +32,7 @@ def compute_utility_score(
     recall_fallback_count: int,
     contradiction_count: int,
     challenged_claim_backlog: int,
+    outcome_failure_rate: float,
     weights: Mapping[str, float],
     backlog_target: int,
     recall_signal_target: int,
@@ -51,6 +53,7 @@ def compute_utility_score(
         "recall_miss_fallback": _clamp01(recall_signal_raw / safe_recall_target),
         "contradiction_spike": _clamp01(max(0, contradiction_count) / safe_contradiction_target),
         "challenged_claim_backlog": _clamp01(max(0, challenged_claim_backlog) / safe_challenged_target),
+        "outcome_failure_rate": _clamp01(max(0.0, outcome_failure_rate)),
     }
 
     components = {

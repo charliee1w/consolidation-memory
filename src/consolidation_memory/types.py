@@ -608,6 +608,231 @@ class ConsolidationQuality(TypedDict):
     avg_confidence: float
     total_api_calls: int
     total_episodes_processed: int
+    total_fast_path_hits: int
+    total_llm_fallbacks: int
+    fast_path_rate: float
+
+
+class ConsolidationUtilityBreakdown(TypedDict):
+    """Utility score snapshot used to explain consolidation scheduling."""
+
+    score: float
+    normalized_signals: dict[str, float]
+    weighted_components: dict[str, float]
+    raw_signals: dict[str, object]
+
+
+class ConsolidationUtilityComponent(TypedDict):
+    """One weighted utility signal contribution."""
+
+    signal: str
+    weighted: float
+    normalized: float
+
+
+class ConsolidationRunDecision(TypedDict):
+    """Whether consolidation should run now and why."""
+
+    should_run: bool
+    reason: str
+    explanation: str
+    dominant_components: list[ConsolidationUtilityComponent]
+
+
+class ConsolidationLastRunTrigger(TypedDict, total=False):
+    """Persisted trigger context from the most recent consolidation start."""
+
+    reason: str
+    explanation: str
+    utility_score: float
+    breakdown: ConsolidationUtilityBreakdown
+
+
+_UTILITY_SIGNAL_LABELS: dict[str, str] = {
+    "unconsolidated_backlog": "pending episodes",
+    "recall_miss_fallback": "recall misses/fallbacks",
+    "contradiction_spike": "recent contradictions",
+    "challenged_claim_backlog": "challenged claims",
+    "outcome_failure_rate": "action outcome failures",
+}
+
+_TRIGGER_REASON_LABELS: dict[str, str] = {
+    "interval": "scheduled interval elapsed",
+    "utility": "utility score crossed threshold",
+    "backlog_pressure": "unconsolidated backlog force threshold reached",
+    "challenged_backlog_pressure": "challenged-claim backlog force threshold reached",
+    "manual": "manual consolidation request",
+    "none": "no trigger conditions met",
+}
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return default
+
+
+def top_weighted_utility_components(
+    weighted_components: Mapping[str, float] | None,
+    *,
+    normalized_signals: Mapping[str, float] | None = None,
+    limit: int = 3,
+) -> list[ConsolidationUtilityComponent]:
+    """Return the highest-weight utility contributors for explainability."""
+    if not weighted_components:
+        return []
+    ranked = sorted(
+        weighted_components.items(),
+        key=lambda item: (-item[1], item[0]),
+    )
+    components: list[ConsolidationUtilityComponent] = []
+    for signal, weighted in ranked[: max(1, limit)]:
+        if weighted <= 0:
+            continue
+        normalized = 0.0
+        if normalized_signals is not None:
+            normalized = _coerce_float(normalized_signals.get(signal))
+        components.append(
+            {
+                "signal": signal,
+                "weighted": round(weighted, 6),
+                "normalized": round(normalized, 6),
+            }
+        )
+    return components
+
+
+def _format_component_drivers(
+    components: list[ConsolidationUtilityComponent],
+) -> str:
+    if not components:
+        return ""
+    rendered = [
+        f"{_UTILITY_SIGNAL_LABELS.get(item['signal'], item['signal'])} "
+        f"(weighted {item['weighted']:.3f})"
+        for item in components
+    ]
+    return "Top drivers: " + ", ".join(rendered) + "."
+
+
+def build_consolidation_trigger_explanation(
+    *,
+    trigger_reason: str,
+    utility_score: float | None = None,
+    threshold: float | None = None,
+    weighted_components: Mapping[str, float] | None = None,
+    normalized_signals: Mapping[str, float] | None = None,
+    raw_signals: Mapping[str, object] | None = None,
+    force_thresholds: Mapping[str, int] | None = None,
+) -> str:
+    """Build a human-readable explanation for a consolidation trigger decision."""
+    reason = trigger_reason or "none"
+    label = _TRIGGER_REASON_LABELS.get(reason, reason.replace("_", " "))
+    dominant = top_weighted_utility_components(
+        weighted_components,
+        normalized_signals=normalized_signals,
+        limit=3,
+    )
+    driver_text = _format_component_drivers(dominant)
+
+    if reason == "manual":
+        return "Consolidation triggered by a manual consolidate() call."
+
+    if reason == "none":
+        if utility_score is not None and threshold is not None:
+            return (
+                f"Consolidation not triggered ({label}); "
+                f"utility score {utility_score:.3f} is below threshold {threshold:.3f}."
+            )
+        return f"Consolidation not triggered ({label})."
+
+    if reason == "interval":
+        base = f"Consolidation triggered because the {label}."
+        return f"{base} {driver_text}".strip() if driver_text else base
+
+    if reason == "utility":
+        score_text = (
+            f"utility score {utility_score:.3f} met or exceeded threshold {threshold:.3f}"
+            if utility_score is not None and threshold is not None
+            else "utility score met the configured threshold"
+        )
+        base = f"Consolidation triggered because {score_text}."
+        return f"{base} {driver_text}".strip()
+
+    if reason == "backlog_pressure":
+        backlog = _coerce_int(raw_signals.get("unconsolidated_backlog") if raw_signals else 0)
+        force_threshold = _coerce_int(
+            force_thresholds.get("unconsolidated_backlog") if force_thresholds else 0
+        )
+        if force_threshold > 0:
+            base = (
+                "Consolidation triggered because pending episode backlog "
+                f"({backlog}) reached the force threshold ({force_threshold})."
+            )
+        else:
+            base = f"Consolidation triggered because {label}."
+        return f"{base} {driver_text}".strip()
+
+    if reason == "challenged_backlog_pressure":
+        challenged = _coerce_int(
+            raw_signals.get("challenged_claim_backlog") if raw_signals else 0
+        )
+        force_threshold = _coerce_int(
+            force_thresholds.get("challenged_claim_backlog") if force_thresholds else 0
+        )
+        if force_threshold > 0:
+            base = (
+                "Consolidation triggered because challenged-claim backlog "
+                f"({challenged}) reached the force threshold ({force_threshold})."
+            )
+        else:
+            base = f"Consolidation triggered because {label}."
+        return f"{base} {driver_text}".strip()
+
+    base = f"Consolidation triggered because {label}."
+    return f"{base} {driver_text}".strip() if driver_text else base
+
+
+def parse_consolidation_utility_breakdown(
+    payload: Mapping[str, object] | None,
+) -> ConsolidationUtilityBreakdown | None:
+    """Normalize a utility snapshot dict for status output."""
+    if payload is None:
+        return None
+    score = payload.get("score")
+    normalized = payload.get("normalized_signals")
+    weighted = payload.get("weighted_components")
+    raw = payload.get("raw_signals")
+    if not isinstance(score, (int, float)):
+        return None
+    if not isinstance(normalized, dict) or not isinstance(weighted, dict):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "score": round(float(score), 6),
+        "normalized_signals": {
+            str(key): round(_coerce_float(value), 6)
+            for key, value in normalized.items()
+        },
+        "weighted_components": {
+            str(key): round(_coerce_float(value), 6)
+            for key, value in weighted.items()
+        },
+        "raw_signals": dict(raw),
+    }
 
 
 class ConsolidationReport(TypedDict, total=False):
@@ -629,7 +854,11 @@ class ConsolidationReport(TypedDict, total=False):
     episodes_pruned: int
     surprise_adjusted: int
     api_calls: int
+    fast_path_hits: int
+    llm_fallbacks: int
     failed_episode_ids: list[str]
+    failure_linked_episodes_loaded: int
+    clusters_prioritized_by_failures: int
     # Present in early exit / error cases
     status: str
     message: str
@@ -691,6 +920,8 @@ class StatusResult:
     health: HealthStatus | None = None
     consolidation_metrics: list[dict[str, Any]] = field(default_factory=list)
     consolidation_quality: ConsolidationQuality | dict[str, Any] | None = None
+    fast_path_hits: int = 0
+    llm_fallbacks: int = 0
     recent_activity: list[dict[str, Any]] = field(default_factory=list)
     utility_scheduler: dict[str, Any] | None = None
     knowledge_consistency: dict[str, Any] | None = None

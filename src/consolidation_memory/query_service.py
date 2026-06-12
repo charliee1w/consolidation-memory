@@ -213,6 +213,7 @@ class CanonicalQueryService:
                     "payload": parse_claim_payload(row.get("payload")),
                     "status": row.get("status", ""),
                     "confidence": row.get("confidence", 0.0),
+                    "precision": row.get("precision", 1.0),
                     "valid_from": row.get("valid_from"),
                     "valid_until": row.get("valid_until"),
                     "created_at": row.get("created_at"),
@@ -318,6 +319,7 @@ class CanonicalQueryService:
                     "payload": parse_claim_payload(row.get("payload")),
                     "status": row.get("status", ""),
                     "confidence": row.get("confidence", 0.0),
+                    "precision": row.get("precision", 1.0),
                     "valid_from": row.get("valid_from"),
                     "valid_until": row.get("valid_until"),
                     "created_at": row.get("created_at"),
@@ -448,6 +450,7 @@ class CanonicalQueryService:
                 semantic_weight=cfg.RECORDS_SEMANTIC_WEIGHT,
                 keyword_weight=cfg.RECORDS_KEYWORD_WEIGHT,
                 strategy_reuse_multiplier=strategy_multiplier,
+                precision=float(ranked.get("precision", 1.0) or 1.0),
             )
             relevance = coerce_numeric_float(ranking_profile.get("score"), default=0.0)
             if relevance <= 0.0:

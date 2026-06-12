@@ -9,7 +9,7 @@ import logging
 import shutil
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +28,7 @@ from consolidation_memory.database import (
     get_all_knowledge_topics,
     get_prunable_episodes,
     get_records_by_topic,
+    get_failure_linked_episode_ids_since,
     get_unconsolidated_episodes,
     increment_consolidation_attempts,
     insert_claim_edge,
@@ -49,6 +50,7 @@ from consolidation_memory.consolidation.clustering import (
     _compute_cluster_confidence,
     _find_similar_topic,
 )
+from consolidation_memory.consolidation.fast_path import try_fast_path_extraction
 from consolidation_memory.consolidation.prompting import (
     _build_contradiction_prompt,
     _build_extraction_prompt,
@@ -609,6 +611,30 @@ def _coerce_content_dict(content: object) -> dict:
     return {}
 
 
+def _records_from_db_rows(db_rows: list[dict]) -> list[dict]:
+    """Load structured record payloads from persisted knowledge_records rows."""
+    records: list[dict] = []
+    for row in db_rows:
+        content = _coerce_content_dict(row.get("content"))
+        if content:
+            records.append(content)
+    return records
+
+
+def _render_topic_markdown_from_db(
+    topic_id: str,
+    *,
+    title: str,
+    summary: str,
+    tags: list[str],
+    confidence: float,
+) -> str:
+    """Render topic markdown from persisted DB records (not LLM merge output)."""
+    db_records = get_records_by_topic(topic_id, include_expired=False)
+    records = _records_from_db_rows(db_records)
+    return _render_markdown_from_records(title, summary, tags, confidence, records)
+
+
 def _materialize_claim_for_record(
     record: dict,
     *,
@@ -760,9 +786,20 @@ def _resolve_merged_payload(
     existing_tags: list[str],
     cluster_episodes: list[dict],
     cluster_ep_ids: list[str],
+    deterministic_only: bool = False,
 ) -> tuple[tuple[str, str, list[str], list[dict]] | None, int]:
     """Resolve merged topic metadata/records with deterministic fallbacks."""
     new_records = extraction_data.get("records", [])
+    if deterministic_only:
+        return _build_deterministic_merge_payload(
+            existing_records=existing_records,
+            new_records=new_records,
+            existing_title=existing["title"],
+            existing_summary=existing["summary"],
+            existing_tags=existing_tags,
+            extraction_data=extraction_data,
+        ), 0
+
     merge_prompt = _build_merge_extraction_prompt(
         existing_records=existing_records,
         new_records=new_records,
@@ -848,6 +885,7 @@ def _merge_into_existing(
     cluster_ep_ids: list[str],
     confidence: float,
     cluster_scope: dict[str, str | None] | None = None,
+    deterministic_only: bool = False,
 ) -> tuple[str, int]:
     """Merge new extracted records into an existing topic.
 
@@ -873,6 +911,7 @@ def _merge_into_existing(
         existing_tags=existing_tags,
         cluster_episodes=cluster_episodes,
         cluster_ep_ids=cluster_ep_ids,
+        deterministic_only=deterministic_only,
     )
     if merged_payload is None:
         return "failed", merge_calls
@@ -1124,12 +1163,21 @@ def _merge_into_existing(
         event_type="update",
     )
 
-    # Render markdown
+    # Render markdown — fast-path uses persisted records as source of truth.
     if get_config().RENDER_MARKDOWN:
         _version_knowledge_file(filepath)
-        md = _render_markdown_from_records(
-            merged_title, merged_summary, merged_tags, confidence, merged_records
-        )
+        if deterministic_only:
+            md = _render_topic_markdown_from_db(
+                existing["id"],
+                title=merged_title,
+                summary=merged_summary,
+                tags=merged_tags,
+                confidence=confidence,
+            )
+        else:
+            md = _render_markdown_from_records(
+                merged_title, merged_summary, merged_tags, confidence, merged_records
+            )
         filepath.write_text(md, encoding="utf-8")
 
     upsert_knowledge_topic(
@@ -1209,22 +1257,40 @@ def _process_cluster(
     tag_counts = Counter(all_tags).most_common(5)
     tag_summary = ", ".join(f"{t}({c})" for t, c in tag_counts) if tag_counts else "none"
 
-    prompt = _build_extraction_prompt(cluster_episodes, confidence, tag_summary)
-
-    logger.info(
-        "Extracting records from cluster %d (%d episodes)...", cluster_id, len(cluster_episodes)
-    )
     cluster_ep_ids = [ep["id"] for ep in cluster_episodes]
     cluster_scope = _cluster_scope_row(cluster_episodes)
     api_calls = 0
+    deterministic_only = False
 
-    try:
-        extraction_data, calls = _llm_extract_with_validation(prompt, cluster_episodes)
-        api_calls += calls
-    except Exception as e:
-        logger.error("LLM extraction failed for cluster %d: %s", cluster_id, e, exc_info=True)
-        increment_consolidation_attempts(cluster_ep_ids)
-        return {"status": "failed", "api_calls": api_calls, "failed_ep_ids": cluster_ep_ids}
+    fast_path_result = try_fast_path_extraction(cluster_episodes)
+    if fast_path_result is not None:
+        extraction_data = fast_path_result["extraction_data"]
+        deterministic_only = True
+        logger.info(
+            "Fast-path extraction for cluster %d (%d episodes, kind=%s)",
+            cluster_id,
+            len(cluster_episodes),
+            fast_path_result.get("path_kind"),
+        )
+    else:
+        prompt = _build_extraction_prompt(cluster_episodes, confidence, tag_summary)
+        logger.info(
+            "Extracting records from cluster %d (%d episodes)...",
+            cluster_id,
+            len(cluster_episodes),
+        )
+        try:
+            extraction_data, calls = _llm_extract_with_validation(prompt, cluster_episodes)
+            api_calls += calls
+        except Exception as e:
+            logger.error("LLM extraction failed for cluster %d: %s", cluster_id, e, exc_info=True)
+            increment_consolidation_attempts(cluster_ep_ids)
+            return {
+                "status": "failed",
+                "api_calls": api_calls,
+                "failed_ep_ids": cluster_ep_ids,
+                "fast_path": False,
+            }
 
     title = extraction_data.get("title", f"Topic {cluster_id}")
     summary = extraction_data.get("summary", "")
@@ -1242,15 +1308,26 @@ def _process_cluster(
                 cluster_ep_ids,
                 confidence,
                 cluster_scope,
+                deterministic_only=deterministic_only,
             )
             api_calls += merge_calls
             if status == "failed":
-                return {"status": "failed", "api_calls": api_calls, "failed_ep_ids": cluster_ep_ids}
-            return {"status": status, "api_calls": api_calls}
+                return {
+                    "status": "failed",
+                    "api_calls": api_calls,
+                    "failed_ep_ids": cluster_ep_ids,
+                    "fast_path": deterministic_only,
+                }
+            return {"status": status, "api_calls": api_calls, "fast_path": deterministic_only}
         except Exception as e:
             logger.error("Merge failed for topic %s: %s", existing["filename"], e, exc_info=True)
             increment_consolidation_attempts(cluster_ep_ids)
-            return {"status": "failed", "api_calls": api_calls, "failed_ep_ids": cluster_ep_ids}
+            return {
+                "status": "failed",
+                "api_calls": api_calls,
+                "failed_ep_ids": cluster_ep_ids,
+                "fast_path": deterministic_only,
+            }
     else:
         scope_prefix = _scope_filename_prefix(cluster_scope)
         base_slug = _slugify(title)
@@ -1299,9 +1376,18 @@ def _process_cluster(
             event_type="create",
         )
 
-        # Render markdown file
+        # Render markdown file — fast-path uses persisted records as source of truth.
         if cfg.RENDER_MARKDOWN:
-            md = _render_markdown_from_records(title, summary, tags, confidence, records)
+            if deterministic_only:
+                md = _render_topic_markdown_from_db(
+                    topic_id,
+                    title=title,
+                    summary=summary,
+                    tags=tags,
+                    confidence=confidence,
+                )
+            else:
+                md = _render_markdown_from_records(title, summary, tags, confidence, records)
             filepath.write_text(md, encoding="utf-8")
 
         mark_consolidated(cluster_ep_ids, filename)
@@ -1315,7 +1401,7 @@ def _process_cluster(
             title=title,
             record_count=len(records),
         )
-        return {"status": "created", "api_calls": api_calls}
+        return {"status": "created", "api_calls": api_calls, "fast_path": deterministic_only}
 
 
 def _build_scope_isolated_similarity(
@@ -1340,6 +1426,43 @@ def _build_scope_isolated_similarity(
                 sim_matrix[j, i] = 0.0
 
     return sim_matrix, dist_matrix
+
+
+def _consolidation_outcome_lookback_since() -> str:
+    """Wall-clock cutoff aligned with utility scheduler outcome lookback."""
+    cfg = get_config()
+    lookback_seconds = max(300.0, cfg.CONSOLIDATION_INTERVAL_HOURS * 3600.0)
+    return (datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)).isoformat()
+
+
+def _cluster_failure_link_count(
+    cluster_items: list[tuple[dict, int]],
+    failure_episode_ids: frozenset[str],
+) -> int:
+    if not failure_episode_ids:
+        return 0
+    return sum(
+        1
+        for episode, _ in cluster_items
+        if str(episode.get("id") or "") in failure_episode_ids
+    )
+
+
+def _prioritize_valid_clusters(
+    valid_clusters: dict[int, list[tuple[dict, int]]],
+    failure_episode_ids: frozenset[str],
+) -> dict[int, list[tuple[dict, int]]]:
+    """Order clusters so failure-linked episodes consolidate first."""
+    if not failure_episode_ids or not valid_clusters:
+        return valid_clusters
+    ordered = sorted(
+        valid_clusters.items(),
+        key=lambda item: (
+            -_cluster_failure_link_count(item[1], failure_episode_ids),
+            item[0],
+        ),
+    )
+    return dict(ordered)
 
 
 def _build_clusters_from_distance(
@@ -1372,13 +1495,15 @@ def _run_cluster_processing_loop(
     valid_clusters: dict[int, list[tuple[dict, int]]],
     sim_matrix: np.ndarray,
     cfg,
-) -> tuple[int, int, int, int, list[float], list[str], float]:
+) -> tuple[int, int, int, int, int, int, list[float], list[str], float]:
     """Process clusters and aggregate counters for the consolidation report."""
     topics_created = 0
     topics_updated = 0
     clusters_failed = 0
     consecutive_failures = 0
     api_calls = 0
+    fast_path_hits = 0
+    llm_fallbacks = 0
     run_start = time.monotonic()
     cluster_confidences: list[float] = []
     all_failed_ep_ids: list[str] = []
@@ -1407,6 +1532,11 @@ def _run_cluster_processing_loop(
             cluster_confidences,
         )
         api_calls += cluster_result["api_calls"]
+        if cluster_result["status"] in {"created", "updated"}:
+            if cluster_result.get("fast_path"):
+                fast_path_hits += 1
+            else:
+                llm_fallbacks += 1
         if cluster_result["status"] == "created":
             topics_created += 1
             consecutive_failures = 0
@@ -1423,6 +1553,8 @@ def _run_cluster_processing_loop(
         topics_updated,
         clusters_failed,
         api_calls,
+        fast_path_hits,
+        llm_fallbacks,
         cluster_confidences,
         all_failed_ep_ids,
         run_start,
@@ -1490,9 +1622,12 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
     logger.info("Consolidation run %s started", run_id)
 
     try:
+        outcome_lookback_since = _consolidation_outcome_lookback_since()
+        failure_linked_episode_ids = get_failure_linked_episode_ids_since(outcome_lookback_since)
         episodes = get_unconsolidated_episodes(
             limit=cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN,
             max_attempts=cfg.CONSOLIDATION_MAX_ATTEMPTS,
+            priority_episode_ids=sorted(failure_linked_episode_ids),
         )
 
         get_plugin_manager().fire(
@@ -1577,11 +1712,26 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             else:
                 clusters, valid_clusters = _build_clusters_from_distance(valid_episodes, dist_matrix)
 
+            prioritized_clusters = _prioritize_valid_clusters(
+                valid_clusters,
+                failure_linked_episode_ids,
+            )
+            clusters_with_failure_links = sum(
+                1
+                for cluster_items in prioritized_clusters.values()
+                if _cluster_failure_link_count(cluster_items, failure_linked_episode_ids) > 0
+            )
+            loaded_episode_ids = {str(ep["id"]) for ep in valid_episodes}
+            failure_linked_loaded = len(loaded_episode_ids & failure_linked_episode_ids)
+
             logger.info(
-                "Formed %d clusters, %d valid (>=%d episodes)",
+                "Formed %d clusters, %d valid (>=%d episodes); "
+                "%d failure-linked episodes loaded, %d clusters prioritized",
                 len(clusters),
                 len(valid_clusters),
                 cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
+                failure_linked_loaded,
+                clusters_with_failure_links,
             )
 
             (
@@ -1589,10 +1739,12 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                 topics_updated,
                 clusters_failed,
                 api_calls,
+                fast_path_hits,
+                llm_fallbacks,
                 cluster_confidences,
                 all_failed_ep_ids,
                 _run_start,
-            ) = _run_cluster_processing_loop(valid_clusters, sim_matrix, cfg)
+            ) = _run_cluster_processing_loop(prioritized_clusters, sim_matrix, cfg)
 
             _update_index()
 
@@ -1614,7 +1766,11 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                 "episodes_pruned": len(prunable),
                 "surprise_adjusted": surprise_adjusted,
                 "api_calls": api_calls,
+                "fast_path_hits": fast_path_hits,
+                "llm_fallbacks": llm_fallbacks,
                 "failed_episode_ids": all_failed_ep_ids,
+                "failure_linked_episodes_loaded": failure_linked_loaded,
+                "clusters_prioritized_by_failures": clusters_with_failure_links,
             }
 
             report_path = cfg.CONSOLIDATION_LOG_DIR / (
@@ -1648,6 +1804,8 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                     topics_created=topics_created,
                     topics_updated=topics_updated,
                     episodes_pruned=report.get("episodes_pruned") or 0,
+                    fast_path_hits=fast_path_hits,
+                    llm_fallbacks=llm_fallbacks,
                 )
             except Exception as e:
                 logger.warning("Failed to write consolidation metrics: %s", e)

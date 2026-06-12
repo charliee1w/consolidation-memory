@@ -669,6 +669,75 @@ class TestCanonicalQueryServiceClaims:
             > result.claims[1]["ranking"]["components"]["outcome_support"]
         )
 
+    def test_search_claims_demotes_low_precision_peers(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        rows = [
+            {
+                "id": "claim-high-precision",
+                "claim_type": "fact",
+                "canonical_text": "target flaky ci tests quickly",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "precision": 1.0,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+            {
+                "id": "claim-low-precision",
+                "claim_type": "fact",
+                "canonical_text": "target flaky ci tests quickly",
+                "payload": "{\"subject\":\"ci\"}",
+                "status": "active",
+                "confidence": 0.9,
+                "precision": 0.8,
+                "valid_from": "2025-01-01T00:00:00+00:00",
+                "valid_until": None,
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2026-03-12T00:00:00+00:00",
+            },
+        ]
+        evidence = {
+            "claim-high-precision": {
+                "validation_count": 1,
+                "success_count": 1,
+                "source_link_count": 1,
+                "source_episode_count": 1,
+                "source_topic_count": 1,
+                "last_observed_at": "2026-03-12T00:00:00+00:00",
+            },
+            "claim-low-precision": {
+                "validation_count": 1,
+                "success_count": 1,
+                "source_link_count": 1,
+                "source_episode_count": 1,
+                "source_topic_count": 1,
+                "last_observed_at": "2026-03-12T00:00:00+00:00",
+            },
+        }
+        query_vec = mock_encode(["flaky ci tests"])[0]
+
+        with (
+            patch("consolidation_memory.database.get_active_claims", side_effect=[rows, []]),
+            patch("consolidation_memory.database.get_claim_outcome_evidence", return_value=evidence),
+            patch("consolidation_memory.query_service.backends.encode_query", return_value=query_vec),
+            patch(
+                "consolidation_memory.query_service.claim_cache.get_claim_vecs",
+                return_value=np.stack([query_vec, query_vec]),
+            ),
+        ):
+            result = service.search_claims(ClaimSearchQuery(query="flaky ci tests", claim_type="fact"))
+
+        assert [claim["id"] for claim in result.claims] == [
+            "claim-high-precision",
+            "claim-low-precision",
+        ]
+        assert result.claims[0]["ranking"]["components"]["precision_multiplier"] == 1.0
+        assert result.claims[1]["ranking"]["components"]["precision_multiplier"] == 0.8
+        assert result.claims[0]["relevance"] > result.claims[1]["relevance"]
+
     def test_search_claims_filters_low_similarity_semantic_only_noise(self):
         service = CanonicalQueryService(vector_store=MagicMock())
         rows = [

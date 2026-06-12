@@ -46,7 +46,10 @@ def test_collect_release_notes_filters_release_commits_and_duplicates(monkeypatc
 
     monkeypatch.setattr(module, "run", fake_run)
     notes = module.collect_release_notes("v0.13.0")
-    assert notes == ["fix: patch release gate", "feat: add scope model"]
+    assert notes == [
+        "feat: add scope model",
+        "fix: patch release gate",
+    ]
 
 
 def test_add_changelog_entry_inserts_rendered_notes(tmp_path, monkeypatch):
@@ -60,6 +63,8 @@ def test_add_changelog_entry_inserts_rendered_notes(tmp_path, monkeypatch):
 
     assert inserted is True
     assert re.search(r"^## 0\.13\.1 - \d{4}-\d{2}-\d{2}$", text, flags=re.MULTILINE)
+    assert "### Bug Fixes" in text
+    assert "### Documentation" in text
     assert "- fix: release automation" in text
     assert "- docs: update flow" in text
 

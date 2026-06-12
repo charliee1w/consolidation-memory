@@ -1688,10 +1688,11 @@ class TestConfigDefaults:
         cfg = get_config()
         assert cfg.CONSOLIDATION_UTILITY_THRESHOLD == 0.6
         assert cfg.CONSOLIDATION_UTILITY_WEIGHTS == {
-            "unconsolidated_backlog": 0.4,
-            "recall_miss_fallback": 0.2,
-            "contradiction_spike": 0.2,
-            "challenged_claim_backlog": 0.2,
+            "unconsolidated_backlog": 0.35,
+            "recall_miss_fallback": 0.15,
+            "contradiction_spike": 0.15,
+            "challenged_claim_backlog": 0.15,
+            "outcome_failure_rate": 0.2,
         }
 
     def test_circuit_breaker_defaults(self):
@@ -1891,10 +1892,11 @@ class TestConfigWeightValidation:
 
         cfg = Config(
             CONSOLIDATION_UTILITY_WEIGHTS={
-                "unconsolidated_backlog": 0.6,
+                "unconsolidated_backlog": 0.5,
                 "recall_miss_fallback": 0.2,
                 "contradiction_spike": 0.2,
                 "challenged_claim_backlog": 0.2,
+                "outcome_failure_rate": 0.2,
             }
         )
         with pytest.raises(ValueError, match="utility_weights values sum to .*should sum to 1.0"):
@@ -2043,6 +2045,8 @@ class TestConsolidationMetrics:
         assert metrics[0]["avg_confidence"] == 0.78
         assert metrics[0]["clusters_succeeded"] == 3
         assert metrics[0]["clusters_failed"] == 1
+        assert metrics[0]["fast_path_hits"] == 0
+        assert metrics[0]["llm_fallbacks"] == 0
 
     def test_ordering_newest_first(self, tmp_data_dir):
         from consolidation_memory.database import (

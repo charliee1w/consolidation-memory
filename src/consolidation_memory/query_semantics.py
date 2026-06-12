@@ -373,6 +373,66 @@ def claim_reliability_profile(
     }
 
 
+_PRECISION_OUTCOME_SUCCESS_BONUS = 0.03
+_PRECISION_OUTCOME_PARTIAL_BONUS = 0.02
+_PRECISION_OUTCOME_FAILURE_PENALTY = 0.12
+_PRECISION_CONTRADICTION_PENALTY = 0.15
+_PRECISION_DRIFT_PENALTY = 0.12
+_PRECISION_CHALLENGED_EVENT_PENALTY = 0.08
+_PRECISION_CHALLENGED_STATUS_FACTOR = 0.75
+_PRECISION_EXPIRED_CAP = 0.1
+
+
+def claim_precision_from_evidence(
+    evidence: Mapping[str, object] | None,
+    *,
+    claim_status: str | None = None,
+) -> float:
+    """Derive persisted claim precision from deterministic trust evidence.
+
+    Baseline is full precision; negative outcomes, contradictions, drift, and
+    challenge state reduce it without requiring an LLM.
+    """
+    from consolidation_memory.claim_graph import (
+        DEFAULT_CLAIM_PRECISION,
+        normalize_claim_precision,
+    )
+
+    data = dict(evidence or {})
+    status = _normalize_claim_status(claim_status)
+    precision = float(DEFAULT_CLAIM_PRECISION)
+
+    success_count = max(0, _coerce_int_metric(data.get("success_count", 0)))
+    partial_success_count = max(0, _coerce_int_metric(data.get("partial_success_count", 0)))
+    failure_count = max(0, _coerce_int_metric(data.get("failure_count", 0)))
+    explicit_failure_count = max(0, _coerce_int_metric(data.get("explicit_failure_count", 0)))
+    reverted_count = max(0, _coerce_int_metric(data.get("reverted_count", 0)))
+    superseded_count = max(0, _coerce_int_metric(data.get("superseded_count", 0)))
+    negative_outcomes = max(
+        failure_count,
+        explicit_failure_count + reverted_count + superseded_count,
+    )
+
+    precision += min(0.15, success_count * _PRECISION_OUTCOME_SUCCESS_BONUS)
+    precision += min(0.08, partial_success_count * _PRECISION_OUTCOME_PARTIAL_BONUS)
+    precision -= min(0.45, negative_outcomes * _PRECISION_OUTCOME_FAILURE_PENALTY)
+
+    contradiction_count = max(0, _coerce_int_metric(data.get("contradiction_count", 0)))
+    drift_event_count = max(0, _coerce_int_metric(data.get("drift_event_count", 0)))
+    challenged_count = max(0, _coerce_int_metric(data.get("challenged_count", 0)))
+
+    precision -= min(0.5, contradiction_count * _PRECISION_CONTRADICTION_PENALTY)
+    precision -= min(0.4, drift_event_count * _PRECISION_DRIFT_PENALTY)
+    precision -= min(0.25, challenged_count * _PRECISION_CHALLENGED_EVENT_PENALTY)
+
+    if status == "challenged":
+        precision *= _PRECISION_CHALLENGED_STATUS_FACTOR
+    elif status == "expired":
+        precision = min(precision, _PRECISION_EXPIRED_CAP)
+
+    return normalize_claim_precision(precision)
+
+
 def matches_scope_filter(
     row: Mapping[str, object],
     scope_filter: Mapping[str, str | None] | None,
@@ -545,6 +605,13 @@ def _outcome_support_score(evidence: Mapping[str, object]) -> float:
     return max(0.2, min(1.0, score))
 
 
+def claim_precision_multiplier(precision: float | None) -> float:
+    """Convert persisted claim precision into a ranking multiplier."""
+    from consolidation_memory.claim_graph import normalize_claim_precision
+
+    return normalize_claim_precision(precision)
+
+
 def _drift_challenge_penalty(
     evidence: Mapping[str, object],
     *,
@@ -584,6 +651,7 @@ def claim_query_rank_profile(
     semantic_weight: float,
     keyword_weight: float,
     strategy_reuse_multiplier: float | None = None,
+    precision: float | None = None,
 ) -> dict[str, object]:
     """Compose an explainable, trust-aware ranking score for claim retrieval."""
     reliability_payload = dict(reliability or {})
@@ -622,6 +690,7 @@ def claim_query_rank_profile(
         evidence_payload,
         claim_status=normalized_status,
     )
+    precision_multiplier = claim_precision_multiplier(precision)
 
     weights = {
         "base_relevance": 0.55,
@@ -637,6 +706,7 @@ def claim_query_rank_profile(
     )
     composite_score *= reliability_multiplier
     composite_score *= drift_challenge_penalty
+    composite_score *= precision_multiplier
 
     strategy_multiplier = 1.0
     if strategy_reuse_multiplier is not None:
@@ -658,12 +728,15 @@ def claim_query_rank_profile(
             "temporal_validity": round(temporal_validity, 3),
             "outcome_support": round(outcome_support, 3),
             "drift_challenge_penalty": round(drift_challenge_penalty, 3),
+            "precision_multiplier": round(precision_multiplier, 3),
             "strategy_multiplier": round(strategy_multiplier, 3),
         },
     }
 
 
 __all__ = [
+    "claim_precision_from_evidence",
+    "claim_precision_multiplier",
     "claim_reliability_profile",
     "claim_query_rank_profile",
     "coerce_numeric_float",

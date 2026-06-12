@@ -30,6 +30,11 @@ If not all commands were run, explain what was skipped and why.
 - [ ] Storage/export/import behavior changed
 - [ ] No special risk areas
 
+## Agent / vibecoding
+
+- [ ] Change follows `docs/VIBECODING.md` (trust invariants, task sizing)
+- [ ] `docs/AGENT_GOAL.md` updated if a milestone task was completed
+
 ## Checklist
 
 - [ ] Tests were added or updated for behavior changes

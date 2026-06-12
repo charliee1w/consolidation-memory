@@ -15,8 +15,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 RELEASE_AUTOMATION_PATHS = {
     ".github/workflows/release-on-main.yml",
+    ".github/workflows/changelog-on-main.yml",
     "scripts/release.py",
     "scripts/release_criteria.py",
+    "scripts/update_changelog.py",
+    "scripts/changelog_builder.py",
 }
 RELEASE_DOC_PATHS = {
     "docs/RELEASE_AUTOMATION.md",
@@ -28,6 +31,8 @@ REQUIRED_RELEASE_DOC_MARKERS = (
     "workflow_dispatch",
     "[skip release]",
     "[release major|minor|patch]",
+    "update_changelog.py",
+    "changelog-on-main.yml",
 )
 
 

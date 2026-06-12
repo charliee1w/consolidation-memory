@@ -1,5 +1,15 @@
 # consolidation-memory contributor context
 
+## Agent session start
+
+1. Read `docs/AGENT_GOAL.md` — pick first unchecked task (M1 unless user redirects).
+2. Read `docs/VIBECODING.md` — trust rules override vague task instructions.
+3. Follow `AGENTS.md` workflow (recall → implement → test → update goal → recall).
+
+Default user prompt: *"Continue toward the agent goal — pick the first unchecked M1 task."*
+
+---
+
 This file is a compact, code-aligned maintainer guide.
 
 ## Repository shape
@@ -67,6 +77,9 @@ mypy src/consolidation_memory/
 ## Core docs
 
 - `README.md`
+- `GOAL.md` / `docs/AGENT_GOAL.md` (living backlog — start here)
+- `docs/VIBECODING.md` (required reading for agent-assisted code changes)
+- `AGENTS.md` (session workflow)
 - `docs/ARCHITECTURE.md`
 - `docs/ROADMAP.md`
 - `docs/RELEASE_GATES.md`

@@ -23,6 +23,8 @@ _RECORD_TYPE_ALIASES: dict[str, str] = {
     "strategy": "strategy",
 }
 
+DEFAULT_CLAIM_PRECISION = 1.0
+
 _RECORD_FIELD_SPECS: dict[str, list[tuple[str, bool]]] = {
     # (field_name, lowercase_for_identity)
     "fact": [("subject", True), ("info", False)],
@@ -47,6 +49,7 @@ class ClaimObject(TypedDict):
     claim_type: str
     canonical_text: str
     payload: dict[str, str]
+    precision: float
 
 
 def _normalize_text(value: Any, *, lowercase: bool = False) -> str:
@@ -120,6 +123,13 @@ def canonical_claim_id(record_type: str, payload: Mapping[str, Any], prefix: str
     return f"{prefix}_{digest}"
 
 
+def normalize_claim_precision(value: float | None) -> float:
+    """Clamp claim precision into [0.0, 1.0], defaulting to full precision."""
+    if value is None:
+        return DEFAULT_CLAIM_PRECISION
+    return max(0.0, min(1.0, float(value)))
+
+
 def claim_text(record_type: str, normalized_payload: Mapping[str, Any]) -> str:
     """Create deterministic claim text from normalized payload fields."""
     claim_type = normalize_record_type(record_type)
@@ -151,11 +161,14 @@ def claim_from_record(record: Mapping[str, Any]) -> ClaimObject:
     claim_id = canonical_claim_id(claim_type, normalized_payload)
     canonical_text = claim_text(claim_type, normalized_payload)
 
+    precision = normalize_claim_precision(record.get("precision"))
+
     return {
         "id": claim_id,
         "claim_type": claim_type,
         "canonical_text": canonical_text,
         "payload": normalized_payload,
+        "precision": precision,
     }
 
 
@@ -174,10 +187,12 @@ def claims_from_records(records: Iterable[Mapping[str, Any]]) -> list[ClaimObjec
 
 __all__ = [
     "ClaimObject",
+    "DEFAULT_CLAIM_PRECISION",
     "canonical_claim_id",
     "claim_from_record",
     "claim_text",
     "claims_from_records",
     "normalize_claim_payload",
+    "normalize_claim_precision",
     "normalize_record_type",
 ]

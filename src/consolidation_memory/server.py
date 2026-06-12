@@ -112,6 +112,10 @@ _MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS",
     10.0,
 )
+_STATUS_LIGHTWEIGHT_DEFAULT = _env_bool(
+    "CONSOLIDATION_MEMORY_STATUS_LIGHTWEIGHT",
+    True,
+)
 _CLIENT_INIT_TIMEOUT_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS",
     45.0,
@@ -612,24 +616,47 @@ async def _warm_client_background() -> None:
 
 
 def _warm_recall_caches(client=None) -> None:
-    """Prime recall caches so first user recall avoids bulk embedding work."""
+    """Prime recall caches without blocking MCP tools on bulk embedding work."""
     from consolidation_memory import claim_cache, record_cache, topic_cache
+    from consolidation_memory.backends import get_embedding_backend
     from consolidation_memory.client import _resolved_scope_to_query_filter
     from consolidation_memory.config import get_config
 
     cfg = get_config()
-    topic_cache.get_topic_vecs()
-    record_cache.get_record_vecs(include_expired=False)
-    if client is not None:
-        try:
-            default_scope_filter = _resolved_scope_to_query_filter(client.resolve_scope())
-            record_cache.get_record_vecs(include_expired=False, scope=default_scope_filter)
-        except Exception as exc:
-            logger.debug("Scoped warmup skipped: %s", exc)
-    warmed_claims = claim_cache.warm_active_claim_vecs(
-        limit=max(cfg.RECORDS_MAX_RESULTS * 10, cfg.RECALL_MAX_N * 5)
+    get_embedding_backend()
+
+    warmed_topics = 0
+    if cfg.WARMUP_PRIME_TOPIC_CACHE:
+        topics, _ = topic_cache.get_topic_vecs()
+        warmed_topics = len(topics)
+
+    warmed_records = 0
+    if cfg.WARMUP_PRIME_RECORD_CACHE:
+        records, _ = record_cache.get_record_vecs(include_expired=False)
+        warmed_records = len(records)
+        if client is not None:
+            try:
+                default_scope_filter = _resolved_scope_to_query_filter(client.resolve_scope())
+                scoped_records, _ = record_cache.get_record_vecs(
+                    include_expired=False,
+                    scope=default_scope_filter,
+                )
+                warmed_records = max(warmed_records, len(scoped_records))
+            except Exception as exc:
+                logger.debug("Scoped warmup skipped: %s", exc)
+
+    warmed_claims = 0
+    if cfg.WARMUP_PRIME_CLAIM_CACHE:
+        warmed_claims = claim_cache.warm_active_claim_vecs(
+            limit=max(1, int(cfg.WARMUP_CLAIM_LIMIT)),
+        )
+
+    logger.info(
+        "Warmup complete (topics=%d, records=%d, claims=%d)",
+        warmed_topics,
+        warmed_records,
+        warmed_claims,
     )
-    logger.info("Warmup complete (claims cached=%d)", warmed_claims)
 
 
 async def _call_tool_payload(
@@ -1068,8 +1095,11 @@ async def memory_detect_drift(
 
 @_tracked_tool()
 async def memory_status() -> str:
-    """Show memory system statistics."""
-    return await _call_tool_json("memory_status", {})
+    """Show memory system statistics, including fast-path consolidation metrics."""
+    return await _call_tool_json(
+        "memory_status",
+        {"lightweight": _STATUS_LIGHTWEIGHT_DEFAULT},
+    )
 
 
 @_tracked_tool()

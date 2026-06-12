@@ -353,3 +353,97 @@ class TestClaimDriftEndToEnd:
 
         assert claim_row is not None and claim_row["status"] == "challenged"
         assert drift_event is not None
+
+
+# ── LLM-disabled structured consolidation (M1) ───────────────────────────────
+
+
+class TestLlmDisabledStructuredConsolidation:
+    def test_structured_episodes_consolidate_without_llm(self, tmp_data_dir):
+        """M1: preferences + anchor-rich solutions consolidate with LLM off."""
+        import json
+
+        from consolidation_memory.config import override_config
+        from consolidation_memory.consolidation import run_consolidation
+        from consolidation_memory.database import get_connection
+
+        ensure_schema()
+
+        with (
+            override_config(
+                LLM_BACKEND="disabled",
+                CONSOLIDATION_MIN_CLUSTER_SIZE=1,
+                RENDER_MARKDOWN=False,
+                CONTRADICTION_LLM_ENABLED=False,
+            ),
+            patch(
+                "consolidation_memory.backends.encode_documents",
+                side_effect=_mock_encode,
+            ),
+            patch(
+                "consolidation_memory.backends.encode_query",
+                side_effect=lambda q: _mock_encode([q])[0],
+            ),
+            patch("consolidation_memory.backends.get_dimension", return_value=384),
+            patch(
+                "consolidation_memory.consolidation.engine._llm_extract_with_validation",
+                side_effect=AssertionError("LLM extraction must not run"),
+            ),
+        ):
+            client = MemoryClient(auto_consolidate=False)
+            try:
+                client.store(
+                    "User prefers deterministic fast-path consolidation for structured episodes.",
+                    content_type="preference",
+                    tags=["consolidation"],
+                )
+                client.store(
+                    (
+                        "Tests fail in tests/test_auth.py when JWT secret is missing. "
+                        "Fix: set AUTH_JWT_SECRET in .env and run pytest tests/test_auth.py"
+                    ),
+                    content_type="solution",
+                    tags=["auth"],
+                )
+                client.store(
+                    json.dumps(
+                        {
+                            "type": "fact",
+                            "subject": "Consolidation substrate",
+                            "info": "Fast-path runs before LLM when episodes are structured",
+                        }
+                    ),
+                    content_type="fact",
+                    tags=["m1"],
+                )
+
+                report = run_consolidation(vector_store=client._vector_store)
+            finally:
+                client.close()
+
+        assert "run_id" in report
+        assert report["episodes_loaded"] == 3
+        assert report["clusters_failed"] == 0
+        assert report["api_calls"] == 0
+        assert report["fast_path_hits"] >= 3
+        assert report["llm_fallbacks"] == 0
+        assert report["topics_created"] >= 2
+
+        with get_connection() as conn:
+            record_rows = conn.execute(
+                """
+                SELECT record_type, content
+                FROM knowledge_records
+                WHERE deleted = 0
+                ORDER BY record_type
+                """
+            ).fetchall()
+            record_types = {row["record_type"] for row in record_rows}
+            assert "preference" in record_types
+            assert "solution" in record_types
+            assert "fact" in record_types
+
+            consolidated = conn.execute(
+                "SELECT COUNT(*) AS n FROM episodes WHERE deleted = 0 AND consolidated = 1"
+            ).fetchone()["n"]
+            assert consolidated == 3

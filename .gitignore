@@ -56,6 +56,8 @@ docs/plans/
 ruff_output.txt
 test_output.txt
 .tmp_novelty_eval_runtime/
+agent-tools/
+mcps/
 
 # Benchmark data and results (user-provided)
 benchmarks/data/*.json

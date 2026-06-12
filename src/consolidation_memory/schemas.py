@@ -336,12 +336,22 @@ MEMORY_STATUS_SCHEMA: dict[str, Any] = {
         "name": "memory_status",
         "description": (
             "Show memory system statistics, including trust posture, claim coverage, "
-            "provenance coverage, drift-watch pressure, episode counts, and backend info."
+            "provenance coverage, drift-watch pressure, episode counts, backend info, "
+            "and fast-path consolidation metrics (fast_path_hits / llm_fallbacks from "
+            "the last run)."
         ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {},
+            "properties": {
+                "lightweight": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, skip markdown consistency scans and return a "
+                        "cached snapshot when available (faster for routine checks)."
+                    ),
+                },
+            },
             "required": [],
         },
     },

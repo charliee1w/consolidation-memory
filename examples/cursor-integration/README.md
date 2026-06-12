@@ -1,4 +1,13 @@
-# Cursor MCP Integration
+# Cursor Integration
+
+## Agent rules (automatic)
+
+Opening this repo in Cursor loads `.cursor/rules/consolidation-memory.mdc` (`alwaysApply: true`).
+Agents should still read `docs/AGENT_GOAL.md` and `docs/VIBECODING.md` each session.
+
+**Default prompt:** `Continue toward the agent goal — pick the first unchecked M1 task.`
+
+## MCP Integration
 
 1. Install the package in the environment you want Cursor to use.
 2. Replace `/absolute/path/to/python` in `cursor-mcp.json` with that exact

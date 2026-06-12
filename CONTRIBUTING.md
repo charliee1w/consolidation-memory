@@ -29,6 +29,11 @@ mypy src
 bandit -q -r src scripts
 ```
 
+## Agent-assisted development
+
+If you use AI agents to implement changes, start with [docs/VIBECODING.md](docs/VIBECODING.md).
+It documents trust invariants, safe task sizing, verification commands, and what not to vibe in one pass.
+
 ## Pull Requests
 
 1. Create a focused branch from `main`.

@@ -112,6 +112,7 @@ _UTILITY_WEIGHT_KEYS = {
     "recall_miss_fallback",
     "contradiction_spike",
     "challenged_claim_backlog",
+    "outcome_failure_rate",
 }
 
 # ── Validation sets ──────────────────────────────────────────────────────────
@@ -186,6 +187,7 @@ class Config:
     CONSOLIDATION_INTERVAL_HOURS: float = 6
     CONSOLIDATION_CLUSTER_THRESHOLD: float = 0.78
     CONSOLIDATION_MIN_CLUSTER_SIZE: int = 2
+    CONSOLIDATION_FAST_PATH_ENABLED: bool = True
     CONSOLIDATION_MAX_CLUSTER_SIZE: int = 20
     CONSOLIDATION_PRUNE_ENABLED: bool = False
     CONSOLIDATION_PRUNE_AFTER_DAYS: int = 30
@@ -201,10 +203,11 @@ class Config:
     CONSOLIDATION_UTILITY_THRESHOLD: float = 0.6
     CONSOLIDATION_UTILITY_WEIGHTS: dict[str, float] = field(
         default_factory=lambda: {
-            "unconsolidated_backlog": 0.4,
-            "recall_miss_fallback": 0.2,
-            "contradiction_spike": 0.2,
-            "challenged_claim_backlog": 0.2,
+            "unconsolidated_backlog": 0.35,
+            "recall_miss_fallback": 0.15,
+            "contradiction_spike": 0.15,
+            "challenged_claim_backlog": 0.15,
+            "outcome_failure_rate": 0.2,
         }
     )
     CONTRADICTION_SIMILARITY_THRESHOLD: float = 0.7
@@ -264,6 +267,14 @@ class Config:
     # ── Uncertainty signaling ────────────────────────────────────────────
     EVOLVING_TOPIC_LOOKBACK_DAYS: int = 30
     KNOWLEDGE_CONSISTENCY_THRESHOLD: float = 0.995
+
+    # ── Status / warmup performance ──────────────────────────────────────
+    STATUS_LIGHTWEIGHT_DEFAULT: bool = False
+    STATUS_CACHE_TTL_SECONDS: float = 30.0
+    WARMUP_PRIME_TOPIC_CACHE: bool = True
+    WARMUP_PRIME_RECORD_CACHE: bool = False
+    WARMUP_PRIME_CLAIM_CACHE: bool = False
+    WARMUP_CLAIM_LIMIT: int = 100
 
     # ── Recall deduplication ──────────────────────────────────────────────
     RECALL_DEDUP_ENABLED: bool = True
@@ -444,6 +455,7 @@ def _build_config(
         CONSOLIDATION_INTERVAL_HOURS=float(_consol.get("interval_hours", 6)),
         CONSOLIDATION_CLUSTER_THRESHOLD=float(_consol.get("cluster_threshold", 0.78)),
         CONSOLIDATION_MIN_CLUSTER_SIZE=int(_consol.get("min_cluster_size", 2)),
+        CONSOLIDATION_FAST_PATH_ENABLED=_coerce_bool(_consol.get("fast_path_enabled", True)),
         CONSOLIDATION_MAX_CLUSTER_SIZE=int(_consol.get("max_cluster_size", 20)),
         CONSOLIDATION_PRUNE_ENABLED=_coerce_bool(_consol.get("prune_enabled", False)),
         CONSOLIDATION_PRUNE_AFTER_DAYS=int(_consol.get("prune_after_days", 30)),
@@ -464,10 +476,11 @@ def _build_config(
         CONSOLIDATION_UTILITY_WEIGHTS=_consol.get(
             "utility_weights",
             {
-                "unconsolidated_backlog": 0.4,
-                "recall_miss_fallback": 0.2,
-                "contradiction_spike": 0.2,
-                "challenged_claim_backlog": 0.2,
+                "unconsolidated_backlog": 0.35,
+                "recall_miss_fallback": 0.15,
+                "contradiction_spike": 0.15,
+                "challenged_claim_backlog": 0.15,
+                "outcome_failure_rate": 0.2,
             },
         ),
         CONTRADICTION_SIMILARITY_THRESHOLD=float(_consol.get("contradiction_similarity_threshold", 0.7)),
@@ -520,6 +533,16 @@ def _build_config(
         KNOWLEDGE_CONSISTENCY_THRESHOLD=float(
             _retrieval.get("knowledge_consistency_threshold", 0.995)
         ),
+        STATUS_LIGHTWEIGHT_DEFAULT=_coerce_bool(
+            _retrieval.get("status_lightweight_default", False)
+        ),
+        STATUS_CACHE_TTL_SECONDS=float(_retrieval.get("status_cache_ttl_seconds", 30.0)),
+        WARMUP_PRIME_TOPIC_CACHE=_coerce_bool(_retrieval.get("warmup_prime_topic_cache", True)),
+        WARMUP_PRIME_RECORD_CACHE=_coerce_bool(
+            _retrieval.get("warmup_prime_record_cache", False)
+        ),
+        WARMUP_PRIME_CLAIM_CACHE=_coerce_bool(_retrieval.get("warmup_prime_claim_cache", False)),
+        WARMUP_CLAIM_LIMIT=int(_retrieval.get("warmup_claim_limit", 100)),
         RECALL_DEDUP_ENABLED=_coerce_bool(_retrieval.get("recall_dedup_enabled", True)),
         # Plugins
         PLUGINS_ENABLED=list(_plugins.get("enabled", [])),

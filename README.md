@@ -81,7 +81,9 @@ flowchart LR
 
 More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-`memory_status` / `MemoryClient.status()` also expose a `trust_profile` so callers can inspect current claim coverage, provenance coverage, anchor coverage, contradiction pressure, and drift-watch posture.
+**LLM-optional consolidation:** store [structured episode shapes](docs/FAST_PATH_EPISODES.md) (preferences, path-anchored solutions, JSON facts/procedures) and consolidate with `llm.backend = "disabled"` — no LLM calls when every episode in a cluster matches a fast-path parser.
+
+`memory_status` / `MemoryClient.status()` also expose a `trust_profile` so callers can inspect current claim coverage, provenance coverage, anchor coverage, contradiction pressure, and drift-watch posture. Fast-path metrics (`fast_path_hits`, `llm_fallbacks`) show how much consolidation ran deterministically on the last run.
 
 ## Examples
 
@@ -338,11 +340,15 @@ CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=6
 
 ## Documentation Map
 
+- [Agent Goal](docs/AGENT_GOAL.md) — living backlog (agents start here)
+- [Vibecoding Guide](docs/VIBECODING.md) — rules for AI agents and iterative development
+- [Agent Session Guide](AGENTS.md) — per-session workflow
 - [Architecture](docs/ARCHITECTURE.md)
 - [Builder Baseline](docs/BUILDER_BASELINE.md)
 - [Model Support](docs/MODEL_SUPPORT.md)
 - [Release Gates](docs/RELEASE_GATES.md)
 - [Release Automation](docs/RELEASE_AUTOMATION.md)
+- [Monetization Plan](docs/MONETIZATION.md) — open-core vs Team/Enterprise paid surface
 - [Novelty Metrics](docs/NOVELTY_METRICS.md)
 - [Novelty Eval Guide](docs/NOVELTY_EVAL_GUIDE.md)
 - [External Review Playbook](docs/EXTERNAL_REVIEW_PLAYBOOK.md)

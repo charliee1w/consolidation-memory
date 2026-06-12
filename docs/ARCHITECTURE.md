@@ -76,7 +76,7 @@ flowchart TD
 
 ## Persistence Model
 
-`database.py` uses `CURRENT_SCHEMA_VERSION = 17`.
+`database.py` uses `CURRENT_SCHEMA_VERSION = 20`.
 
 Primary tables:
 
@@ -163,15 +163,18 @@ larger-scale concurrency/indexing pass is due.
 
 `MemoryClient` runs consolidation manually or via background scheduling.
 
+Before LLM extraction, each cluster tries **fast-path** deterministic parsers (`consolidation/fast_path.py`). Eligible episode shapes (structured JSON, preferences, procedures, path-anchored solutions) are documented in [FAST_PATH_EPISODES.md](FAST_PATH_EPISODES.md).
+
 Important controls (from `config.py`):
 
 - `CONSOLIDATION_AUTO_RUN`
+- `CONSOLIDATION_FAST_PATH_ENABLED`
 - `CONSOLIDATION_INTERVAL_HOURS`
 - `CONSOLIDATION_MAX_DURATION`
 - `CONSOLIDATION_UTILITY_THRESHOLD`
 - `CONSOLIDATION_UTILITY_WEIGHTS`
 
-Scheduler state is persisted in `consolidation_scheduler` to support deterministic lease/trigger behavior.
+Scheduler state is persisted in `consolidation_scheduler` to support deterministic lease/trigger behavior, including `last_trigger`, `last_utility_score`, and `last_trigger_breakdown` (utility snapshot at run start for `memory_status` explanations).
 
 ## Trust and Safety Controls
 

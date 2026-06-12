@@ -35,12 +35,14 @@ def _utility_state(score: float) -> dict[str, object]:
             "recall_miss_fallback": 0.0,
             "contradiction_spike": 0.0,
             "challenged_claim_backlog": 0.0,
+            "outcome_failure_rate": 0.0,
         },
         "weighted_components": {
             "unconsolidated_backlog": 0.0,
             "recall_miss_fallback": 0.0,
             "contradiction_spike": 0.0,
             "challenged_claim_backlog": 0.0,
+            "outcome_failure_rate": 0.0,
         },
         "raw_signals": {
             "unconsolidated_backlog": 0,
@@ -48,6 +50,9 @@ def _utility_state(score: float) -> dict[str, object]:
             "recall_fallback_count": 0,
             "contradiction_count": 0,
             "challenged_claim_backlog": 0,
+            "outcome_failure_count": 0,
+            "outcome_total_count": 0,
+            "outcome_failure_rate": 0.0,
             "lookback_seconds": 3600.0,
         },
     }
@@ -186,5 +191,55 @@ class TestStatusSchedulerState:
             assert "is_due" in scheduler
             assert "run_decision" in scheduler
             assert "force_thresholds" in scheduler
+            assert "dominant_components" in scheduler
+            assert "last_run_trigger" in scheduler
+            run_decision = scheduler["run_decision"]
+            assert "explanation" in run_decision
+            assert "dominant_components" in run_decision
+            assert isinstance(run_decision["explanation"], str)
+        finally:
+            client.close()
+
+    def test_status_exposes_last_run_trigger_with_breakdown(self):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_consolidation_scheduler_state,
+            mark_consolidation_scheduler_started,
+            mark_consolidation_scheduler_finished,
+        )
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            utility_state = _utility_state(0.82)
+            mark_consolidation_scheduler_started(
+                owner=client._scheduler_owner,
+                trigger_reason="utility",
+                utility_score=0.82,
+                trigger_breakdown=utility_state,
+            )
+            mark_consolidation_scheduler_finished(
+                owner=client._scheduler_owner,
+                status="completed",
+                interval_hours=1.0,
+            )
+
+            with patch.object(client, "_compute_consolidation_utility", return_value=_utility_state(0.42)):
+                status = client.status()
+
+            scheduler = status.utility_scheduler
+            assert scheduler is not None
+            last_run_trigger = scheduler["last_run_trigger"]
+            assert last_run_trigger is not None
+            assert last_run_trigger["reason"] == "utility"
+            assert last_run_trigger["utility_score"] == 0.82
+            assert "explanation" in last_run_trigger
+            assert "utility score" in last_run_trigger["explanation"].lower()
+            assert last_run_trigger["breakdown"]["score"] == 0.82
+
+            persisted = get_consolidation_scheduler_state()
+            assert persisted["last_trigger"] == "utility"
+            assert persisted["last_trigger_breakdown"]
         finally:
             client.close()

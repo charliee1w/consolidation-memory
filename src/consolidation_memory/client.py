@@ -25,9 +25,10 @@ import uuid
 import hashlib
 from collections import deque
 from collections.abc import Mapping
+from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 
@@ -80,6 +81,9 @@ from consolidation_memory.types import (
     ContentType,
     ConsolidationLogResult,
     ConsolidationReport,
+    build_consolidation_trigger_explanation,
+    parse_consolidation_utility_breakdown,
+    top_weighted_utility_components,
     ContradictionResult,
     HealthStatus,
     StoreResult,
@@ -107,11 +111,115 @@ from consolidation_memory.types import (
 
 logger = logging.getLogger("consolidation_memory")
 
+_status_cache: dict[tuple[str, bool], tuple[float, StatusResult]] = {}
+_status_cache_lock = threading.Lock()
+
 _DEFAULT_NAMESPACE_SLUG = "default"
 _DEFAULT_APP_CLIENT_NAME = "legacy_client"
 _SHARED_NAMESPACE_MODES = {"shared", "team", "managed"}
 _WRITE_DENIED_MESSAGE = "Writes are denied by scope policy (write_mode='deny')."
 _CLOSED_MESSAGE = "MemoryClient is closed."
+
+
+def _load_scheduler_trigger_breakdown(
+    scheduler_state: Mapping[str, object],
+) -> dict[str, object] | None:
+    raw = scheduler_state.get("last_trigger_breakdown")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _build_last_run_trigger(
+    *,
+    scheduler_state: Mapping[str, object],
+    threshold: float,
+    force_thresholds: Mapping[str, int],
+) -> dict[str, object] | None:
+    trigger_reason = scheduler_state.get("last_trigger")
+    if not isinstance(trigger_reason, str) or not trigger_reason.strip():
+        return None
+
+    breakdown_payload = _load_scheduler_trigger_breakdown(scheduler_state)
+    breakdown = parse_consolidation_utility_breakdown(breakdown_payload)
+    score_raw = scheduler_state.get("last_utility_score")
+    utility_score = (
+        float(score_raw)
+        if isinstance(score_raw, (int, float))
+        else (breakdown["score"] if breakdown is not None else None)
+    )
+    weighted_components = (
+        breakdown["weighted_components"]
+        if breakdown is not None
+        else None
+    )
+    normalized_signals = (
+        breakdown["normalized_signals"]
+        if breakdown is not None
+        else None
+    )
+    raw_signals = breakdown["raw_signals"] if breakdown is not None else None
+    explanation = build_consolidation_trigger_explanation(
+        trigger_reason=trigger_reason,
+        utility_score=utility_score,
+        threshold=threshold,
+        weighted_components=weighted_components,
+        normalized_signals=normalized_signals,
+        raw_signals=raw_signals,
+        force_thresholds=force_thresholds,
+    )
+    payload: dict[str, object] = {
+        "reason": trigger_reason,
+        "explanation": explanation,
+    }
+    if utility_score is not None:
+        payload["utility_score"] = round(utility_score, 6)
+    if breakdown is not None:
+        payload["breakdown"] = breakdown
+    return payload
+
+
+def _get_cached_status(
+    db_path: Path,
+    lightweight: bool,
+    ttl_seconds: float,
+) -> StatusResult | None:
+    if ttl_seconds <= 0:
+        return None
+    cache_key = (str(db_path), lightweight)
+    now = time.monotonic()
+    with _status_cache_lock:
+        entry = _status_cache.get(cache_key)
+        if entry is None:
+            return None
+        cached_at, cached_result = entry
+        if now - cached_at > ttl_seconds:
+            _status_cache.pop(cache_key, None)
+            return None
+        return cached_result
+
+
+def _store_cached_status(
+    db_path: Path,
+    lightweight: bool,
+    result: StatusResult,
+    ttl_seconds: float,
+) -> None:
+    if ttl_seconds <= 0:
+        return
+    cache_key = (str(db_path), lightweight)
+    with _status_cache_lock:
+        _status_cache[cache_key] = (time.monotonic(), result)
+
+
+def clear_status_cache() -> None:
+    """Clear cached status snapshots (for tests)."""
+    with _status_cache_lock:
+        _status_cache.clear()
 
 
 def _normalize_content_type(ct: str) -> str:
@@ -1633,13 +1741,27 @@ class MemoryClient:
         """Backward-compatible wrapper for canonical drift detection."""
         return self.query_detect_drift(base_ref=base_ref, repo_path=repo_path)
 
-    def status(self) -> StatusResult:
+    def status(self, *, lightweight: bool | None = None) -> StatusResult:
         """Get memory system statistics.
+
+        Args:
+            lightweight: When True, skip markdown/DB consistency scans and use a
+                short-lived cache. Defaults to ``STATUS_LIGHTWEIGHT_DEFAULT``.
 
         Returns:
             StatusResult with counts, backend info, health, and last consolidation.
         """
         self._ensure_open()
+        from consolidation_memory.config import get_config
+
+        cfg = get_config()
+        use_lightweight = (
+            cfg.STATUS_LIGHTWEIGHT_DEFAULT if lightweight is None else lightweight
+        )
+        cached = _get_cached_status(cfg.DB_PATH, use_lightweight, cfg.STATUS_CACHE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+
         from consolidation_memory.database import (
             count_active_challenged_claims,
             get_claim_trust_stats,
@@ -1649,10 +1771,8 @@ class MemoryClient:
             get_last_consolidation_run,
             get_recent_consolidation_runs,
         )
-        from consolidation_memory.config import get_config
         from consolidation_memory.knowledge_consistency import build_knowledge_consistency_report
 
-        cfg = get_config()
         stats = get_stats()
         last_run = get_last_consolidation_run()
 
@@ -1660,7 +1780,19 @@ class MemoryClient:
         if cfg.DB_PATH.exists():
             db_size_mb = round(cfg.DB_PATH.stat().st_size / (1024 * 1024), 2)
 
-        knowledge_consistency = build_knowledge_consistency_report()
+        if use_lightweight:
+            knowledge_consistency = {
+                "lightweight": True,
+                "threshold": cfg.KNOWLEDGE_CONSISTENCY_THRESHOLD,
+                "checked_topics": 0,
+                "consistent_topics": 0,
+                "consistency_ratio": None,
+                "meets_threshold": None,
+                "issue_count": None,
+                "issues": [],
+            }
+        else:
+            knowledge_consistency = build_knowledge_consistency_report()
         health = self._compute_health(
             last_run,
             cfg.CONSOLIDATION_INTERVAL_HOURS,
@@ -1670,14 +1802,25 @@ class MemoryClient:
 
         from consolidation_memory.database import get_consolidation_metrics
         metrics = get_consolidation_metrics(limit=10)
+        last_fast_path_hits = 0
+        last_llm_fallbacks = 0
+        metrics_by_run_id: dict[str, dict[str, Any]] = {}
 
         # Compute aggregate quality stats from recent metrics
         quality_summary = {}
         if metrics:
+            last_fast_path_hits = int(metrics[0].get("fast_path_hits", 0) or 0)
+            last_llm_fallbacks = int(metrics[0].get("llm_fallbacks", 0) or 0)
+            metrics_by_run_id = {
+                str(m["run_id"]): m for m in metrics if m.get("run_id")
+            }
             total_succeeded = sum(m.get("clusters_succeeded", 0) for m in metrics)
             total_failed = sum(m.get("clusters_failed", 0) for m in metrics)
             total_clusters = total_succeeded + total_failed
             confidences = [m["avg_confidence"] for m in metrics if m.get("avg_confidence", 0) > 0]
+            total_fast_path_hits = sum(int(m.get("fast_path_hits", 0) or 0) for m in metrics)
+            total_llm_fallbacks = sum(int(m.get("llm_fallbacks", 0) or 0) for m in metrics)
+            extraction_total = total_fast_path_hits + total_llm_fallbacks
             quality_summary = {
                 "runs_analyzed": len(metrics),
                 "total_clusters_processed": total_clusters,
@@ -1685,11 +1828,19 @@ class MemoryClient:
                 "avg_confidence": round(sum(confidences) / len(confidences), 3) if confidences else 0,
                 "total_api_calls": sum(m.get("api_calls", 0) for m in metrics),
                 "total_episodes_processed": sum(m.get("episodes_processed", 0) for m in metrics),
+                "total_fast_path_hits": total_fast_path_hits,
+                "total_llm_fallbacks": total_llm_fallbacks,
+                "fast_path_rate": (
+                    round(total_fast_path_hits / extraction_total, 3)
+                    if extraction_total
+                    else 0.0
+                ),
             }
 
         recent_runs = get_recent_consolidation_runs(limit=5)
         recent_activity = []
         for run in recent_runs:
+            run_metrics = metrics_by_run_id.get(str(run.get("id", "")))
             summary = {
                 "timestamp": run.get("completed_at") or run.get("started_at"),
                 "status": run.get("status", "unknown"),
@@ -1698,6 +1849,16 @@ class MemoryClient:
                 "topics_created": run.get("topics_created", 0),
                 "topics_updated": run.get("topics_updated", 0),
                 "episodes_pruned": run.get("episodes_pruned", 0),
+                "fast_path_hits": (
+                    int(run_metrics.get("fast_path_hits", 0) or 0)
+                    if run_metrics
+                    else 0
+                ),
+                "llm_fallbacks": (
+                    int(run_metrics.get("llm_fallbacks", 0) or 0)
+                    if run_metrics
+                    else 0
+                ),
             }
             recent_activity.append(summary)
 
@@ -1739,6 +1900,32 @@ class MemoryClient:
         backlog_force_threshold, challenged_force_threshold = _compute_force_thresholds_runtime(
             max_episodes_per_run=cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN
         )
+        force_thresholds = {
+            "unconsolidated_backlog": backlog_force_threshold,
+            "challenged_claim_backlog": challenged_force_threshold,
+        }
+        run_explanation = build_consolidation_trigger_explanation(
+            trigger_reason=trigger_reason,
+            utility_score=utility_score,
+            threshold=cfg.CONSOLIDATION_UTILITY_THRESHOLD,
+            weighted_components=(
+                utility_state["weighted_components"]
+                if isinstance(utility_state.get("weighted_components"), dict)
+                else None
+            ),
+            normalized_signals=(
+                utility_state["normalized_signals"]
+                if isinstance(utility_state.get("normalized_signals"), dict)
+                else None
+            ),
+            raw_signals=raw_signals,
+            force_thresholds=force_thresholds,
+        )
+        last_run_trigger = _build_last_run_trigger(
+            scheduler_state=scheduler_state,
+            threshold=cfg.CONSOLIDATION_UTILITY_THRESHOLD,
+            force_thresholds=force_thresholds,
+        )
         utility_scheduler = {
             "enabled": bool(cfg.CONSOLIDATION_AUTO_RUN),
             "threshold": cfg.CONSOLIDATION_UTILITY_THRESHOLD,
@@ -1747,6 +1934,16 @@ class MemoryClient:
             "normalized_signals": utility_state["normalized_signals"],
             "weighted_components": utility_state["weighted_components"],
             "raw_signals": utility_state["raw_signals"],
+            "dominant_components": top_weighted_utility_components(
+                utility_state["weighted_components"]
+                if isinstance(utility_state.get("weighted_components"), dict)
+                else None,
+                normalized_signals=(
+                    utility_state["normalized_signals"]
+                    if isinstance(utility_state.get("normalized_signals"), dict)
+                    else None
+                ),
+            ),
             "next_due_at": scheduler_state.get("next_due_at"),
             "last_status": scheduler_state.get("last_status"),
             "last_trigger": scheduler_state.get("last_trigger"),
@@ -1762,11 +1959,20 @@ class MemoryClient:
             "run_decision": {
                 "should_run": should_run_now,
                 "reason": trigger_reason,
+                "explanation": run_explanation,
+                "dominant_components": top_weighted_utility_components(
+                    utility_state["weighted_components"]
+                    if isinstance(utility_state.get("weighted_components"), dict)
+                    else None,
+                    normalized_signals=(
+                        utility_state["normalized_signals"]
+                        if isinstance(utility_state.get("normalized_signals"), dict)
+                        else None
+                    ),
+                ),
             },
-            "force_thresholds": {
-                "unconsolidated_backlog": backlog_force_threshold,
-                "challenged_claim_backlog": challenged_force_threshold,
-            },
+            "last_run_trigger": last_run_trigger,
+            "force_thresholds": force_thresholds,
         }
         scaling = {
             "index_type": self._vector_store.index_type,
@@ -1824,7 +2030,7 @@ class MemoryClient:
             },
         }
 
-        return StatusResult(
+        result = StatusResult(
             episodic_buffer=stats["episodic_buffer"],
             knowledge_base=stats["knowledge_base"],
             last_consolidation=last_run,
@@ -1837,12 +2043,16 @@ class MemoryClient:
             health=health,
             consolidation_metrics=metrics,
             consolidation_quality=quality_summary,
+            fast_path_hits=last_fast_path_hits,
+            llm_fallbacks=last_llm_fallbacks,
             recent_activity=recent_activity,
             utility_scheduler=utility_scheduler,
             knowledge_consistency=knowledge_consistency,
             scaling=scaling,
             trust_profile=trust_profile,
         )
+        _store_cached_status(cfg.DB_PATH, use_lightweight, result, cfg.STATUS_CACHE_TTL_SECONDS)
+        return result
 
     def forget(
         self,
@@ -2864,10 +3074,16 @@ class MemoryClient:
                     "message": "A consolidation run is already in progress.",
                 }
 
+            manual_utility_state = self._compute_consolidation_utility()
+            manual_score = manual_utility_state.get("score")
+            manual_utility_score = (
+                float(manual_score) if isinstance(manual_score, (int, float)) else None
+            )
             mark_consolidation_scheduler_started(
                 owner=self._scheduler_owner,
                 trigger_reason="manual",
-                utility_score=None,
+                utility_score=manual_utility_score,
+                trigger_breakdown=manual_utility_state,
             )
 
             report = run_consolidation(vector_store=self._vector_store)

@@ -26,6 +26,8 @@ def _release_doc_text(module) -> str:
             "workflow_dispatch",
             "[skip release]",
             "[release major|minor|patch]",
+            "update_changelog.py",
+            "changelog-on-main.yml",
         ]
     )
 

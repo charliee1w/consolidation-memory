@@ -551,12 +551,14 @@ class TestClientAutoConsolidation:
                     "recall_miss_fallback": 0.0,
                     "contradiction_spike": 0.0,
                     "challenged_claim_backlog": 0.0,
+                    "outcome_failure_rate": 0.0,
                 },
                 "weighted_components": {
                     "unconsolidated_backlog": 0.0,
                     "recall_miss_fallback": 0.0,
                     "contradiction_spike": 0.0,
                     "challenged_claim_backlog": 0.0,
+                    "outcome_failure_rate": 0.0,
                 },
                 "raw_signals": {
                     "unconsolidated_backlog": 0,
@@ -564,6 +566,9 @@ class TestClientAutoConsolidation:
                     "recall_fallback_count": 0,
                     "contradiction_count": 0,
                     "challenged_claim_backlog": 0,
+                    "outcome_failure_count": 0,
+                    "outcome_total_count": 0,
+                    "outcome_failure_rate": 0.0,
                     "lookback_seconds": 3600.0,
                 },
             }
@@ -1245,6 +1250,7 @@ class TestClientStatus:
         assert status.embedding_backend != ""
         assert status.knowledge_consistency is not None
         assert "consistency_ratio" in status.knowledge_consistency
+        assert status.knowledge_consistency.get("lightweight") is not True
         assert status.scaling is not None
         assert "index_type" in status.scaling
         assert status.trust_profile is not None
@@ -1252,6 +1258,90 @@ class TestClientStatus:
         assert status.trust_profile["evidence_model"]["reusable_unit"] == "claims"
 
         client.close()
+
+    def test_status_lightweight_skips_markdown_consistency_scan(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient, clear_status_cache
+        from consolidation_memory.config import override_config
+
+        ensure_schema()
+        clear_status_cache()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with (
+                override_config(STATUS_CACHE_TTL_SECONDS=0),
+                patch(
+                    "consolidation_memory.knowledge_consistency.build_knowledge_consistency_report",
+                    side_effect=AssertionError("consistency scan should be skipped"),
+                ) as mock_consistency,
+            ):
+                status = client.status(lightweight=True)
+        finally:
+            client.close()
+
+        assert status.knowledge_consistency is not None
+        assert status.knowledge_consistency.get("lightweight") is True
+        assert status.knowledge_consistency.get("checked_topics") == 0
+        mock_consistency.assert_not_called()
+
+    def test_status_lightweight_uses_cache(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient, clear_status_cache
+        from consolidation_memory.config import override_config
+
+        ensure_schema()
+        clear_status_cache()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with override_config(STATUS_CACHE_TTL_SECONDS=60):
+                first = client.status(lightweight=True)
+                with patch.object(client, "_vector_store") as mock_store:
+                    mock_store.size = 99999
+                    second = client.status(lightweight=True)
+        finally:
+            client.close()
+
+        assert first.faiss_index_size == second.faiss_index_size
+        assert second.faiss_index_size != 99999
+
+    def test_status_exposes_fast_path_metrics_from_last_run(self):
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_consolidation_metrics,
+        )
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        insert_consolidation_metrics(
+            run_id="status-fast-path-run",
+            clusters_succeeded=2,
+            clusters_failed=0,
+            avg_confidence=0.9,
+            episodes_processed=4,
+            duration_seconds=1.5,
+            api_calls=0,
+            topics_created=2,
+            topics_updated=0,
+            episodes_pruned=0,
+            fast_path_hits=3,
+            llm_fallbacks=1,
+        )
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            status = client.status()
+        finally:
+            client.close()
+
+        assert status.fast_path_hits == 3
+        assert status.llm_fallbacks == 1
+        quality = status.consolidation_quality
+        assert quality is not None
+        assert quality["total_fast_path_hits"] == 3
+        assert quality["total_llm_fallbacks"] == 1
+        assert quality["fast_path_rate"] == 0.75
+        assert status.consolidation_metrics[0]["fast_path_hits"] == 3
+        assert status.consolidation_metrics[0]["llm_fallbacks"] == 1
 
     def test_status_trust_profile_reports_claim_and_provenance_state(self):
         from consolidation_memory.database import (

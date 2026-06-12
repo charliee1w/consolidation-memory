@@ -53,6 +53,31 @@ def collect_commit_subjects(previous_tag: str | None) -> list[str]:
     return subjects
 
 
+def dirty_paths(porcelain: str) -> list[str]:
+    """Parse ``git status --porcelain`` paths."""
+    paths: list[str] = []
+    for line in porcelain.splitlines():
+        line = line.rstrip("\n")
+        if len(line) < 4:
+            continue
+        paths.append(line[3:].strip())
+    return paths
+
+
+def assert_clean_for_changelog_commit() -> None:
+    """Allow committing when only CHANGELOG.md is dirty."""
+    result = run(["git", "status", "--porcelain"], capture=True)
+    dirty = dirty_paths(result.stdout)
+    if not dirty:
+        return
+    blocked = [path for path in dirty if path != "CHANGELOG.md"]
+    if blocked:
+        sys.exit(
+            "Working tree has uncommitted changes outside CHANGELOG.md. "
+            "Commit or stash them before --commit."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Update CHANGELOG.md Unreleased section.")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing.")
@@ -64,11 +89,6 @@ def main() -> None:
         sys.exit(f"CHANGELOG.md not found at {CHANGELOG}")
     if args.push and not args.commit:
         sys.exit("--push requires --commit.")
-
-    if args.commit:
-        status = run(["git", "status", "--porcelain"], capture=True)
-        if status.stdout.strip():
-            sys.exit("Working tree is not clean. Commit or stash changes before --commit.")
 
     previous_tag = get_latest_tag()
     subjects = collect_commit_subjects(previous_tag)
@@ -97,6 +117,7 @@ def main() -> None:
     if not args.commit:
         return
 
+    assert_clean_for_changelog_commit()
     run(["git", "add", "CHANGELOG.md"])
     message = "chore(changelog): update Unreleased section [skip release]"
     run(["git", "commit", "-m", message])

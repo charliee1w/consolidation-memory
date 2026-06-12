@@ -72,4 +72,8 @@ jobs:
 
       - name: Commit changelog update
         if: steps.update.outputs.changed == 'true'
-        run: python scripts/update_changelog.py --commit --push
+        run: |
+          set -euo pipefail
+          git add CHANGELOG.md
+          git commit -m "chore(changelog): update Unreleased section [skip release]"
+          git push origin main

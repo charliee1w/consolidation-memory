@@ -183,5 +183,5 @@ Integration coverage: `tests/test_integration.py::TestLlmDisabledStructuredConso
 ## Related docs
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — consolidation and scheduler overview
-- [VIBECODING.md](VIBECODING.md) — trust rules and verification for consolidation changes
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — trust invariants and verification for consolidation changes
 - [MODEL_SUPPORT.md](MODEL_SUPPORT.md) — embedding and LLM backend matrix

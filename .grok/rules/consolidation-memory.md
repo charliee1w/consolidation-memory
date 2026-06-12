@@ -1,21 +1,13 @@
 # consolidation-memory (Grok project rules)
 
-Read at session start:
-
-1. `docs/AGENT_GOAL.md` — first unchecked ⬜ task (M1 unless user redirects)
-2. `docs/VIBECODING.md` — trust rules override vague instructions
+Read [CONTRIBUTING.md](../../CONTRIBUTING.md) and [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) before code changes.
 
 ## Workflow
 
-- `memory_recall` before coding (MCP `consolidation_memory` if configured)
-- One slice per session; tests + `ruff check src tests` before done
-- Update `docs/AGENT_GOAL.md` when a task completes
-- `memory_recall` before final response
-
-## Default user intent
-
-User says **"go"** → continue agent goal, pick first open M1 task.
+- Preserve trust invariants (temporal correctness, provenance, contradictions, drift auditability, scope isolation, surface parity).
+- One focused slice per session; run targeted `pytest` + `ruff check src tests` before done.
+- Update user-facing docs when behavior changes.
 
 ## Mantra
 
-Vibe deterministic belief maintenance; LLMs only for unstructured residue; tests prove trust.
+Deterministic belief maintenance first; LLMs only for unstructured residue; tests prove trust.

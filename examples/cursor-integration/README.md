@@ -3,9 +3,7 @@
 ## Agent rules (automatic)
 
 Opening this repo in Cursor loads `.cursor/rules/consolidation-memory.mdc` (`alwaysApply: true`).
-Agents should still read `docs/AGENT_GOAL.md` and `docs/VIBECODING.md` each session.
-
-**Default prompt:** `Continue toward the agent goal — pick the first unchecked M1 task.`
+Contributors should read [CONTRIBUTING.md](../../CONTRIBUTING.md) before code changes.
 
 ## MCP Integration
 

@@ -2,60 +2,59 @@
 
 Thanks for contributing to `consolidation-memory`.
 
-## Development Setup
-
-1. Clone the repository.
-2. Create and activate a virtual environment.
-3. Install development dependencies:
+## Development setup
 
 ```bash
-pip install -r requirements-dev.txt
-```
-
-If you prefer not to use the helper file, the equivalent install is:
-
-```bash
+git clone https://github.com/charliee1w/consolidation-memory
+cd consolidation-memory
 pip install -e ".[all,dev]"
 ```
 
-## Local Validation
+## Trust invariants
 
-Run these checks before opening a pull request:
+Behavior changes must preserve:
+
+1. **Temporal correctness** — `as_of` queries reflect knowledge at that time.
+2. **Provenance traceability** — claims link to source episodes, topics, or records.
+3. **Contradiction visibility** — conflicts are logged and surfaced; history is not silently overwritten.
+4. **Drift challenge auditability** — `code_drift_detected` events and challenged-claim state stay inspectable.
+5. **Scope isolation** — namespace/project/app/agent/session boundaries are not accidentally widened.
+6. **Surface parity** — Python, MCP, REST, and OpenAI tool dispatch share the same semantics.
+
+Schema changes must be additive migrations with tests that call `ensure_schema()`. Invalidate caches (`topic_cache`, `record_cache`, `claim_cache`) after graph or knowledge mutations.
+
+## Local validation
 
 ```bash
-pytest -q
+pytest tests/ -q
 ruff check src tests
-mypy src
-bandit -q -r src scripts
+mypy src/consolidation_memory/
+bandit -q -r src scripts -s B608,B110
 ```
 
-## Agent-assisted development
+For consolidation or claim changes, also run:
 
-If you use AI agents to implement changes, start with [docs/VIBECODING.md](docs/VIBECODING.md).
-It documents trust invariants, safe task sizing, verification commands, and what not to vibe in one pass.
+```bash
+python -m pytest -q tests/test_fast_path_consolidation.py tests/test_claim_emission.py
+```
 
-## Pull Requests
+## Pull requests
 
 1. Create a focused branch from `main`.
 2. Keep changes scoped and include tests for behavior changes.
-3. Update docs when user-visible behavior or release process changes.
-4. Use the repository PR template and open a PR with:
-   - Problem statement
-   - Summary of changes
-   - Test evidence (command output or equivalent)
-   - Risk notes when trust, scope, or adapter parity changes
+3. Update user-facing docs when behavior or setup changes.
+4. Open a PR with problem statement, summary, test evidence, and risk notes for trust or scope changes.
 
-## Commit Style
+## Commit style
 
-- Use clear, imperative commit messages.
-- Prefer small, reviewable commits.
+Use clear, imperative commit messages. Prefer small, reviewable commits.
 
-## Reporting Bugs and Features
+## Reporting bugs and features
 
-- Bug reports and feature requests: [GitHub Issues](https://github.com/charliee1w/consolidation-memory/issues)
-- Usage questions and build showcases: [GitHub Discussions](https://github.com/charliee1w/consolidation-memory/discussions)
-- Security issues: see [SECURITY.md](SECURITY.md)
+- [GitHub Issues](https://github.com/charliee1w/consolidation-memory/issues)
+- [GitHub Discussions](https://github.com/charliee1w/consolidation-memory/discussions)
+- Security: [SECURITY.md](SECURITY.md)
 
-## Code of Conduct
+## Code of conduct
 
 By participating, you agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

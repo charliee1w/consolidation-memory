@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick sanity check that agent bootstrap docs and imports are present.
+"""Quick sanity check that contributor docs and core imports are present.
 
 Run at session start (optional):
     python scripts/agent_bootstrap_check.py
@@ -13,11 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_FILES = [
-    "AGENTS.md",
-    "GOAL.md",
-    "docs/AGENT_GOAL.md",
-    "docs/VIBECODING.md",
+    "CONTRIBUTING.md",
     "docs/ARCHITECTURE.md",
+    "docs/FAST_PATH_EPISODES.md",
     ".grok/rules/consolidation-memory.md",
     ".cursor/rules/consolidation-memory.mdc",
     "src/consolidation_memory/consolidation/fast_path.py",
@@ -47,14 +45,6 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"import failed: {module} ({exc})")
 
-    goal = ROOT / "docs" / "AGENT_GOAL.md"
-    if goal.exists():
-        text = goal.read_text(encoding="utf-8")
-        if "M1 — LLM-optional substrate" not in text:
-            errors.append("docs/AGENT_GOAL.md missing M1 section")
-        if "⬜" not in text:
-            errors.append("docs/AGENT_GOAL.md has no open tasks (⬜)")
-
     if errors:
         print("agent bootstrap check: FAIL")
         for err in errors:
@@ -62,8 +52,7 @@ def main() -> int:
         return 1
 
     print("agent bootstrap check: OK")
-    print(f"  root: {ROOT}")
-    print("  next: read docs/AGENT_GOAL.md and pick first unchecked M1 task")
+    print("  next: read CONTRIBUTING.md and docs/ARCHITECTURE.md before coding")
     return 0
 
 

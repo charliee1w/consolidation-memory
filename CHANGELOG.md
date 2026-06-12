@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 - 2026-06-12
 
 ### Features
 
@@ -8,13 +8,14 @@
 
 ### Bug Fixes
 
-- fix: resolve mypy arg-type errors in client and consolidation paths
-- fix(ci): commit changelog update after refresh step writes file
 - fix: make schema migrations v18-v20 idempotent on replay
+- fix(ci): commit changelog update after refresh step writes file
+- fix: resolve mypy arg-type errors in client and consolidation paths
 
 ### Documentation
 
 - docs: document changelog CI commit flow and docs guard
+
 
 ## 0.15.0 - 2026-03-28
 

@@ -285,16 +285,15 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_action_outcome_refs_outcome ON action_outcome_refs(outcome_id)",
         "CREATE INDEX IF NOT EXISTS idx_action_outcome_refs_lookup ON action_outcome_refs(ref_type, ref_value)",
     ],
-    18: [
-        "ALTER TABLE consolidation_metrics ADD COLUMN fast_path_hits INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE consolidation_metrics ADD COLUMN llm_fallbacks INTEGER NOT NULL DEFAULT 0",
-    ],
-    19: [
-        "ALTER TABLE claims ADD COLUMN precision REAL NOT NULL DEFAULT 1.0",
-    ],
-    20: [
-        "ALTER TABLE consolidation_scheduler ADD COLUMN last_trigger_breakdown TEXT",
-    ],
+    # Migration 18 is applied specially in _apply_migration() so fast-path
+    # metric columns are added idempotently on replay.
+    18: [],
+    # Migration 19 is applied specially in _apply_migration() so the precision
+    # column is added idempotently when replaying from an older version marker.
+    19: [],
+    # Migration 20 is applied specially in _apply_migration() so the scheduler
+    # trigger breakdown column is added idempotently on replay.
+    20: [],
 }
 
 OUTCOME_TYPES: tuple[str, ...] = (
@@ -950,6 +949,15 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
     if version == 16:
         _apply_episode_index_visibility_migration(conn)
         return
+    if version == 18:
+        _apply_consolidation_metrics_fast_path_migration(conn)
+        return
+    if version == 19:
+        _apply_claim_precision_migration(conn)
+        return
+    if version == 20:
+        _apply_scheduler_trigger_breakdown_migration(conn)
+        return
     savepoint = f"migration_v{version}"
     conn.execute(f"SAVEPOINT {savepoint}")
     try:
@@ -1025,6 +1033,7 @@ def _repair_schema_invariants(conn: sqlite3.Connection) -> None:
     """
     _apply_topic_storage_migration(conn)
     _apply_episode_index_visibility_migration(conn)
+    _apply_consolidation_metrics_fast_path_migration(conn)
     _apply_claim_precision_migration(conn)
     _apply_scheduler_trigger_breakdown_migration(conn)
 
@@ -1270,6 +1279,22 @@ def _apply_episode_index_visibility_migration(conn: sqlite3.Connection) -> None:
         column_sql="indexed INTEGER NOT NULL DEFAULT 1",
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_indexed ON episodes(indexed)")
+
+
+def _apply_consolidation_metrics_fast_path_migration(conn: sqlite3.Connection) -> None:
+    """Apply schema v18: fast-path vs LLM fallback counters on consolidation metrics."""
+    _add_column_if_missing(
+        conn,
+        table_name="consolidation_metrics",
+        column_name="fast_path_hits",
+        column_sql="fast_path_hits INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column_if_missing(
+        conn,
+        table_name="consolidation_metrics",
+        column_name="llm_fallbacks",
+        column_sql="llm_fallbacks INTEGER NOT NULL DEFAULT 0",
+    )
 
 
 def _apply_claim_precision_migration(conn: sqlite3.Connection) -> None:

@@ -5,161 +5,163 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/charliee1w/consolidation-memory/test.yml?label=tests)](https://github.com/charliee1w/consolidation-memory/actions)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://pypi.org/project/consolidation-memory/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/charliee1w/consolidation-memory?style=social)](https://github.com/charliee1w/consolidation-memory/stargazers)
 
-Trust-calibrated working memory for coding agents.
+**Trust-calibrated working memory for coding agents.**
 
-`consolidation-memory` is built around a simple stance: claims are the reusable unit, episodes are the raw evidence, and code drift is a first-class reason to distrust stale memory. The system stores episodic events, consolidates them into structured knowledge and claims, and serves the same trust-aware retrieval semantics across Python, MCP, REST, and OpenAI-style tool calls.
+Store what happened. Consolidate what you learned. Recall with provenance — and lower trust when the repo moves on.
 
-## Design Philosophy
+`consolidation-memory` is local-first agent memory built for long-horizon coding work: SQLite + FAISS + markdown topics on disk, one semantic contract across Python, MCP, REST, and OpenAI-style tools, and explicit trust signals instead of opaque similarity search.
 
-- Treat the system as a trust layer for coding-agent memory, not a generic blob store.
-- Prefer reusable claims with provenance over raw episodic recall.
-- Keep uncertainty visible through temporal validity, contradiction history, and drift challenge signals.
-- Preserve local-first inspectability: SQLite, FAISS, markdown, and logs should all stay understandable on disk.
-- Support shared memory only when scopes and policy make reuse safe.
+---
 
-## What It Is And Is Not
+## At a glance
 
-`consolidation-memory` is for:
+| | Typical agent memory | consolidation-memory |
+| --- | --- | --- |
+| Unit of reuse | Embedded chat snippets | **Claims** — hash-stable beliefs with provenance |
+| Raw input | Same blob as retrieval | **Episodes** — evidence kept separate from beliefs |
+| Staleness | Hidden until wrong | **Drift challenge** when anchored files change |
+| Time | Present-tense only | **`as_of`** queries for prior belief states |
+| Sharing | Hope the filter works | **Scope envelopes** + persisted policy/ACL primitives |
+| Consolidation | Always calls an LLM | **Fast path** for structured episodes; LLM only for residue |
 
-- coding agents that need durable, inspectable working memory
-- teams that want reusable claims without mixing unrelated contexts
-- workflows where code changes should automatically reduce trust in older conclusions
+**Product wedge:** [drift-aware debugging memory](docs/NOVELTY_WEDGE.md) — preserve fixes, recall with trust signals, degrade gracefully after refactors.
 
-`consolidation-memory` is not trying to be:
+---
 
-- a generic “memory for every AI app” platform
-- a replacement for source control, issue trackers, or primary documentation
-- a black-box vector store that hides why something was retrieved
+## Mental model
 
-## Try It In 5 Minutes
-
-```bash
-pip install "consolidation-memory[fastembed]"
-consolidation-memory init
-consolidation-memory test
-consolidation-memory serve
-```
-
-Pick `disabled` for the LLM step unless you already have LM Studio, Ollama, or OpenAI configured. That gives you a clean first-run path with local storage, recall, and MCP serving.
-
-What that gives you immediately:
-
-- Durable local storage with SQLite + FAISS
-- A health check that validates the runtime end to end
-- An MCP server that coding agents can connect to over stdio
-- A clean path to REST, OpenAI-style tools, and scoped shared-memory use later
-
-If you want runnable integration snippets instead of docs, start in [examples/](examples/README.md).
-
-## Why It Is Different
-
-| Capability | What `consolidation-memory` does |
-| --- | --- |
-| Local-first persistence | Stores memory on disk in inspectable SQLite, FAISS, markdown, and log artifacts |
-| Claim-first trust layer | Treats claims as the reusable memory unit and episodes as supporting evidence |
-| Trust-aware retrieval | Tracks temporal validity, contradictions, provenance, and claim lifecycle events |
-| Drift-aware knowledge | Maps changed files to anchored claims and challenges impacted knowledge automatically |
-| Shared memory without chaos | Supports namespace/project/app/agent/session scope dimensions with policy controls |
-| Transport parity | Keeps MCP, REST, Python, and OpenAI-style tool semantics aligned |
-| Builder ergonomics | Ships package metadata, release gates, examples, smoke tests, CI, and contributor docs |
-
-## Architecture At A Glance
-
-```mermaid
-flowchart LR
-    A["Agent / App"] --> B["MCP / REST / Python / OpenAI tools"]
-    B --> C["MemoryClient"]
-    C --> D["Canonical query semantics"]
-    C --> E["SQLite + knowledge markdown"]
-    C --> F["FAISS vector store"]
-    C --> G["Claim graph + anchors + drift signals"]
-    G --> H["Changed files -> challenged claims"]
-    D --> I["Episodes + topics + records + claims"]
-```
-
-More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-**LLM-optional consolidation:** store [structured episode shapes](docs/FAST_PATH_EPISODES.md) (preferences, path-anchored solutions, JSON facts/procedures) and consolidate with `llm.backend = "disabled"` — no LLM calls when every episode in a cluster matches a fast-path parser.
-
-`memory_status` / `MemoryClient.status()` also expose a `trust_profile` so callers can inspect current claim coverage, provenance coverage, anchor coverage, contradiction pressure, and drift-watch posture. Fast-path metrics (`fast_path_hits`, `llm_fallbacks`) show how much consolidation ran deterministically on the last run.
-
-## Examples
-
-The repo now keeps runnable or close-to-runnable examples in the root [examples/](examples/README.md) directory:
-
-- [Python quickstart](examples/python-quickstart/quickstart.py)
-- [REST API client](examples/rest-api/README.md)
-- [Cursor MCP config](examples/cursor-integration/README.md)
-- [Continue config](examples/continue-dev/README.md)
-- [LangGraph memory node](examples/langgraph-memory-node/README.md)
-- [Plugin hook example](examples/plugins/README.md)
-
-Legacy raw config snippets still exist under [docs/examples/](docs/examples/).
-
-## Backend Support
-
-`consolidation-memory` supports both fully local and hosted setups.
-
-| Layer | Supported backends | Recommended default | Local-only option |
-| --- | --- | --- | --- |
-| Embeddings | `fastembed`, `lmstudio`, `openai`, `ollama` | `fastembed` | `fastembed`, `lmstudio`, `ollama` |
-| LLM consolidation | `lmstudio`, `openai`, `ollama`, `disabled` | `lmstudio` | `lmstudio`, `ollama`, `disabled` |
-
-See [docs/MODEL_SUPPORT.md](docs/MODEL_SUPPORT.md) for the full matrix, defaults, and install notes.
-
-## Privacy And Trust
-
-- No built-in telemetry.
-- Data is stored locally under `platformdirs.user_data_dir("consolidation_memory")`.
-- Network calls only go to the embedding and LLM backends you configure.
-- REST auth is required before non-loopback binds.
-- The repo ships with tests, smoke checks, release gates, lint, type checks, and security scanning.
-
-## Install
-
-```bash
-pip install "consolidation-memory[fastembed]"
-```
-
-Common extras:
-
-- `consolidation-memory[rest]` for FastAPI endpoints
-- `consolidation-memory[fastembed,rest]` for the default local REST setup
-- `consolidation-memory[dashboard]` for the Textual dashboard
-- `consolidation-memory[openai]` for the OpenAI SDK backend
-- `consolidation-memory[all,dev]` for full local development
-
-## Quick Start
-
-```bash
-consolidation-memory init
-consolidation-memory test
-consolidation-memory serve
-```
-
-`consolidation-memory` with no subcommand defaults to `serve`.
-
-## CLI Commands
+> claims are the reusable unit; episodes are the raw evidence behind them.
 
 ```text
-serve            Start MCP server (default command)
-serve --rest     Start REST API
-init             Interactive setup
-test             End-to-end health check
-status           Runtime/system stats
-consolidate      Trigger consolidation run
-detect-drift     Challenge claims impacted by changed files
-export           Export full snapshot JSON
-import PATH      Import snapshot JSON
-reindex          Rebuild vectors with current embedding backend
-browse           Browse knowledge topics
-setup-memory     Add reusable memory instructions to an agent file
-dashboard        Launch Textual dashboard
+  Episode                 Evidence from a session (chat, tool output, structured JSON)
+      │
+      ▼ consolidation
+  Knowledge record        Typed fact · solution · preference · procedure · strategy
+      │
+      ▼ deterministic materialization
+  Claim                   Reusable belief + sources + lifecycle events
+      │
+      ▼ human-readable view
+  Topic                   Markdown file + DB rows you can open and audit
 ```
 
-## MCP Setup
+Contradictions, challenges, and expiry stay visible. The system does not silently overwrite uncertain beliefs.
+
+```mermaid
+flowchart TB
+  subgraph ingest["Ingest"]
+    E["Episodes"]
+    A["File / path anchors"]
+  end
+
+  subgraph consolidate["Consolidate"]
+    C["Cluster by embedding + scope"]
+    FP["Fast path — no LLM"]
+    LLM["LLM extraction — unstructured residue"]
+    R["Knowledge records"]
+    CL["Claims + edges + events"]
+  end
+
+  subgraph recall["Recall"]
+    H["Hybrid search — FAISS + FTS + trust ranking"]
+    T["Temporal filter — as_of"]
+    S["Scope + policy filter"]
+  end
+
+  subgraph trust["Trust maintenance"]
+    D["Git drift → challenge claims"]
+    X["Contradiction log"]
+    P["Precision + outcome signals"]
+  end
+
+  E --> C
+  A --> E
+  C --> FP
+  C --> LLM
+  FP --> R
+  LLM --> R
+  R --> CL
+  CL --> H
+  E --> H
+  H --> T
+  T --> S
+  D --> CL
+  X --> CL
+  P --> CL
+```
+
+Deep dive: [Architecture](docs/ARCHITECTURE.md)
+
+---
+
+## Capabilities
+
+### Hybrid recall
+
+Semantic vectors (FAISS), keyword fallback (FTS5 when available), and metadata-aware ranking across episodes, topics, records, and claims. Responses can include uncertainty, contradiction context, strategy evidence, and scope attribution.
+
+### Consolidation with a deterministic fast path
+
+Related episodes cluster by embedding similarity with scope isolation. Structured episodes consolidate **without LLM calls** when they match [fast-path shapes](docs/FAST_PATH_EPISODES.md); everything else falls back to your configured LLM backend (or fails clearly when `llm.backend = "disabled"`).
+
+### Drift-aware trust
+
+`detect_drift` maps `git` changes → file anchors → impacted claims → auditable `code_drift_detected` events. Stale debugging conclusions lose precision instead of masquerading as fresh facts.
+
+### Temporal correctness
+
+Query what was believed at a point in time with `as_of` on recall and claim search — useful after refactors, rollbacks, or postmortems.
+
+### Scoped sharing
+
+Namespace, project, app, agent, and session columns persist on memory rows. Policy and ACL tables support intentional sharing without accidental cross-project leakage. Details: [Architecture — scope](docs/ARCHITECTURE.md).
+
+### Adaptive scheduling
+
+A utility scheduler weighs backlog pressure, recall misses, contradiction spikes, challenged claims, and failed action outcomes. `memory_status` exposes `utility_scheduler.run_decision.explanation`, `fast_path_hits`, `llm_fallbacks`, and `trust_profile` so automation is inspectable, not magical.
+
+### Surface parity
+
+Every transport routes through `MemoryClient` and shared query semantics — no “MCP-only” behavior drift.
+
+| Surface | Entry |
+| --- | --- |
+| Python | `from consolidation_memory import MemoryClient` |
+| MCP | `consolidation-memory serve` / `python -m consolidation_memory serve` |
+| REST | `consolidation-memory serve-rest` (optional `[rest]` extra) |
+| OpenAI tools | `schemas.openai_tools` + `dispatch_tool_call` |
+
+---
+
+## Quick start
+
+```bash
+pip install "consolidation-memory[fastembed]"
+consolidation-memory init
+consolidation-memory test
+consolidation-memory serve
+```
+
+During `init`, choose **`disabled`** for the LLM backend unless you already run LM Studio, Ollama, or OpenAI. You still get durable storage, hybrid recall, drift detection, and MCP serving.
+
+**Optional extras**
+
+| Extra | Enables |
+| --- | --- |
+| `[fastembed]` | Local embeddings (recommended default) |
+| `[openai]` | Hosted OpenAI embeddings / LLM |
+| `[rest]` | FastAPI HTTP server |
+| `[dashboard]` | Textual TUI inspector |
+| `[all,dev]` | Full stack + test/lint tooling |
+
+Backend matrix: [Model support](docs/MODEL_SUPPORT.md) · Runnable wiring: [examples/](examples/README.md)
+
+---
+
+## Connect your agent (MCP)
+
+Use an **absolute Python path** — more reliable than a console script, especially on Windows:
 
 ```json
 {
@@ -176,212 +178,156 @@ dashboard        Launch Textual dashboard
 }
 ```
 
-Prefer an exact Python interpreter over the `consolidation-memory` console script. It avoids PATH and env drift and is more reliable on Windows when MCP hosts restart the server.
+Drop-in configs: [Cursor](examples/cursor-integration/README.md) · [Continue](examples/continue-dev/README.md)
 
-The stdio MCP server now enforces one live server per parent process and project, and the recommended idle timeout is 900 seconds so leaked hosts self-clean instead of accumulating indefinitely. Set `CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS=0` only if you explicitly need a never-exit server.
+### MCP tools (representative)
 
-MCP tools exposed by `server.py`:
+| Tool | Purpose |
+| --- | --- |
+| `memory_store` / `memory_store_batch` | Persist episodes with type, tags, scope |
+| `memory_recall` | Hybrid recall over episodes, topics, records, claims |
+| `memory_search` | Plain-text search (non-semantic) |
+| `memory_claim_search` / `memory_claim_browse` | Claim-centric retrieval |
+| `memory_detect_drift` | Git-based claim challenge |
+| `memory_consolidate` | Run consolidation on demand |
+| `memory_status` | Health, scheduler, trust_profile, fast-path metrics |
+| `memory_timeline` / `memory_contradictions` | Audit lifecycle and conflicts |
+| `memory_export` / `memory_correct` | Backup and human corrections |
+| `memory_outcome_record` / `memory_outcome_browse` | Link actions to outcomes |
 
-- `memory_store`
-- `memory_recall`
-- `memory_store_batch`
-- `memory_search`
-- `memory_claim_browse`
-- `memory_claim_search`
-- `memory_detect_drift`
-- `memory_status`
-- `memory_forget`
-- `memory_export`
-- `memory_correct`
-- `memory_compact`
-- `memory_consolidate`
-- `memory_consolidation_log`
-- `memory_decay_report`
-- `memory_protect`
-- `memory_timeline`
-- `memory_contradictions`
-- `memory_browse`
-- `memory_read_topic`
+Full schemas: [`src/consolidation_memory/schemas.py`](src/consolidation_memory/schemas.py)
 
-## Python Example
+---
+
+## Python API
 
 ```python
 from consolidation_memory import MemoryClient
 
 with MemoryClient(auto_consolidate=False) as mem:
     mem.store(
-        "User prefers short PR summaries with concrete file paths.",
+        "Prefer PR summaries with concrete file paths, not high-level narration.",
         content_type="preference",
         tags=["workflow", "reviews"],
     )
-
-    result = mem.recall(
-        "how should I format PR summaries?",
-        n_results=5,
-        include_knowledge=True,
-    )
-
-    print(len(result.episodes), len(result.knowledge), len(result.records), len(result.claims))
+    result = mem.recall("how should I format PR summaries?", n_results=5)
+    print(result.episodes, result.claims)
 ```
 
-## REST API
+Challenge stale beliefs after code changes:
 
-Run:
-
-```bash
-pip install "consolidation-memory[fastembed,rest]"
-consolidation-memory serve --rest --host 127.0.0.1 --port 8080
+```python
+report = mem.detect_drift()
+print(report.challenged_claim_ids)
 ```
 
-For non-loopback binds (for example `--host 0.0.0.0`), set auth first:
+Inspect trust and scheduler state:
 
-```bash
-export CONSOLIDATION_MEMORY_REST_AUTH_TOKEN="change-me"
-consolidation-memory serve --rest --host 0.0.0.0 --port 8080
+```python
+status = mem.status()
+print(status["trust_profile"])
+print(status["utility_scheduler"]["run_decision"]["explanation"])
 ```
 
-```powershell
-$env:CONSOLIDATION_MEMORY_REST_AUTH_TOKEN = "change-me"
-consolidation-memory serve --rest --host 0.0.0.0 --port 8080
-```
+---
 
-When auth is enabled, send `Authorization: Bearer <token>` on all endpoints except `/health`.
+## LLM-optional consolidation
 
-Endpoints:
+Set `llm.backend = "disabled"` and store episodes in [fast-path shapes](docs/FAST_PATH_EPISODES.md) — preferences, path-anchored solutions, JSON facts/procedures/strategies. Consolidation stays deterministic; unstructured residue simply does not consolidate until you enable an LLM.
 
-- `GET /health`
-- `POST /memory/store`
-- `POST /memory/store/batch`
-- `POST /memory/recall`
-- `POST /memory/search`
-- `POST /memory/claims/browse`
-- `POST /memory/claims/search`
-- `POST /memory/detect-drift`
-- `GET /memory/status`
-- `DELETE /memory/episodes/{episode_id}`
-- `POST /memory/consolidate`
-- `POST /memory/correct`
-- `POST /memory/export`
-- `POST /memory/compact`
-- `GET /memory/browse`
-- `GET /memory/topics/{filename}`
-- `POST /memory/timeline`
-- `POST /memory/contradictions`
-- `POST /memory/protect`
-- `POST /memory/consolidation-log`
-- `GET /memory/decay-report`
+`memory_status` reports extraction mix (`fast_path_hits`, `llm_fallbacks`), consolidation quality aggregates, and why the scheduler would run next.
 
-## OpenAI-Compatible Tools
+---
 
-Use:
+## Who this is for
 
-- `consolidation_memory.schemas.openai_tools`
-- `consolidation_memory.schemas.dispatch_tool_call`
+**Good fit**
 
-This keeps tool definitions and dispatch behavior aligned with the same semantics used by MCP and REST.
+- Developers using Cursor, Claude Code, Continue, or custom agents on real repositories
+- Teams that need durable agent memory with explicit scope boundaries
+- Workflows where file changes should reduce trust in prior conclusions
+- Builders who want inspectable on-disk artifacts, not a hosted black box
 
-## Scope Model (Compatibility + Shared Use)
+**Not a fit**
 
-By default, existing single-project usage still works.
+- Generic “remember everything” consumer assistants
+- Replacing git, issue trackers, or canonical product docs
+- Opaque vector RAG with no provenance story
 
-When a scope envelope is provided, records are persisted with explicit scope dimensions:
+---
 
-- `namespace_*`
-- `project_*`
-- `app_client_*`
-- `agent_*`
-- `session_*`
+## Privacy and data
 
-This allows selective sharing without mixing unrelated contexts.
+- No built-in telemetry.
+- Default data dir: `platformdirs.user_data_dir("consolidation_memory")/projects/<project>/`
+- Network I/O only to embedding/LLM backends **you** configure.
+- REST binds require auth before non-loopback exposure.
 
-Optional `scope.policy` controls:
+---
 
-- `read_visibility`: `private` (default), `project`, `namespace`
-- `write_mode`: `allow` (default), `deny`
+## Open source and commercial boundary
 
-Persisted ACL entities are also supported (`access_policies`, `policy_principals`, `policy_acl_entries`).
-When persisted ACL rows match the resolved scope and principal, they are authoritative over `scope.policy`.
-Conflict rules: write `deny` overrides `allow`; read visibility resolves to the most restrictive level.
+The **MIT core** — local engine, trust semantics, MCP/REST/Python parity, drift, release gates — stays free. That is the adoption surface.
 
-## Storage Layout
+Planned **Team / Enterprise** capabilities (hosted sync, policy admin UI, compliance exports) are described in [docs/MONETIZATION.md](docs/MONETIZATION.md). Drift detection, provenance, and solo local use are not paywalled.
 
-Data is under `platformdirs.user_data_dir("consolidation_memory")/projects/<project>/`.
+Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) · living engineering backlog: [docs/AGENT_GOAL.md](docs/AGENT_GOAL.md)
 
-```text
-memory.db
-faiss_index.bin
-faiss_id_map.json
-faiss_tombstones.json
-.faiss_reload
-knowledge/
-knowledge/versions/
-consolidation_logs/
-backups/
-```
+---
 
-## Configuration
+## Documentation
 
-Config file discovery:
+### Start here
 
-1. `CONSOLIDATION_MEMORY_CONFIG`
-2. Platform default config path
-3. Built-in defaults
+| Doc | Why read it |
+| --- | --- |
+| [Architecture](docs/ARCHITECTURE.md) | Modules, persistence, data flow |
+| [Fast-path episodes](docs/FAST_PATH_EPISODES.md) | LLM-free consolidation shapes |
+| [Model support](docs/MODEL_SUPPORT.md) | Embedding and LLM backends |
+| [Examples](examples/README.md) | Cursor, REST, LangGraph, plugins |
 
-Every scalar field can be overridden with `CONSOLIDATION_MEMORY_<FIELD_NAME>`.
+### Trust and quality
 
-Examples:
+| Doc | Why read it |
+| --- | --- |
+| [Novelty wedge](docs/NOVELTY_WEDGE.md) | Product focus and measurable claims |
+| [Release gates](docs/RELEASE_GATES.md) | Pre-publish requirements |
+| [Novelty metrics](docs/NOVELTY_METRICS.md) | Evaluation harness |
+| [Release automation](docs/RELEASE_AUTOMATION.md) | Changelog and release CI |
 
-```bash
-CONSOLIDATION_MEMORY_PROJECT=work
-CONSOLIDATION_MEMORY_EMBEDDING_BACKEND=fastembed
-CONSOLIDATION_MEMORY_LLM_BACKEND=ollama
-CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=6
-```
+### Building and operating
 
-## Documentation Map
+| Doc | Why read it |
+| --- | --- |
+| [Agent session guide](AGENTS.md) | Contributor / coding-agent workflow |
+| [Vibecoding guide](docs/VIBECODING.md) | Trust invariants for code changes |
+| [Builder baseline](docs/BUILDER_BASELINE.md) | Smoke and integration checks |
 
-- [Agent Goal](docs/AGENT_GOAL.md) — living backlog (agents start here)
-- [Vibecoding Guide](docs/VIBECODING.md) — rules for AI agents and iterative development
-- [Agent Session Guide](AGENTS.md) — per-session workflow
-- [Architecture](docs/ARCHITECTURE.md)
-- [Builder Baseline](docs/BUILDER_BASELINE.md)
-- [Model Support](docs/MODEL_SUPPORT.md)
-- [Release Gates](docs/RELEASE_GATES.md)
-- [Release Automation](docs/RELEASE_AUTOMATION.md)
-- [Monetization Plan](docs/MONETIZATION.md) — open-core vs Team/Enterprise paid surface
-- [Novelty Metrics](docs/NOVELTY_METRICS.md)
-- [Novelty Eval Guide](docs/NOVELTY_EVAL_GUIDE.md)
-- [External Review Playbook](docs/EXTERNAL_REVIEW_PLAYBOOK.md)
-- [Recommended Agent Instructions](docs/recommended-agent-instructions.md)
-- [Universal-memory strategy docs](docs/strategy/)
+Long-horizon design notes (not the day-to-day backlog): [docs/strategy/](docs/strategy/)
+
+---
 
 ## Development
 
 ```bash
 git clone https://github.com/charliee1w/consolidation-memory
 cd consolidation-memory
-pip install -r requirements-dev.txt
+pip install -e ".[all,dev]"
 python scripts/smoke_builder_base.py
 pytest tests/ -q
-pytest tests/ -q -W error::ResourceWarning
-ruff check src/ tests/
+ruff check src tests
 mypy src/consolidation_memory/
-bandit -q -r src scripts
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for PR expectations.
+
+---
 
 ## Community
 
-- Contributors: [CONTRIBUTORS.md](CONTRIBUTORS.md)
-- Issues: [GitHub Issues](https://github.com/charliee1w/consolidation-memory/issues)
-- Discussions: [GitHub Discussions](https://github.com/charliee1w/consolidation-memory/discussions)
-- Releases: [GitHub Releases](https://github.com/charliee1w/consolidation-memory/releases)
+- [Issues](https://github.com/charliee1w/consolidation-memory/issues)
+- [Discussions](https://github.com/charliee1w/consolidation-memory/discussions)
+- [Releases](https://github.com/charliee1w/consolidation-memory/releases) · [Changelog](CHANGELOG.md)
+- [Security policy](https://github.com/charliee1w/consolidation-memory/security/policy)
 
-## License, Etc.
-
-Project policies:
-
-- [Security](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
-
-MIT
+MIT · [Code of Conduct](CODE_OF_CONDUCT.md)

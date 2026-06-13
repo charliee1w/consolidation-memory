@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Other
+
+- Maintenance release.
+
+
 ## 0.17.0 - 2026-06-13
 
 ### Features

@@ -101,7 +101,11 @@ _EMBED_DEFAULTS: dict[str, dict[str, str | int]] = {
     "fastembed": {"model": "BAAI/bge-small-en-v1.5", "dimension": 384},
     "lmstudio": {"model": "text-embedding-nomic-embed-text-v1.5", "dimension": 768},
     "openai": {"model": "text-embedding-3-small", "dimension": 1536},
-    "ollama": {"model": "nomic-embed-text", "dimension": 768},
+    "ollama": {
+        "model": "nomic-embed-text",
+        "dimension": 768,
+        "api_base": "http://localhost:11434",
+    },
 }
 
 _DEFAULT_STOPWORDS = frozenset(
@@ -154,8 +158,11 @@ class Config:
     LOG_DIR: Path = field(default_factory=lambda: Path("."))
     BACKUP_DIR: Path = field(default_factory=lambda: Path("."))
     KNOWLEDGE_VERSIONS_DIR: Path = field(default_factory=lambda: Path("."))
+    EMBEDDING_CACHE_DIR: Path = field(default_factory=lambda: Path("."))
 
     # ── Embedding model ──────────────────────────────────────────────────
+    EMBEDDING_DISK_CACHE_ENABLED: bool = True
+    EMBEDDING_ENCODE_BATCH_SIZE: int = 128
     EMBEDDING_BACKEND: str = "fastembed"
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
     EMBEDDING_DIMENSION: int = 384
@@ -272,12 +279,15 @@ class Config:
     STATUS_LIGHTWEIGHT_DEFAULT: bool = False
     STATUS_CACHE_TTL_SECONDS: float = 30.0
     WARMUP_PRIME_TOPIC_CACHE: bool = True
-    WARMUP_PRIME_RECORD_CACHE: bool = False
+    WARMUP_PRIME_RECORD_CACHE: bool = True
     WARMUP_PRIME_CLAIM_CACHE: bool = False
     WARMUP_CLAIM_LIMIT: int = 100
 
     # ── Recall deduplication ──────────────────────────────────────────────
     RECALL_DEDUP_ENABLED: bool = True
+
+    # ── Solution-shaped query boost ───────────────────────────────────────
+    SOLUTION_QUERY_BOOST: float = 0.08
 
     # ── Plugins ───────────────────────────────────────────────────────────
     PLUGINS_ENABLED: list[str] = field(default_factory=list)
@@ -316,6 +326,7 @@ class Config:
         self.CONSOLIDATION_LOG_DIR = self.DATA_DIR / "consolidation_logs"
         self.LOG_DIR = self._base_data_dir / "logs"
         self.BACKUP_DIR = self.DATA_DIR / "backups"
+        self.EMBEDDING_CACHE_DIR = self.DATA_DIR / "embedding_cache"
 
 
 def _apply_env_overrides(c: Config) -> None:
@@ -430,7 +441,10 @@ def _build_config(
         EMBEDDING_BACKEND=embed_backend,
         EMBEDDING_MODEL_NAME=_embed.get("model", _edefs["model"]),
         EMBEDDING_DIMENSION=int(_embed.get("dimension", _edefs["dimension"])),
-        EMBEDDING_API_BASE=_embed.get("api_base", "http://127.0.0.1:1234/v1"),
+        EMBEDDING_API_BASE=_embed.get(
+            "api_base",
+            str(_edefs.get("api_base", "http://127.0.0.1:1234/v1")),
+        ),
         EMBEDDING_API_KEY=_embed.get("api_key", ""),
         # FAISS
         FAISS_SIZE_WARNING_THRESHOLD=int(_faiss.get("size_warning_threshold", 10_000)),
@@ -538,12 +552,17 @@ def _build_config(
         ),
         STATUS_CACHE_TTL_SECONDS=float(_retrieval.get("status_cache_ttl_seconds", 30.0)),
         WARMUP_PRIME_TOPIC_CACHE=_coerce_bool(_retrieval.get("warmup_prime_topic_cache", True)),
+        EMBEDDING_DISK_CACHE_ENABLED=_coerce_bool(
+            _retrieval.get("embedding_disk_cache_enabled", True)
+        ),
+        EMBEDDING_ENCODE_BATCH_SIZE=int(_retrieval.get("embedding_encode_batch_size", 128)),
         WARMUP_PRIME_RECORD_CACHE=_coerce_bool(
-            _retrieval.get("warmup_prime_record_cache", False)
+            _retrieval.get("warmup_prime_record_cache", True)
         ),
         WARMUP_PRIME_CLAIM_CACHE=_coerce_bool(_retrieval.get("warmup_prime_claim_cache", False)),
         WARMUP_CLAIM_LIMIT=int(_retrieval.get("warmup_claim_limit", 100)),
         RECALL_DEDUP_ENABLED=_coerce_bool(_retrieval.get("recall_dedup_enabled", True)),
+        SOLUTION_QUERY_BOOST=float(_retrieval.get("solution_query_boost", 0.08)),
         # Plugins
         PLUGINS_ENABLED=list(_plugins.get("enabled", [])),
         # Circuit breaker

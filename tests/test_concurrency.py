@@ -146,7 +146,7 @@ class TestStoreDuringRecall:
 
 
 class TestCacheVersionRace:
-    @patch("consolidation_memory.topic_cache.encode_documents")
+    @patch("consolidation_memory.topic_cache.embed_items_incremental")
     @patch("consolidation_memory.topic_cache.get_all_knowledge_topics")
     def test_topic_cache_invalidate_during_fetch(self, mock_topics, mock_embed, tmp_data_dir):
         """Concurrent invalidate during fetch returns dimensionally consistent data."""
@@ -167,10 +167,10 @@ class TestCacheVersionRace:
         assert vecs.shape[0] == 5
 
         # Now set up: embed will be slow, and we invalidate mid-fetch
-        def slow_embed(texts):
+        def slow_embed(items, **kwargs):
             # Invalidate while "embedding" is in progress
             topic_cache.invalidate()
-            return np.random.randn(len(texts), 384).astype(np.float32)
+            return np.random.randn(len(list(items)), 384).astype(np.float32)
 
         mock_embed.side_effect = slow_embed
 
@@ -179,7 +179,7 @@ class TestCacheVersionRace:
         assert vecs2 is not None
         assert len(topics2) == vecs2.shape[0]
 
-    @patch("consolidation_memory.record_cache.encode_documents")
+    @patch("consolidation_memory.record_cache._embed_records")
     @patch("consolidation_memory.record_cache.get_all_active_records")
     def test_record_cache_invalidate_during_fetch(self, mock_records, mock_embed, tmp_data_dir):
         """Concurrent invalidate during record fetch returns dimensionally consistent data."""
@@ -200,9 +200,9 @@ class TestCacheVersionRace:
         assert vecs.shape[0] == 5
 
         # Invalidate during embed
-        def slow_embed(texts):
+        def slow_embed(records, **kwargs):
             record_cache.invalidate()
-            return np.random.randn(len(texts), 384).astype(np.float32)
+            return np.random.randn(len(records), 384).astype(np.float32)
 
         mock_embed.side_effect = slow_embed
 

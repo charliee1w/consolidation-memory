@@ -378,7 +378,11 @@ def cmd_test() -> None:
         sys.exit(1)
 
 
-def cmd_consolidate():
+def cmd_consolidate(
+    *,
+    min_cluster_size: int | None = None,
+    singleton: bool = False,
+):
     """Run consolidation manually."""
     import logging
     logging.basicConfig(
@@ -386,7 +390,15 @@ def cmd_consolidate():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
     from consolidation_memory.consolidation import run_consolidation
-    result = run_consolidation()
+
+    effective_min = 1 if singleton else min_cluster_size
+    if singleton and min_cluster_size is not None and min_cluster_size != 1:
+        print(
+            "Warning: --singleton implies --min-cluster-size 1; "
+            f"ignoring explicit value {min_cluster_size}.",
+            file=sys.stderr,
+        )
+    result = run_consolidation(min_cluster_size=effective_min)
     print(json.dumps(result, indent=2, default=str))
 
 
@@ -950,9 +962,11 @@ def cmd_reindex() -> None:
     all_ids: list[str] = []
     all_vecs: list[np.ndarray] = []
 
+    from consolidation_memory.episode_embedding import embedding_text_for_episode_row
+
     for i in range(0, len(episodes), batch_size):
         batch = episodes[i:i + batch_size]
-        texts = [ep["content"] for ep in batch]
+        texts = [embedding_text_for_episode_row(ep) for ep in batch]
         try:
             vecs = encode_documents(texts)
             all_ids.extend(ep["id"] for ep in batch)
@@ -1190,7 +1204,19 @@ def main():
     p_serve.add_argument("--port", type=int, default=8080, help="REST port (default: 8080)")
     sub.add_parser("init", help="Interactive first-run setup")
     sub.add_parser("test", help="Verify installation works end-to-end")
-    sub.add_parser("consolidate", help="Run consolidation manually")
+    p_consolidate = sub.add_parser("consolidate", help="Run consolidation manually")
+    p_consolidate.add_argument(
+        "--min-cluster-size",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Override consolidation.min_cluster_size for this run (use 1 for singletons)",
+    )
+    p_consolidate.add_argument(
+        "--singleton",
+        action="store_true",
+        help="Shorthand for --min-cluster-size 1 (consolidate lone structured episodes)",
+    )
     sub.add_parser("status", help="Show system stats")
     p_detect_drift = sub.add_parser("detect-drift", help="Detect code drift and challenge claims")
     p_detect_drift.add_argument(
@@ -1232,7 +1258,10 @@ def main():
     elif args.command == "test":
         cmd_test()
     elif args.command == "consolidate":
-        cmd_consolidate()
+        cmd_consolidate(
+            min_cluster_size=args.min_cluster_size,
+            singleton=args.singleton,
+        )
     elif args.command == "status":
         cmd_status()
     elif args.command == "detect-drift":

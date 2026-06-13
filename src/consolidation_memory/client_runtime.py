@@ -78,6 +78,38 @@ class RuntimeClient(Protocol):
     def _consolidation_loop(self) -> None: ...
 
 
+def _normalize_ollama_api_base(api_base: str) -> str:
+    base = str(api_base or "").rstrip("/")
+    if base.endswith("/v1"):
+        return base[:-3]
+    return base
+
+
+def _embedding_probe_request(cfg: Any) -> tuple[str, str | None]:
+    """Return (url, optional_json_body) for a lightweight embedding health probe."""
+    backend = str(getattr(cfg, "EMBEDDING_BACKEND", "") or "").lower()
+    if backend == "ollama":
+        base = _normalize_ollama_api_base(cfg.EMBEDDING_API_BASE)
+        return f"{base}/api/tags", None
+    return f"{cfg.EMBEDDING_API_BASE.rstrip('/')}/models", None
+
+
+def _ollama_model_available(model_names: list[str], expected: str) -> bool:
+    expected_token = str(expected or "").strip()
+    if not expected_token:
+        return False
+    normalized_expected = expected_token.split(":", 1)[0]
+    for raw_name in model_names:
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        if name == expected_token or name.startswith(f"{expected_token}:"):
+            return True
+        if name.split(":", 1)[0] == normalized_expected:
+            return True
+    return False
+
+
 def compute_health(
     client: RuntimeClient,
     last_run: dict[str, object] | None,
@@ -166,9 +198,12 @@ def probe_backend(client: RuntimeClient) -> bool:
             return cached_result
 
     try:
+        probe_url, probe_body = _embedding_probe_request(cfg)
         req = Request(
-            f"{cfg.EMBEDDING_API_BASE}/models",
+            probe_url,
+            data=probe_body.encode("utf-8") if probe_body is not None else None,
             headers={"Content-Type": "application/json"},
+            method="POST" if probe_body is not None else "GET",
         )
         with urlopen(req, timeout=3) as resp:  # nosec B310
             resp.read()
@@ -191,24 +226,43 @@ def check_embedding_backend(client: RuntimeClient) -> None:
         return
 
     try:
+        probe_url, probe_body = _embedding_probe_request(cfg)
         req = Request(
-            f"{cfg.EMBEDDING_API_BASE}/models",
+            probe_url,
+            data=probe_body.encode("utf-8") if probe_body is not None else None,
             headers={"Content-Type": "application/json"},
+            method="POST" if probe_body is not None else "GET",
         )
         with urlopen(req, timeout=5) as resp:  # nosec B310
             body_raw = resp.read()
         body = json.loads(body_raw)
         if not isinstance(body, Mapping):
             raise ValueError("response body must be a JSON object")
-        models = body.get("data", [])
-        if not isinstance(models, list):
-            raise ValueError("response field 'data' must be a list")
-        model_ids = [
-            str(model.get("id", ""))
-            for model in models
-            if isinstance(model, Mapping)
-        ]
-        if cfg.EMBEDDING_MODEL_NAME not in model_ids:
+
+        if cfg.EMBEDDING_BACKEND == "ollama":
+            models = body.get("models", [])
+            if not isinstance(models, list):
+                raise ValueError("response field 'models' must be a list")
+            model_ids = [
+                str(model.get("name", model.get("model", "")))
+                for model in models
+                if isinstance(model, Mapping)
+            ]
+        else:
+            models = body.get("data", [])
+            if not isinstance(models, list):
+                raise ValueError("response field 'data' must be a list")
+            model_ids = [
+                str(model.get("id", ""))
+                for model in models
+                if isinstance(model, Mapping)
+            ]
+
+        if cfg.EMBEDDING_BACKEND == "ollama":
+            model_found = _ollama_model_available(model_ids, cfg.EMBEDDING_MODEL_NAME)
+        else:
+            model_found = cfg.EMBEDDING_MODEL_NAME in model_ids
+        if not model_found:
             logger.warning(
                 "Embedding model '%s' not found. Loaded: %s",
                 cfg.EMBEDDING_MODEL_NAME, model_ids,

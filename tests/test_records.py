@@ -14,7 +14,7 @@ from consolidation_memory.database import (
     upsert_knowledge_topic,
 )
 from consolidation_memory.types import RecordType
-from tests.helpers import mock_encode
+from tests.helpers import mock_embed_items_incremental
 
 
 # ── Database CRUD ────────────────────────────────────────────────────────────
@@ -208,6 +208,52 @@ class TestExtractionValidation:
         valid, failures = _validate_extraction_output(data, [])
         assert not valid
         assert any("vague" in f.lower() for f in failures)
+
+    def test_meta_descriptive_solution_record(self):
+        from consolidation_memory.consolidation.prompting import _validate_extraction_output
+        data = {
+            "title": "MCP",
+            "summary": "MCP recall cache added in embedding_disk_cache.py",
+            "records": [{
+                "type": "solution",
+                "problem": "Discusses MCP recall slowness",
+                "fix": "Covers cache changes",
+            }],
+        }
+        valid, failures = _validate_extraction_output(data, [])
+        assert not valid
+        assert any("meta-descriptive" in f.lower() for f in failures)
+
+    def test_coerce_payload_merges_deterministic_solution(self):
+        from consolidation_memory.consolidation.engine import _coerce_extraction_payload
+
+        episodes = [{
+            "id": "ep-1",
+            "content": (
+                "Problem: MCP recall times out on cold start\n"
+                "Fix: enable disk-backed cache in src/consolidation_memory/embedding_disk_cache.py"
+            ),
+            "content_type": "solution",
+            "tags": "[]",
+        }]
+        data = {
+            "title": "MCP",
+            "summary": "Discusses MCP performance",
+            "records": [{
+                "type": "solution",
+                "problem": "Discusses MCP recall slowness",
+                "fix": "Covers cache changes",
+            }],
+        }
+        _, summary, _, records = _coerce_extraction_payload(
+            data,
+            cluster_id=1,
+            tag_counts=[],
+            cluster_episodes=episodes,
+        )
+        solution_records = [r for r in records if r.get("type") == "solution"]
+        assert any("MCP recall times out" in str(r.get("problem", "")) for r in solution_records)
+        assert "Discusses" not in summary
 
     def test_valid_procedure_record(self):
         from consolidation_memory.consolidation.prompting import _validate_extraction_output
@@ -464,7 +510,10 @@ class TestRecordCache:
             "app_client_name": "legacy_client",
             "app_client_type": "python_sdk",
         }
-        with patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+        with patch(
+            "consolidation_memory.record_cache.embed_items_incremental",
+            side_effect=mock_embed_items_incremental,
+        ) as mock_embed:
             recs1, vecs1 = record_cache.get_record_vecs(include_expired=False, scope=scope)
             recs2, vecs2 = record_cache.get_record_vecs(include_expired=False, scope=scope)
         assert len(recs1) == 2
@@ -490,7 +539,10 @@ class TestRecordCache:
             "app_client_name": "legacy_client",
             "app_client_type": "python_sdk",
         }
-        with patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+        with patch(
+            "consolidation_memory.record_cache.embed_items_incremental",
+            side_effect=mock_embed_items_incremental,
+        ) as mock_embed:
             record_cache.get_record_vecs(include_expired=False, scope=scope)
             record_cache.invalidate()
             record_cache.get_record_vecs(include_expired=False, scope=scope)

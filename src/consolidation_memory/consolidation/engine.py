@@ -1206,11 +1206,73 @@ def _merge_into_existing(
     return "updated", merge_calls
 
 
+def _deterministic_solution_records_from_episodes(
+    cluster_episodes: list[dict],
+) -> list[dict[Any, Any]]:
+    """Build solution records from fast-path parsers on source episodes."""
+    from consolidation_memory.consolidation.fast_path import (
+        _try_parse_solution,
+        _try_parse_structured_json,
+    )
+
+    records: list[dict[Any, Any]] = []
+    for episode in cluster_episodes:
+        content = str(episode.get("content", ""))
+        structured = _try_parse_structured_json(content)
+        if structured is not None:
+            if str(structured.get("type", "")).lower() == "solution":
+                records.append(structured)
+            continue
+        record = _try_parse_solution(content)
+        if record is not None and str(record.get("type", "")).lower() == "solution":
+            records.append(record)
+    return records
+
+
+def _filter_meta_descriptive_records(records: list[dict[Any, Any]]) -> list[dict[Any, Any]]:
+    from consolidation_memory.consolidation.prompting import (
+        _embedding_text_for_record,
+        _is_meta_descriptive_text,
+    )
+
+    kept: list[dict[Any, Any]] = []
+    for record in records:
+        if _is_meta_descriptive_text(_embedding_text_for_record(record)):
+            logger.warning(
+                "Dropping meta-descriptive record during coercion: %s",
+                _embedding_text_for_record(record)[:120],
+            )
+            continue
+        kept.append(record)
+    return kept
+
+
+def _merge_deterministic_solution_records(
+    records: list[dict[Any, Any]],
+    deterministic_solutions: list[dict[Any, Any]],
+) -> list[dict[Any, Any]]:
+    if not deterministic_solutions:
+        return records
+
+    merged = [rec for rec in records if str(rec.get("type", "")).lower() != "solution"]
+    seen_claim_ids: set[str] = set()
+    for record in deterministic_solutions + [
+        rec for rec in records if str(rec.get("type", "")).lower() == "solution"
+    ]:
+        claim_id = claim_from_record(record)["id"]
+        if claim_id in seen_claim_ids:
+            continue
+        seen_claim_ids.add(claim_id)
+        merged.append(record)
+    return merged
+
+
 def _coerce_extraction_payload(
     extraction_data: dict[str, object],
     *,
     cluster_id: int,
     tag_counts: list[tuple[str, int]],
+    cluster_episodes: list[dict] | None = None,
 ) -> tuple[str, str, list[str], list[dict[Any, Any]]]:
     """Normalize LLM/fast-path extraction payloads for typed cluster handling."""
     title_value = extraction_data.get("title", f"Topic {cluster_id}")
@@ -1228,6 +1290,21 @@ def _coerce_extraction_payload(
         for item in records_raw:
             if isinstance(item, dict):
                 records.append(item)
+
+    records = _filter_meta_descriptive_records(records)
+    if cluster_episodes:
+        deterministic_solutions = _deterministic_solution_records_from_episodes(cluster_episodes)
+        records = _merge_deterministic_solution_records(records, deterministic_solutions)
+        if deterministic_solutions and (
+            not summary.strip()
+            or summary.lower().startswith(("discusses", "covers", "related to"))
+        ):
+            summary = " | ".join(
+                f"{rec.get('problem')} -> {rec.get('fix')}"
+                for rec in deterministic_solutions[:3]
+                if rec.get("problem") and rec.get("fix")
+            ) or summary
+
     return title, summary, tags, records
 
 
@@ -1324,6 +1401,7 @@ def _process_cluster(
         extraction_data,
         cluster_id=cluster_id,
         tag_counts=tag_counts,
+        cluster_episodes=cluster_episodes,
     )
 
     existing = _find_similar_topic(title, summary, tags, scope=cluster_scope)
@@ -1497,9 +1575,16 @@ def _prioritize_valid_clusters(
 def _build_clusters_from_distance(
     valid_episodes: list[dict],
     dist_matrix: np.ndarray,
+    *,
+    min_cluster_size: int | None = None,
 ) -> tuple[dict[int, list[tuple[dict, int]]], dict[int, list[tuple[dict, int]]]]:
     """Build all clusters and the subset meeting min-size threshold."""
     cfg = get_config()
+    effective_min = (
+        cfg.CONSOLIDATION_MIN_CLUSTER_SIZE
+        if min_cluster_size is None
+        else min_cluster_size
+    )
     condensed = squareform(dist_matrix, checks=False)
     linkage_matrix = linkage(condensed, method="average")
     labels = fcluster(
@@ -1515,7 +1600,7 @@ def _build_clusters_from_distance(
     valid_clusters = {
         cluster_id: items
         for cluster_id, items in clusters.items()
-        if len(items) >= cfg.CONSOLIDATION_MIN_CLUSTER_SIZE
+        if len(items) >= effective_min
     }
     return clusters, valid_clusters
 
@@ -1624,14 +1709,25 @@ def _maybe_prune_and_compact(vs: VectorStore, cfg) -> list[dict]:
 # ── Main consolidation loop ───────────────────────────────────────────────────
 
 
-def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationReport:
+def run_consolidation(
+    vector_store: VectorStore | None = None,
+    *,
+    min_cluster_size: int | None = None,
+) -> ConsolidationReport:
     """Main consolidation loop.
 
     Args:
         vector_store: Existing VectorStore instance to reuse. If None, creates
             a new one (backwards compatible for CLI/scheduled task usage).
+        min_cluster_size: Override ``CONSOLIDATION_MIN_CLUSTER_SIZE`` for this run.
+            Use ``1`` to consolidate singleton structured episodes.
     """
     cfg = get_config()
+    effective_min_cluster_size = (
+        cfg.CONSOLIDATION_MIN_CLUSTER_SIZE
+        if min_cluster_size is None
+        else min_cluster_size
+    )
     ensure_schema()
     cfg.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     cfg.KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1665,7 +1761,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             episode_count=len(episodes),
         )
 
-        if len(episodes) < cfg.CONSOLIDATION_MIN_CLUSTER_SIZE:
+        if len(episodes) < effective_min_cluster_size:
             logger.info("Only %d episodes — nothing to consolidate.", len(episodes))
             complete_consolidation_run(
                 run_id, status=RUN_STATUS_COMPLETED, episodes_processed=len(episodes)
@@ -1719,18 +1815,18 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             sim_matrix, dist_matrix = _build_scope_isolated_similarity(valid_episodes, vectors)
 
             if len(valid_episodes) == 1:
-                if cfg.CONSOLIDATION_MIN_CLUSTER_SIZE <= 1:
+                if effective_min_cluster_size <= 1:
                     logger.info(
                         "Only 1 valid episode — processing singleton cluster "
                         "(min_cluster_size=%d).",
-                        cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
+                        effective_min_cluster_size,
                     )
                     clusters = {1: [(valid_episodes[0], 0)]}
                     valid_clusters = dict(clusters)
                 else:
                     logger.info(
                         "Only 1 valid episode and min_cluster_size=%d — skipping clustering.",
-                        cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
+                        effective_min_cluster_size,
                     )
                     complete_consolidation_run(
                         run_id, status=RUN_STATUS_COMPLETED, episodes_processed=1
@@ -1739,7 +1835,11 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                     get_plugin_manager().fire("on_consolidation_complete", report=early_report_fe)
                     return early_report_fe
             else:
-                clusters, valid_clusters = _build_clusters_from_distance(valid_episodes, dist_matrix)
+                clusters, valid_clusters = _build_clusters_from_distance(
+                    valid_episodes,
+                    dist_matrix,
+                    min_cluster_size=effective_min_cluster_size,
+                )
 
             prioritized_clusters = _prioritize_valid_clusters(
                 valid_clusters,
@@ -1758,7 +1858,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                 "%d failure-linked episodes loaded, %d clusters prioritized",
                 len(clusters),
                 len(valid_clusters),
-                cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
+                effective_min_cluster_size,
                 failure_linked_loaded,
                 clusters_with_failure_links,
             )

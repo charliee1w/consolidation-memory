@@ -870,9 +870,28 @@ class MemoryClient:
         scope_row = _resolved_scope_to_db_row(resolved_scope)
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
+        content_type = _normalize_content_type(content_type)
+
+        from consolidation_memory.episode_embedding import (
+            embedding_text_for_episode,
+            solution_store_shape_warnings,
+        )
+
+        shape_warnings: list[str] = []
+        if content_type == "solution":
+            shape_warnings = solution_store_shape_warnings(content)
+            for warning in shape_warnings:
+                logger.warning("Solution shape advisory for store: %s", warning)
+
+        embed_text = embedding_text_for_episode(
+            content=content,
+            content_type=content_type,
+            tags=tags,
+        )
+
         try:
             embedding_matrix = _validate_embedding_batch(
-                encode_documents([content]),
+                encode_documents([embed_text]),
                 expected_count=1,
                 operation="store",
             )
@@ -906,8 +925,6 @@ class MemoryClient:
                         )
                 else:
                     break  # Results are sorted by similarity; no point checking lower ones
-
-        content_type = _normalize_content_type(content_type)
 
         episode_id = insert_episode(
             content=content,
@@ -1005,6 +1022,7 @@ class MemoryClient:
             id=episode_id,
             content_type=content_type,
             tags=tags or [],
+            shape_warnings=shape_warnings,
         )
         self._maybe_auto_consolidate(trigger_source="store")
         return result
@@ -1073,6 +1091,11 @@ class MemoryClient:
         scope_row = _resolved_scope_to_db_row(resolved_scope)
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
+        from consolidation_memory.episode_embedding import (
+            embedding_text_for_episode,
+            solution_store_shape_warnings,
+        )
+
         # Validate and normalize
         items = []
         for i, ep in enumerate(episodes):
@@ -1084,11 +1107,23 @@ class MemoryClient:
                 surprise = float(ep.get("surprise", 0.5))
             except (TypeError, ValueError):
                 surprise = 0.5
+            tags = ep.get("tags")
+            shape_warnings: list[str] = []
+            if ct == "solution":
+                shape_warnings = solution_store_shape_warnings(ep["content"])
+                for warning in shape_warnings:
+                    logger.warning("Solution shape advisory for batch store[%d]: %s", i, warning)
             items.append({
                 "content": ep["content"],
                 "content_type": ct,
-                "tags": ep.get("tags"),
+                "tags": tags,
                 "surprise": max(0.0, min(1.0, surprise)),
+                "shape_warnings": shape_warnings,
+                "embed_text": embedding_text_for_episode(
+                    content=ep["content"],
+                    content_type=ct,
+                    tags=tags if isinstance(tags, list) else None,
+                ),
             })
 
         if not items:
@@ -1098,7 +1133,7 @@ class MemoryClient:
         # Single embedding call for all texts
         try:
             embeddings = _validate_embedding_batch(
-                encode_documents([it["content"] for it in items]),
+                encode_documents([it["embed_text"] for it in items]),
                 expected_count=len(items),
                 operation="store_batch",
             )
@@ -1172,11 +1207,14 @@ class MemoryClient:
             accepted_embs.append(emb.reshape(-1).astype(np.float32))
             stored_items_by_id[episode_id] = item
             stored += 1
-            results.append({
+            entry: dict[str, object] = {
                 "status": "stored",
                 "id": episode_id,
                 "content_type": item["content_type"],
-            })
+            }
+            if item.get("shape_warnings"):
+                entry["shape_warnings"] = item["shape_warnings"]
+            results.append(entry)
 
         # Single FAISS batch add instead of per-item add()
         batch_add_succeeded = False

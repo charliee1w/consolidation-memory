@@ -179,7 +179,9 @@ MEMORY_STORE_SCHEMA: dict[str, Any] = {
                     "enum": ["exchange", "fact", "solution", "preference"],
                     "description": (
                         "Category of the memory. 'exchange' for conversation, "
-                        "'fact' for learned info, 'solution' for problem+fix, "
+                        "'fact' for learned info, 'solution' for problem+fix "
+                        "(use Problem:/Fix: lines, structured JSON type=solution, "
+                        "or path anchors — see docs/FAST_PATH_EPISODES.md), "
                         "'preference' for user preference."
                     ),
                     "default": "exchange",

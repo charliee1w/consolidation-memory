@@ -14,7 +14,8 @@ import threading
 import numpy as np
 
 from consolidation_memory.database import get_all_knowledge_topics
-from consolidation_memory.backends import encode_documents
+from consolidation_memory.embedding_disk_cache import clear_namespace as _clear_disk_namespace
+from consolidation_memory.embedding_disk_cache import embed_items_incremental
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ def invalidate() -> None:
     global _version
     with _lock:
         _version += 1
+    _clear_disk_namespace("topics")
 
 
 def get_topic_vecs() -> tuple[list[dict], np.ndarray | None]:
@@ -53,8 +55,13 @@ def get_topic_vecs() -> tuple[list[dict], np.ndarray | None]:
         return [], None
 
     summary_texts = [f"{t['title']}. {t['summary']}" for t in topics]
+    topic_items = [(str(t["id"]), text) for t, text in zip(topics, summary_texts, strict=True)]
     try:
-        vecs = encode_documents(summary_texts)
+        vecs = embed_items_incremental(
+            topic_items,
+            namespace="topics",
+            retain_ids={str(topic["id"]) for topic in topics},
+        )
     except Exception as e:
         logger.warning("Failed to embed topic summaries: %s", e, exc_info=True)
         return topics, None

@@ -1,8 +1,20 @@
 """Shared fixtures for all test modules."""
 
+import os
+import sys
+from pathlib import Path
+
 import pytest
 
 from consolidation_memory.config import reset_config
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Keep pytest temp dirs off the repo (Windows AV/indexers cause teardown flakes)."""
+    if sys.platform == "win32":
+        temp_root = os.environ.get("TEMP") or os.environ.get("TMP") or None
+        if temp_root:
+            config.option.basetemp = str(Path(temp_root) / "pytest-consolidation-memory")
 
 
 @pytest.fixture(autouse=True)
@@ -34,9 +46,11 @@ def tmp_data_dir(tmp_path):
 
     # Reset module-level caches so state doesn't leak between tests
     from consolidation_memory import claim_cache, topic_cache, record_cache
+    from consolidation_memory.embedding_disk_cache import clear_all
     topic_cache.invalidate()
     record_cache.invalidate()
     claim_cache.invalidate()
+    clear_all()
 
     # Reset plugin manager singleton so registered plugins don't leak between tests
     from consolidation_memory.plugins import reset_plugin_manager

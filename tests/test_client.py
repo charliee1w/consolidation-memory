@@ -452,6 +452,31 @@ class TestClientStore:
         client.close()
 
     @patch("consolidation_memory.backends.encode_documents")
+    def test_solution_shape_warning_on_unstructured_store(self, mock_embed):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            vec = _make_normalized_vec(seed=91)
+            mock_embed.return_value = vec.reshape(1, -1)
+
+            result = client.store(
+                "Built a benchmark harness and saved baseline metrics.",
+                content_type="solution",
+            )
+            assert result.status == "stored"
+            assert len(result.shape_warnings) == 1
+            assert "Problem:" in result.shape_warnings[0]
+
+            embed_arg = mock_embed.call_args[0][0][0]
+            assert "Built a benchmark harness" in embed_arg
+            assert "Fix:" not in embed_arg
+        finally:
+            client.close()
+
+    @patch("consolidation_memory.backends.encode_documents")
     def test_store_keeps_episode_hidden_until_vector_persists(self, mock_embed):
         from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import ensure_schema, get_connection

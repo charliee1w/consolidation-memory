@@ -346,6 +346,19 @@ def _parse_llm_json(text: str) -> dict | None:
 # ── Embedding text ────────────────────────────────────────────────────────────
 
 
+_META_DESCRIPTIVE_PATTERNS = (
+    r"^(?:discusses|covers|related to|describes|details|provides|mentions)\b",
+    r"^(?:this document|an overview|information about)\b",
+)
+
+
+def _is_meta_descriptive_text(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return True
+    return any(re.match(pattern, normalized) for pattern in _META_DESCRIPTIVE_PATTERNS)
+
+
 def _embedding_text_for_record(record: dict) -> str:
     """Generate the searchable text string for a knowledge record."""
     rtype = record.get("type", "fact")
@@ -558,6 +571,20 @@ def _validate_extraction_output(
             ):
                 failures.append(f"Record {i}: strategy missing problem_pattern or strategy")
 
+            embed_text = _embedding_text_for_record(rec)
+            if _is_meta_descriptive_text(embed_text):
+                failures.append(
+                    f"Record {i}: embedding text is meta-descriptive: '{embed_text[:80]}'"
+                )
+            if rtype == "solution":
+                for field_name in ("problem", "fix"):
+                    field_text = str(rec.get(field_name, ""))
+                    if _is_meta_descriptive_text(field_text):
+                        failures.append(
+                            f"Record {i}: solution {field_name} is meta-descriptive: "
+                            f"'{field_text[:80]}'"
+                        )
+
     specifics_failure = _check_specifics_preservation(cluster_episodes, json.dumps(data, default=str))
     if specifics_failure:
         failures.append(specifics_failure)
@@ -615,12 +642,54 @@ def _llm_extract_with_validation(
                 is_valid_2, failures_2 = _validate_extraction_output(data2, cluster_episodes)
                 if is_valid_2 or len(failures_2) < len(failures):
                     data = data2
-                if not is_valid_2:
-                    logger.warning(
-                        "Retry still failed: %s. Using best-effort.", "; ".join(failures_2)
-                    )
+                    is_valid = is_valid_2
+                    failures = failures_2
         except Exception as e:
             logger.error("LLM retry failed: %s", e)
+
+        if not is_valid:
+            strict_addendum = (
+                "\n\nSTRICT RETRY: preserve verbatim problem/fix text from episodes. "
+                "Never start summary or record text with Discusses/Covers/Related to. "
+                "Include exact file paths, commands, and error strings from source episodes."
+            )
+            try:
+                raw = _call_llm(
+                    prompt + strict_addendum,
+                    json_schema=_EXTRACTION_RESPONSE_JSON_SCHEMA,
+                )
+                api_calls += 1
+                data3 = _parse_llm_json(raw)
+                if data3 is not None:
+                    is_valid_3, failures_3 = _validate_extraction_output(data3, cluster_episodes)
+                    if is_valid_3 or len(failures_3) < len(failures):
+                        data = data3
+                        is_valid = is_valid_3
+                        failures = failures_3
+            except Exception as e:
+                logger.error("Strict LLM retry failed: %s", e)
+
+        if not is_valid:
+            records = data.get("records", [])
+            if isinstance(records, list):
+                filtered_records = [
+                    rec
+                    for rec in records
+                    if isinstance(rec, dict)
+                    and not _is_meta_descriptive_text(_embedding_text_for_record(rec))
+                ]
+                if filtered_records:
+                    data["records"] = filtered_records
+                    logger.warning(
+                        "Downgraded extraction to %d non-meta records after validation failures: %s",
+                        len(filtered_records),
+                        "; ".join(failures),
+                    )
+                else:
+                    logger.warning(
+                        "Extraction validation failed with no salvageable records: %s",
+                        "; ".join(failures),
+                    )
 
     return data, api_calls
 

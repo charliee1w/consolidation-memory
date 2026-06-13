@@ -12,7 +12,8 @@ import threading
 
 import numpy as np
 
-from consolidation_memory import backends
+from consolidation_memory.embedding_disk_cache import clear_namespace as _clear_disk_namespace
+from consolidation_memory.embedding_disk_cache import embed_items_incremental
 from consolidation_memory.query_semantics import parse_claim_payload
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ def invalidate() -> None:
         _version += 1
         _cache["signature"] = None
         _cache["vecs"] = None
+    _clear_disk_namespace("claims")
 
 
 def build_claim_texts(claims: list[dict]) -> tuple[list[dict[str, object]], list[str]]:
@@ -76,8 +78,19 @@ def get_claim_vecs(claims: list[dict], texts: list[str]) -> np.ndarray | None:
             return _cache["vecs"]  # type: ignore[return-value]
         fetch_version = _version
 
+    claim_items = [
+        (
+            str(claim.get("id", index)),
+            f"{claim.get('updated_at', '')}\n{text}",
+        )
+        for index, (claim, text) in enumerate(zip(claims, texts, strict=True))
+    ]
     try:
-        vecs = backends.encode_documents(texts)
+        vecs = embed_items_incremental(
+            claim_items,
+            namespace="claims",
+            retain_ids={str(claim.get("id", "")) for claim in claims if claim.get("id")},
+        )
     except Exception as e:
         logger.warning("Failed to embed claim texts: %s", e, exc_info=True)
         return None

@@ -9,8 +9,12 @@ from unittest.mock import patch
 import pytest
 
 from consolidation_memory.context_assembler import (
+    _distinctive_overlap_multiplier,
+    _is_solution_shaped_query,
     _recency_decay,
     _priority_score,
+    _recall_episode_score,
+    _tag_overlap_multiplier,
     _TASK_INDICATORS,
 )
 
@@ -248,6 +252,91 @@ class TestConfidenceAwareRanking:
         high = next(r for r in records if r["id"] == "rec-high-precision")
         low = next(r for r in records if r["id"] == "rec-low-precision")
         assert high["relevance"] > low["relevance"]
+
+
+class TestSolutionShapedQuery:
+    def test_detects_debug_tokens(self):
+        assert _is_solution_shaped_query("MCP recall timeout during health check")
+        assert not _is_solution_shaped_query("project architecture overview")
+
+    def test_detects_path_like_tokens(self):
+        assert _is_solution_shaped_query("context_assembler.py recall scoring")
+        assert _is_solution_shaped_query("src/consolidation_memory/client.py store path")
+
+    def test_solution_shaped_query_prefers_semantic_match(self):
+        now = FIXED_NOW.isoformat()
+        high_access = {
+            "content_type": "solution",
+            "surprise_score": 0.9,
+            "created_at": now,
+            "access_count": 200,
+            "content": "MCP recall slowness",
+        }
+        low_access = {
+            "content_type": "solution",
+            "surprise_score": 0.5,
+            "created_at": now,
+            "access_count": 0,
+            "content": "MCP recall slowness fixed with cache",
+        }
+        query = "MCP recall slowness timeout fix"
+        popular_score = _recall_episode_score(
+            0.80, high_access, query=query, content_type_filter=None,
+        )
+        exact_score = _recall_episode_score(
+            0.96, low_access, query=query, content_type_filter=None,
+        )
+        assert exact_score > popular_score
+
+    def test_thin_solution_boosts_on_path_overlap_without_debug_query(self):
+        now = FIXED_NOW.isoformat()
+        thin_solution = {
+            "content_type": "solution",
+            "surprise_score": 0.4,
+            "created_at": now,
+            "access_count": 0,
+            "content": "Fix in src/consolidation_memory/context_assembler.py for recall.",
+            "tags": "[]",
+        }
+        generic = {
+            "content_type": "solution",
+            "surprise_score": 0.9,
+            "created_at": now,
+            "access_count": 300,
+            "content": "General consolidation-memory architecture notes.",
+            "tags": "[]",
+        }
+        query = "context_assembler.py recall ranking"
+        thin_score = _recall_episode_score(
+            0.70, thin_solution, query=query, content_type_filter=None,
+        )
+        generic_score = _recall_episode_score(
+            0.72, generic, query=query, content_type_filter=None,
+        )
+        assert thin_score > generic_score
+
+
+class TestDistinctiveOverlapMultiplier:
+    def test_boosts_path_overlap(self):
+        mult = _distinctive_overlap_multiplier(
+            "context_assembler.py recall",
+            "Updated src/consolidation_memory/context_assembler.py scoring.",
+        )
+        assert mult > 1.0
+
+    def test_no_overlap_returns_one(self):
+        assert _distinctive_overlap_multiplier("alpha beta", "gamma delta") == 1.0
+
+
+class TestTagOverlapMultiplier:
+    def test_boosts_matching_tags(self):
+        episode = {"tags": '["benchmark", "recall"]'}
+        mult = _tag_overlap_multiplier("benchmark recall metrics", episode)
+        assert mult > 1.0
+
+    def test_no_tag_overlap_returns_one(self):
+        episode = {"tags": '["deployment"]'}
+        assert _tag_overlap_multiplier("benchmark recall metrics", episode) == 1.0
 
 
 class TestTaskIndicators:

@@ -35,9 +35,12 @@ def _reset_test_data_dir(base_dir):
     )
     database.close_all_connections()
     reset_backends()
+    from consolidation_memory.embedding_disk_cache import clear_all
+
     topic_cache.invalidate()
     record_cache.invalidate()
     claim_cache.invalidate()
+    clear_all()
 
 
 class TestCmdTest:
@@ -237,6 +240,41 @@ class TestMainDispatch:
         ):
             main()
             mock_cmd.assert_called_once_with("AGENTS.md")
+
+    def test_consolidate_singleton_flag_dispatched(self):
+        from consolidation_memory.cli import main
+
+        with (
+            patch("sys.argv", ["consolidation-memory", "consolidate", "--singleton"]),
+            patch("consolidation_memory.cli.cmd_consolidate") as mock_cmd,
+        ):
+            main()
+            mock_cmd.assert_called_once_with(min_cluster_size=None, singleton=True)
+
+    def test_consolidate_min_cluster_size_dispatched(self):
+        from consolidation_memory.cli import main
+
+        with (
+            patch("sys.argv", ["consolidation-memory", "consolidate", "--min-cluster-size", "1"]),
+            patch("consolidation_memory.cli.cmd_consolidate") as mock_cmd,
+        ):
+            main()
+            mock_cmd.assert_called_once_with(min_cluster_size=1, singleton=False)
+
+
+class TestCmdConsolidate:
+    def test_singleton_passes_min_cluster_size_one(self, capsys):
+        from consolidation_memory.cli import cmd_consolidate
+
+        with patch(
+            "consolidation_memory.consolidation.run_consolidation",
+            return_value={"status": "completed", "topics_created": 1},
+        ) as mock_run:
+            cmd_consolidate(singleton=True)
+
+        mock_run.assert_called_once_with(min_cluster_size=1)
+        captured = capsys.readouterr()
+        assert "topics_created" in captured.out
 
 
 class TestMCPConfigRecommendation:

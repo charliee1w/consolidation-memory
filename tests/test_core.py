@@ -1209,7 +1209,7 @@ class TestTopicCache:
         assert tc._version == 6
         assert _cache["version"] != tc._version
 
-    @patch("consolidation_memory.topic_cache.encode_documents")
+    @patch("consolidation_memory.topic_cache.embed_items_incremental")
     def test_cache_reuse(self, mock_embed):
         from consolidation_memory.topic_cache import get_topic_vecs, invalidate
         from consolidation_memory.database import ensure_schema, upsert_knowledge_topic

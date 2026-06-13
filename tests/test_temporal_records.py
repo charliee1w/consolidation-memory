@@ -17,7 +17,7 @@ from consolidation_memory.database import (
     soft_delete_records_by_ids,
     upsert_knowledge_topic,
 )
-from tests.helpers import mock_encode
+from tests.helpers import mock_embed_items_incremental
 
 
 class _RecordCacheClock:
@@ -208,7 +208,7 @@ class TestTemporalFiltering:
             )
 
         record_cache.invalidate()
-        with patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode):
+        with patch("consolidation_memory.record_cache.embed_items_incremental", side_effect=mock_embed_items_incremental):
             all_records, _ = record_cache.get_record_vecs(include_expired=True)
             current_records, _ = record_cache.get_record_vecs(include_expired=False)
 
@@ -241,7 +241,7 @@ class TestRecordCacheWallClockRefresh:
         record_cache.invalidate()
         with patch("consolidation_memory.record_cache.datetime", new=clock), \
              patch("consolidation_memory.record_cache.time.time", side_effect=clock.time), \
-             patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+             patch("consolidation_memory.record_cache.embed_items_incremental", side_effect=mock_embed_items_incremental) as mock_embed:
             before_records, before_vecs = record_cache.get_record_vecs(include_expired=False)
             assert before_records == []
             assert before_vecs is None
@@ -278,7 +278,7 @@ class TestRecordCacheWallClockRefresh:
         record_cache.invalidate()
         with patch("consolidation_memory.record_cache.datetime", new=clock), \
              patch("consolidation_memory.record_cache.time.time", side_effect=clock.time), \
-             patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+             patch("consolidation_memory.record_cache.embed_items_incremental", side_effect=mock_embed_items_incremental) as mock_embed:
             before_records, before_vecs = record_cache.get_record_vecs(include_expired=False)
             assert [r["id"] for r in before_records] == [record_id]
             assert before_vecs is not None
@@ -325,7 +325,7 @@ class TestRecordCacheWallClockRefresh:
         record_cache.invalidate()
         with patch("consolidation_memory.record_cache.datetime", new=clock), \
              patch("consolidation_memory.record_cache.time.time", side_effect=clock.time), \
-             patch("consolidation_memory.record_cache.encode_documents", side_effect=mock_encode) as mock_embed:
+             patch("consolidation_memory.record_cache.embed_items_incremental", side_effect=mock_embed_items_incremental) as mock_embed:
             before_records, before_vecs = record_cache.get_record_vecs(
                 include_expired=False,
                 scope=scope,

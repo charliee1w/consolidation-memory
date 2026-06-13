@@ -138,6 +138,31 @@ Episode tags (up to three) are copied into `context` when present.
 procedure: trigger=before cutting a release, steps=run release gates, bump version, publish changelog
 ```
 
+## Recommended solution store shape for agents
+
+When storing `content_type="solution"`, use a problem-first shape so recall queries
+(problem symptoms) match the embedded vector. Full narrative is still stored; only
+the FAISS embedding is problem-skewed.
+
+**Preferred text template**
+
+```text
+Problem: <symptom or error>
+Fix: <specific steps, commands, or config changes>
+Context: path:src/consolidation_memory/client.py
+```
+
+**Structured JSON alternative**
+
+```json
+{"type": "solution", "problem": "MCP recall times out", "fix": "Enable embedding disk cache", "context": "src/consolidation_memory/embedding_disk_cache.py"}
+```
+
+Episodes without `Problem:`, JSON `problem`+`fix`, or a path anchor still store
+successfully but return `shape_warnings` advising better structure.
+
+Re-embed existing episodes after upgrading: `consolidation-memory reindex`.
+
 ## Path-anchored solution (`content_type="solution"` or `"fact"`)
 
 The solution parser requires at least one **file path** in the episode content (detected by the anchor extractor). Without a path, the episode is not fast-path eligible via this parser (use structured JSON instead).

@@ -24,7 +24,8 @@ from datetime import datetime, timezone
 import numpy as np
 
 from consolidation_memory.database import get_all_active_records
-from consolidation_memory.backends import encode_documents
+from consolidation_memory.embedding_disk_cache import clear_namespace as _clear_disk_namespace
+from consolidation_memory.embedding_disk_cache import embed_items_incremental
 from consolidation_memory.utils import parse_datetime
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ def invalidate() -> None:
     with _lock:
         _version += 1
         _scoped_cache.clear()
+    _clear_disk_namespace("records")
 
 
 def _scope_cache_key(scope: dict[str, str | None]) -> tuple[tuple[str, str], ...]:
@@ -153,6 +155,22 @@ def _populate_slot(
     slot["loaded"] = True
 
 
+def _embed_records(
+    records: list[dict],
+    *,
+    retain_ids: set[str] | None = None,
+) -> np.ndarray | None:
+    """Embed record texts with incremental disk-backed caching."""
+    if not records:
+        return None
+    items = [(str(record["id"]), str(record.get("embedding_text", ""))) for record in records]
+    return embed_items_incremental(
+        items,
+        namespace="records",
+        retain_ids=retain_ids,
+    )
+
+
 def _derive_unexpired_slot(
     slot: dict,
     *,
@@ -246,7 +264,7 @@ def get_record_vecs(
 
         texts = [r["embedding_text"] for r in records]
         try:
-            vecs = encode_documents(texts)
+            vecs = _embed_records(records)
         except Exception as e:
             logger.warning("Failed to embed scoped record texts: %s", e, exc_info=True)
             if include_expired:
@@ -344,7 +362,10 @@ def get_record_vecs(
 
     texts = [r["embedding_text"] for r in records]
     try:
-        vecs = encode_documents(texts)
+        vecs = _embed_records(
+            records,
+            retain_ids={str(record["id"]) for record in records},
+        )
     except Exception as e:
         logger.warning("Failed to embed record texts: %s", e, exc_info=True)
         if include_expired:

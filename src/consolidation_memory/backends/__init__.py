@@ -209,8 +209,7 @@ def reset_backends() -> None:
 _TRANSIENT_EMBED = (ConnectionError, TimeoutError, OSError, httpx.HTTPError)
 
 
-def encode_documents(texts: list[str]) -> np.ndarray:
-    """Encode texts for storage. Drop-in replacement for old embeddings.py."""
+def _encode_documents_chunk(texts: list[str]) -> np.ndarray:
     cb = _get_embed_circuit()
     cb.check()
     try:
@@ -223,7 +222,24 @@ def encode_documents(texts: list[str]) -> np.ndarray:
     except _TRANSIENT_EMBED as e:
         cb.record_failure()
         raise ConnectionError(str(e)) from e
-    # Let programming errors (ValueError, KeyError, etc.) propagate uncaught
+
+
+def encode_documents(texts: list[str]) -> np.ndarray:
+    """Encode texts for storage. Drop-in replacement for old embeddings.py."""
+    if not texts:
+        return np.empty((0, get_dimension()), dtype=np.float32)
+
+    from consolidation_memory.config import get_config
+
+    batch_size = max(1, int(get_config().EMBEDDING_ENCODE_BATCH_SIZE))
+    if len(texts) <= batch_size:
+        return _encode_documents_chunk(texts)
+
+    chunks = [
+        _encode_documents_chunk(texts[index : index + batch_size])
+        for index in range(0, len(texts), batch_size)
+    ]
+    return np.vstack(chunks)
 
 
 def encode_query(text: str) -> np.ndarray:

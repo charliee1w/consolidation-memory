@@ -7,6 +7,7 @@ Topic embeddings are cached via topic_cache (shared with consolidation).
 import json
 import logging
 import math
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,6 +46,7 @@ from consolidation_memory.query_semantics import (
     matches_scope_filter as _matches_scope_filter,
     strategy_reuse_profile as _strategy_reuse_profile,
 )
+from consolidation_memory.episode_embedding import distinctive_token_set
 from consolidation_memory.vector_store import VectorStore
 from consolidation_memory import topic_cache
 from consolidation_memory import record_cache
@@ -53,6 +55,22 @@ _TASK_INDICATORS: frozenset[str] = frozenset({
     "how", "workflow", "steps", "process", "deploy", "build",
     "test", "commit", "release", "setup", "configure", "run",
 })
+
+_DEBUG_QUERY_TOKENS: frozenset[str] = frozenset({
+    "fail", "failed", "failure", "error", "timeout", "fix", "fixed", "problem",
+    "issue", "broken", "regression", "exception", "crash", "slow", "slowness",
+    "mcp", "ollama", "config.toml", "memory_status",
+})
+
+_PATH_TOKEN_RE = re.compile(
+    r"(?:[\w.-]+/)+[\w.-]+\.[\w]+|\b[\w.-]+\.(?:py|md|toml|yml|json|ps1)\b|config\.toml",
+    re.IGNORECASE,
+)
+_FUNCTION_TOKEN_RE = re.compile(r"\b([a-z_][a-z0-9_]{5,})\(\)")
+_COMMIT_TOKEN_RE = re.compile(
+    r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,12}\b",
+    re.IGNORECASE,
+)
 
 # Uncertainty signaling thresholds
 _LOW_CONFIDENCE_THRESHOLD = 0.6
@@ -96,6 +114,74 @@ def _recency_decay(created_at_iso: str, half_life_days: float | None = None) -> 
         return 0.5
 
 
+def _is_solution_shaped_query(query: str) -> bool:
+    lowered = str(query or "").lower()
+    words = set(lowered.split())
+    if words & _DEBUG_QUERY_TOKENS:
+        return True
+    if any(token in lowered for token in _DEBUG_QUERY_TOKENS):
+        return True
+    distinctive = _distinctive_query_tokens(query)
+    if len(distinctive) >= 2:
+        return True
+    return any(
+        "/" in token
+        or "\\" in token
+        or token.endswith((".py", ".toml", ".md", ".json", ".yml", ".ps1"))
+        for token in distinctive
+    )
+
+
+def _distinctive_query_tokens(text: str) -> set[str]:
+    raw = str(text or "")
+    tokens = distinctive_token_set(raw)
+    tokens.update(
+        match.group(0).lower()
+        for match in _PATH_TOKEN_RE.finditer(raw)
+        if match.group(0)
+    )
+    tokens.update(
+        match.group(1).lower()
+        for match in _FUNCTION_TOKEN_RE.finditer(raw)
+        if match.group(1)
+    )
+    tokens.update(
+        match.group(0).lower()
+        for match in _COMMIT_TOKEN_RE.finditer(raw)
+        if match.group(0)
+    )
+    return tokens
+
+
+def _tag_overlap_multiplier(query: str, episode: dict) -> float:
+    tags = {str(t).strip().lower() for t in parse_json_list(episode.get("tags", "[]")) if str(t).strip()}
+    if not tags:
+        return 1.0
+    query_words = {word for word in re.findall(r"[a-z0-9_]{4,}", str(query).lower())}
+    overlap = query_words & tags
+    if not overlap:
+        return 1.0
+    return 1.0 + min(len(overlap), 3) * 0.06
+
+
+def _distinctive_overlap_multiplier(query: str, episode_content: str) -> float:
+    query_tokens = _distinctive_query_tokens(query)
+    if not query_tokens:
+        return 1.0
+    content_tokens = distinctive_token_set(episode_content)
+    content_tokens.update(_distinctive_query_tokens(episode_content))
+    overlap = query_tokens & content_tokens
+    if not overlap:
+        return 1.0
+    path_like = sum(
+        1
+        for token in overlap
+        if "/" in token or "\\" in token or "." in token
+    )
+    base = min(len(overlap), 6) * (0.12 if path_like else 0.10)
+    return 1.0 + base
+
+
 def _priority_score(similarity: float, episode: dict) -> float:
     w = get_config().CONSOLIDATION_PRIORITY_WEIGHTS
     surprise: float = episode.get("surprise_score", 0.5)
@@ -109,6 +195,32 @@ def _priority_score(similarity: float, episode: dict) -> float:
         * access_factor
     )
     return similarity * metadata_boost
+
+
+def _recall_episode_score(
+    similarity: float,
+    episode: dict,
+    *,
+    query: str,
+    content_type_filter: set[str] | None,
+) -> float:
+    """Episode score for recall; solution-shaped queries favor semantic match."""
+    content = str(episode.get("content", ""))
+    overlap_mult = _distinctive_overlap_multiplier(query, content)
+    tag_mult = _tag_overlap_multiplier(query, episode)
+
+    if content_type_filter is None and episode.get("content_type") == "solution":
+        if _is_solution_shaped_query(query):
+            recency = _recency_decay(episode.get("created_at", ""))
+            score = similarity * (0.92 + 0.08 * recency)
+            score *= 1.0 + get_config().SOLUTION_QUERY_BOOST
+            score *= overlap_mult * tag_mult
+            return score
+        if overlap_mult > 1.0 or tag_mult > 1.0:
+            recency = _recency_decay(episode.get("created_at", ""))
+            return similarity * (0.90 + 0.10 * recency) * overlap_mult * tag_mult
+
+    return _priority_score(similarity, episode)
 
 
 def _apply_cooccurrence_boost(
@@ -241,6 +353,8 @@ def _enrich_source_traceability(records: list[dict]) -> list[dict]:
 def _deduplicate_episodes(
     episodes: list[dict],
     records: list[dict],
+    *,
+    top_record_limit: int = 5,
 ) -> list[dict]:
     """Remove episodes that are already represented by a returned knowledge record.
 
@@ -251,9 +365,9 @@ def _deduplicate_episodes(
     if not episodes or not records:
         return episodes
 
-    # Collect all episode IDs that are covered by returned records
+    # Only dedup against highly-ranked records (top-N), not the full tail.
     covered_ids: set[str] = set()
-    for rec in records:
+    for rec in records[:top_record_limit]:
         src_eps = rec.get("source_episodes", [])
         if src_eps:
             covered_ids.update(src_eps)
@@ -839,7 +953,12 @@ def recall(
         bm25_norm = bm25_map.get(episode_id, 0.0)
         hybrid_sim = sem_w * cosine_sim + kw_w * bm25_norm
 
-        score = _priority_score(hybrid_sim, ep)
+        score = _recall_episode_score(
+            hybrid_sim,
+            ep,
+            query=query,
+            content_type_filter=_ct_set,
+        )
         scored.append((ep, score, cosine_sim, bm25_norm))
 
     logger.debug(
@@ -1129,6 +1248,7 @@ def _search_records(
 
     # Detect task-oriented queries that benefit from procedure records
     _is_task_query = bool(query_words & _TASK_INDICATORS)
+    _is_debug_query = _is_solution_shaped_query(query)
 
     record_claim_ids: list[str] = []
     parsed_contents: list[dict] = []
@@ -1158,6 +1278,13 @@ def _search_records(
         # Boost procedure records for task-oriented queries
         if _is_task_query and rec.get("record_type") == "procedure":
             relevance *= 1.15
+
+        if _is_debug_query and rec.get("record_type") == "solution":
+            relevance *= 1.0 + cfg.SOLUTION_QUERY_BOOST
+            relevance *= _distinctive_overlap_multiplier(
+                query,
+                str(rec.get("embedding_text", "")),
+            )
 
         # Confidence-aware ranking: higher-confidence records score higher
         # 0.5 confidence → 0.75x, 0.8 → 0.9x, 1.0 → 1.0x

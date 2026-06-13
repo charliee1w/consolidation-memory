@@ -879,6 +879,7 @@ class StoreResult:
     existing_id: str | None = None
     similarity: float | None = None
     message: str | None = None
+    shape_warnings: list[str] = field(default_factory=list)
 
 
 @dataclass

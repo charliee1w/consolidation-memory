@@ -2,11 +2,25 @@
 
 ## Unreleased
 
+### Features
+
+- feat: disk-backed incremental embedding cache for records, topics, and claims
+- feat: problem-query skew for solution episode recall
+- feat: coding-agent and real-world trust benchmark harnesses
+- feat: embedding backend health probes in client runtime
+
+### Bug Fixes
+
+- fix: skip solution re-parse when structured JSON already parsed an episode
+- fix: stabilize pytest temp dirs on Windows (use system TEMP, not in-repo `.pytest_tmp`)
+
 ### Documentation
 
 - docs: remove internal strategy and agent-ops docs from public repo
 - docs: trim README to user-facing content only
 - docs: rewrite README for trust positioning and visual clarity
+- docs: add CODING_AGENT_METRICS and REAL_WORLD_METRICS benchmark guides
+- docs: expand FAST_PATH_EPISODES with structured episode shapes
 
 ## 0.16.0 - 2026-06-12
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 
@@ -181,10 +182,13 @@ class TestRunConsolidationFailurePriority:
                     content_type="preference",
                     tags=["ci"],
                 )
+                recent_failure_at = (
+                    datetime.now(timezone.utc) - timedelta(hours=1)
+                ).isoformat()
                 record_action_outcome(
                     action_summary="deploy with retry policy",
                     outcome_type="failure",
-                    observed_at="2026-06-12T12:00:00+00:00",
+                    observed_at=recent_failure_at,
                     source_episode_ids=[failure_store.id],
                 )
                 report = run_consolidation(vector_store=client._vector_store)

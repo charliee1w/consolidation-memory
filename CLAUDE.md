@@ -39,6 +39,28 @@ mypy src/consolidation_memory/
 3. Update user-facing docs when behavior changes.
 4. Avoid hard-coded test counts or stale timeline statements in docs.
 
+## Known architectural debt (audit 2026-06-13)
+
+Prioritized blind spots — check this before large refactors; update when fixed.
+
+**P0 (trust / scope)** — largely addressed 2026-06-13
+- ~~Scope on audit APIs (explicit `scope` arg)~~: `contradictions`, `decay_report`, `consolidation_log`, `status` filter when `scope` is passed. Remaining: unscoped calls still global; `trust_profile` in `status()` always global; default-resolved scope on `None` not yet applied to audit paths.
+- ~~`content_type` validation~~: shared `validate_episode_content_type()` in `types.py`.
+
+**P1 (enforcement / ops)**
+- `coding_agent_eval` / `real_world_eval` documented as “enforced” but not CI-gated (only `novelty_eval` is).
+- `embedding_disk_cache` lacks cross-process write lock (FAISS has `.faiss_write.lock`).
+- `SECURITY.md` still lists `0.13.x`; package is `0.16.x`. MCP stdio trust boundary undocumented.
+
+**P2 (structure / tests)**
+- `ContentType` (4 ingest types) vs `RecordType` (+ `procedure`, `strategy` post-consolidation only).
+- Global-by-design tools (`consolidate`, `compact`, `detect_drift`) vs scope leaks — document contract in CONTRIBUTING.
+- Migration regression thin for schema v17–v20; concurrency tests thread-only, not multi-process.
+- `database.py` god-module (~5.4k lines); split by domain when touching migrations heavily.
+
+**Keep (do not rewrite)**
+- Episodes → records → claims → topics stack; `tool_dispatch` seam; FAISS write lease; fast-path before LLM; `query_service` envelopes.
+
 ## Core docs
 
 - [README.md](README.md)

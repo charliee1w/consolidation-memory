@@ -353,6 +353,7 @@ MEMORY_STATUS_SCHEMA: dict[str, Any] = {
                         "cached snapshot when available (faster for routine checks)."
                     ),
                 },
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": [],
         },
@@ -869,6 +870,7 @@ MEMORY_CONTRADICTIONS_SCHEMA: dict[str, Any] = {
                     "maxLength": _MAX_FILENAME_LENGTH,
                     "description": "Optional topic filename or title to filter results.",
                 },
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": [],
         },
@@ -931,7 +933,9 @@ MEMORY_DECAY_REPORT_SCHEMA: dict[str, Any] = {
         "parameters": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {},
+            "properties": {
+                "scope": SCOPE_INPUT_SCHEMA,
+            },
             "required": [],
         },
     },
@@ -957,6 +961,7 @@ MEMORY_CONSOLIDATION_LOG_SCHEMA: dict[str, Any] = {
                     "description": "Number of recent runs to show (1-20, default 5).",
                     "default": 5,
                 },
+                "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": [],
         },

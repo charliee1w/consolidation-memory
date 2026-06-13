@@ -1094,12 +1094,19 @@ async def memory_detect_drift(
 
 
 @_tracked_tool()
-async def memory_status() -> str:
+async def memory_status(
+    lightweight: bool | None = None,
+    scope: ScopeInput = None,
+) -> str:
     """Show memory system statistics, including fast-path consolidation metrics."""
-    return await _call_tool_json(
-        "memory_status",
-        {"lightweight": _STATUS_LIGHTWEIGHT_DEFAULT},
-    )
+    payload: dict[str, object] = {}
+    if lightweight is not None:
+        payload["lightweight"] = lightweight
+    elif _STATUS_LIGHTWEIGHT_DEFAULT:
+        payload["lightweight"] = _STATUS_LIGHTWEIGHT_DEFAULT
+    if scope is not None:
+        payload["scope"] = scope
+    return await _call_tool_json("memory_status", payload)
 
 
 @_tracked_tool()
@@ -1150,15 +1157,21 @@ async def memory_consolidate() -> str:
 
 
 @_tracked_tool()
-async def memory_consolidation_log(last_n: int = 5) -> str:
+async def memory_consolidation_log(
+    last_n: int = 5,
+    scope: ScopeInput = None,
+) -> str:
     """Show recent consolidation activity as a human-readable changelog."""
-    return await _call_tool_json("memory_consolidation_log", {"last_n": last_n})
+    return await _call_tool_json(
+        "memory_consolidation_log",
+        {"last_n": last_n, "scope": scope},
+    )
 
 
 @_tracked_tool()
-async def memory_decay_report() -> str:
+async def memory_decay_report(scope: ScopeInput = None) -> str:
     """Show what would be forgotten if pruning ran right now."""
-    return await _call_tool_json("memory_decay_report", {})
+    return await _call_tool_json("memory_decay_report", {"scope": scope})
 
 
 @_tracked_tool()
@@ -1181,9 +1194,15 @@ async def memory_timeline(topic: str, scope: ScopeInput = None) -> str:
 
 
 @_tracked_tool()
-async def memory_contradictions(topic: str | None = None) -> str:
+async def memory_contradictions(
+    topic: str | None = None,
+    scope: ScopeInput = None,
+) -> str:
     """List detected contradictions from the audit log."""
-    return await _call_tool_json("memory_contradictions", {"topic": topic})
+    return await _call_tool_json(
+        "memory_contradictions",
+        {"topic": topic, "scope": scope},
+    )
 
 
 @_tracked_tool()

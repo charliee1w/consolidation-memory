@@ -139,23 +139,29 @@ class TestConsolidationLogContradictions:
     def test_contradictions_counted_within_run_window(self, tmp_data_dir):
         """Contradictions detected during a run's time window should be counted."""
         import time
-        import uuid
         from consolidation_memory.database import (
             ensure_schema,
             start_consolidation_run,
             insert_contradiction,
             complete_consolidation_run,
+            upsert_knowledge_topic,
         )
         from consolidation_memory.client import MemoryClient
 
         ensure_schema()
+        topic_id = upsert_knowledge_topic(
+            filename="log-contradiction.md",
+            title="Log Contradiction",
+            summary="S",
+            source_episodes=[],
+        )
 
         # Create a run with a contradiction inserted during the run
         run_id = start_consolidation_run()
         time.sleep(0.05)
 
         insert_contradiction(
-            topic_id=str(uuid.uuid4()),
+            topic_id=topic_id,
             old_record_id=None,
             new_record_id=None,
             old_content="old fact",

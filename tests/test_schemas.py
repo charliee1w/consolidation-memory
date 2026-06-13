@@ -270,10 +270,10 @@ class TestDispatch:
         assert result["version"] == "0.1.0"
         assert result["fast_path_hits"] == 2
         assert result["llm_fallbacks"] == 1
-        client.status.assert_called_once_with(lightweight=None)
+        client.status.assert_called_once_with(lightweight=None, scope=None)
 
         dispatch_tool_call(client, "memory_status", {"lightweight": True})
-        client.status.assert_called_with(lightweight=True)
+        client.status.assert_called_with(lightweight=True, scope=None)
 
     def test_dispatch_forget(self):
         client = MagicMock()

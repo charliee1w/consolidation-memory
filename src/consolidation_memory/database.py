@@ -1797,16 +1797,27 @@ def fts_rebuild() -> None:
         )
 
 
-def get_prunable_episodes(days: int = 30) -> list[dict[str, Any]]:
+def get_prunable_episodes(
+    days: int = 30,
+    scope: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Episodes that are consolidated and older than `days`, excluding protected ones."""
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    conditions = [
+        "consolidated = 1",
+        "consolidated_at < ?",
+        "deleted = 0",
+        "indexed = 1",
+        "protected = 0",
+    ]
+    params: list[Any] = [cutoff]
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT * FROM episodes
-               WHERE consolidated = 1 AND consolidated_at < ? AND deleted = 0 AND indexed = 1
-                 AND protected = 0""",
-            (cutoff,),
+            f"SELECT * FROM episodes WHERE {where_clause}",
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1857,22 +1868,45 @@ def protect_by_tag(
     return cursor.rowcount or 0
 
 
-def get_low_confidence_records(threshold: float = 0.5) -> list[dict[str, Any]]:
+def get_low_confidence_records(
+    threshold: float = 0.5,
+    scope: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Return active records below the confidence threshold."""
     now = _now()
+    conditions = [
+        "kr.deleted = 0",
+        "(kr.valid_from IS NULL OR julianday(kr.valid_from) <= julianday(?))",
+        "(kr.valid_until IS NULL OR julianday(kr.valid_until) > julianday(?))",
+        "kr.confidence < ?",
+    ]
+    params: list[Any] = [now, now, threshold]
+    _apply_scope_filters(conditions, params, scope, table_alias="kr")
+    where_clause = " AND ".join(conditions)
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
+            f"""SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
                FROM knowledge_records kr
                JOIN knowledge_topics kt ON kr.topic_id = kt.id
-               WHERE kr.deleted = 0
-                 AND (kr.valid_from IS NULL OR julianday(kr.valid_from) <= julianday(?))
-                 AND (kr.valid_until IS NULL OR julianday(kr.valid_until) > julianday(?))
-                 AND kr.confidence < ?
+               WHERE {where_clause}
                ORDER BY kr.confidence ASC""",
-            (now, now, threshold),
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_protected_episodes(scope: Mapping[str, Any] | None = None) -> int:
+    """Count episodes marked protected from pruning."""
+    conditions = ["protected = 1", "deleted = 0"]
+    params: list[Any] = []
+    _apply_scope_filters(conditions, params, scope)
+    where_clause = " AND ".join(conditions)
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) as c FROM episodes WHERE {where_clause}",
+            params,
+        ).fetchone()
+    return int(row["c"]) if row else 0
 
 
 # ── Knowledge Topic CRUD ────────────────────────────────────────────────────
@@ -2301,34 +2335,37 @@ def insert_contradiction(
 def get_contradictions(
     topic_id: str | None = None,
     limit: int = 50,
+    scope: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Retrieve logged contradictions, optionally filtered by topic.
+    """Retrieve logged contradictions, optionally filtered by topic and scope.
 
     Args:
         topic_id: If provided, filter to contradictions for this topic.
         limit: Max results (default 50).
+        scope: Optional scope filter applied to joined knowledge topics.
 
     Returns:
         List of contradiction dicts, newest first.
     """
+    conditions: list[str] = []
+    params: list[Any] = []
+    if topic_id:
+        conditions.append("cl.topic_id = ?")
+        params.append(topic_id)
+    if scope:
+        conditions.append("cl.topic_id IS NOT NULL")
+        _apply_scope_filters(conditions, params, scope, table_alias="kt")
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    params.append(limit)
     with get_connection() as conn:
-        if topic_id:
-            rows = conn.execute(
-                """SELECT cl.*, kt.title as topic_title, kt.filename as topic_filename
-                   FROM contradiction_log cl
-                   LEFT JOIN knowledge_topics kt ON cl.topic_id = kt.id
-                   WHERE cl.topic_id = ?
-                   ORDER BY cl.detected_at DESC LIMIT ?""",
-                (topic_id, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """SELECT cl.*, kt.title as topic_title, kt.filename as topic_filename
-                   FROM contradiction_log cl
-                   LEFT JOIN knowledge_topics kt ON cl.topic_id = kt.id
-                   ORDER BY cl.detected_at DESC LIMIT ?""",
-                (limit,),
-            ).fetchall()
+        rows = conn.execute(
+            f"""SELECT cl.*, kt.title as topic_title, kt.filename as topic_filename
+               FROM contradiction_log cl
+               LEFT JOIN knowledge_topics kt ON cl.topic_id = kt.id
+               {where_clause}
+               ORDER BY cl.detected_at DESC LIMIT ?""",
+            params,
+        ).fetchall()
     return [dict(r) for r in rows]
 
 

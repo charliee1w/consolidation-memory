@@ -78,7 +78,6 @@ from consolidation_memory.types import (
     ScopeEnvelope,
     SessionScope,
     coerce_scope_envelope,
-    ContentType,
     ConsolidationLogResult,
     ConsolidationReport,
     build_consolidation_trigger_explanation,
@@ -223,16 +222,10 @@ def clear_status_cache() -> None:
 
 
 def _normalize_content_type(ct: str) -> str:
-    """Validate and normalize a content_type string.
+    """Validate episode content_type using the shared cross-surface rules."""
+    from consolidation_memory.types import validate_episode_content_type
 
-    Returns the value unchanged if it is a valid ContentType, otherwise
-    logs a warning and falls back to ``'exchange'``.
-    """
-    _valid_types = {t.value for t in ContentType}
-    if ct in _valid_types:
-        return ct
-    logger.warning("Invalid content_type %r, defaulting to 'exchange'", ct)
-    return ContentType.EXCHANGE.value
+    return validate_episode_content_type(ct)
 
 
 def _validate_embedding_batch(
@@ -1779,12 +1772,18 @@ class MemoryClient:
         """Backward-compatible wrapper for canonical drift detection."""
         return self.query_detect_drift(base_ref=base_ref, repo_path=repo_path)
 
-    def status(self, *, lightweight: bool | None = None) -> StatusResult:
+    def status(
+        self,
+        *,
+        lightweight: bool | None = None,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> StatusResult:
         """Get memory system statistics.
 
         Args:
             lightweight: When True, skip markdown/DB consistency scans and use a
                 short-lived cache. Defaults to ``STATUS_LIGHTWEIGHT_DEFAULT``.
+            scope: Optional scope filter for episodic/knowledge counts in stats.
 
         Returns:
             StatusResult with counts, backend info, health, and last consolidation.
@@ -1793,11 +1792,15 @@ class MemoryClient:
         from consolidation_memory.config import get_config
 
         cfg = get_config()
+        scope_filter: dict[str, str | None] | None = None
+        if scope is not None:
+            resolved_scope = self.resolve_scope(scope)
+            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
         use_lightweight = (
             cfg.STATUS_LIGHTWEIGHT_DEFAULT if lightweight is None else lightweight
         )
         cached = _get_cached_status(cfg.DB_PATH, use_lightweight, cfg.STATUS_CACHE_TTL_SECONDS)
-        if cached is not None:
+        if cached is not None and scope is None:
             return cached
 
         from consolidation_memory.database import (
@@ -1811,7 +1814,7 @@ class MemoryClient:
         )
         from consolidation_memory.knowledge_consistency import build_knowledge_consistency_report
 
-        stats = get_stats()
+        stats = get_stats(scope=scope_filter)
         last_run = get_last_consolidation_run()
 
         db_size_mb = 0.0
@@ -2075,7 +2078,8 @@ class MemoryClient:
             scaling=scaling,
             trust_profile=trust_profile,
         )
-        _store_cached_status(cfg.DB_PATH, use_lightweight, result, cfg.STATUS_CACHE_TTL_SECONDS)
+        if scope is None:
+            _store_cached_status(cfg.DB_PATH, use_lightweight, result, cfg.STATUS_CACHE_TTL_SECONDS)
         return result
 
     def forget(
@@ -2815,11 +2819,17 @@ class MemoryClient:
             total=len(entries),
         )
 
-    def contradictions(self, topic: str | None = None) -> ContradictionResult:
+    def contradictions(
+        self,
+        topic: str | None = None,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> ContradictionResult:
         """List contradictions from the audit log, optionally filtered by topic.
 
         Args:
             topic: Optional topic filename or title to filter by.
+            scope: Optional scope filter for contradiction topics.
 
         Returns:
             ContradictionResult with logged contradictions.
@@ -2831,9 +2841,13 @@ class MemoryClient:
         )
 
         self._ensure_open()
+        scope_filter: dict[str, str | None] | None = None
+        if scope is not None:
+            resolved_scope = self.resolve_scope(scope)
+            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
         topic_id = None
         if topic:
-            topics = get_all_knowledge_topics()
+            topics = get_all_knowledge_topics(scope=scope_filter)
             for t in topics:
                 logical_filename = str(t.get("filename", ""))
                 storage_name = topic_storage_filename(t)
@@ -2846,14 +2860,19 @@ class MemoryClient:
                     contradictions=[], total=0, topic=topic,
                 )
 
-        rows = db_get_contradictions(topic_id=topic_id)
+        rows = db_get_contradictions(topic_id=topic_id, scope=scope_filter)
         return ContradictionResult(
             contradictions=rows,
             total=len(rows),
             topic=topic,
         )
 
-    def consolidation_log(self, last_n: int = 5) -> ConsolidationLogResult:
+    def consolidation_log(
+        self,
+        last_n: int = 5,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> ConsolidationLogResult:
         """Show recent consolidation activity as a human-readable changelog.
 
         Returns a summary of recent consolidation runs including topics
@@ -2861,6 +2880,7 @@ class MemoryClient:
 
         Args:
             last_n: Number of recent runs to include (default 5, max 20).
+            scope: Optional scope filter for contradiction counts per run.
 
         Returns:
             ConsolidationLogResult with formatted changelog entries.
@@ -2871,6 +2891,10 @@ class MemoryClient:
         )
 
         self._ensure_open()
+        scope_filter: dict[str, str | None] | None = None
+        if scope is not None:
+            resolved_scope = self.resolve_scope(scope)
+            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
         last_n = min(max(1, last_n), 20)
         runs = get_recent_consolidation_runs(limit=last_n)
 
@@ -2883,7 +2907,10 @@ class MemoryClient:
         # Heuristic: each consolidation run typically produces up to ~50
         # contradictions, so we over-fetch to avoid missing any.
         _CONTRADICTIONS_PER_RUN_ESTIMATE = 50
-        contradictions = db_get_contradictions(limit=last_n * _CONTRADICTIONS_PER_RUN_ESTIMATE)
+        contradictions = db_get_contradictions(
+            limit=last_n * _CONTRADICTIONS_PER_RUN_ESTIMATE,
+            scope=scope_filter,
+        )
 
         entries = []
         for run in runs:
@@ -2946,33 +2973,45 @@ class MemoryClient:
             total=len(entries),
         )
 
-    def decay_report(self) -> DecayReportResult:
+    def decay_report(
+        self,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
+    ) -> DecayReportResult:
         """Show what would be forgotten if pruning ran right now.
 
         Reports prunable episodes, low-confidence records, and protected
         episode counts. Does NOT actually delete anything.
 
+        Args:
+            scope: Optional scope filter for decay candidates and protected counts.
+
         Returns:
             DecayReportResult with counts and details.
         """
         from consolidation_memory.database import (
-            get_prunable_episodes, get_low_confidence_records,
+            count_protected_episodes,
+            get_prunable_episodes,
+            get_low_confidence_records,
         )
         from consolidation_memory.config import get_config
 
         self._ensure_open()
         cfg = get_config()
+        scope_filter: dict[str, str | None] | None = None
+        if scope is not None:
+            resolved_scope = self.resolve_scope(scope)
+            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
-        prunable = get_prunable_episodes(days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS)
-        low_conf = get_low_confidence_records(threshold=0.5)
-
-        # Count protected episodes
-        from consolidation_memory.database import get_connection
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) as c FROM episodes WHERE protected = 1 AND deleted = 0"
-            ).fetchone()
-        protected_count = row["c"] if row else 0
+        prunable = get_prunable_episodes(
+            days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS,
+            scope=scope_filter,
+        )
+        low_conf = get_low_confidence_records(
+            threshold=0.5,
+            scope=scope_filter,
+        )
+        protected_count = count_protected_episodes(scope=scope_filter)
 
         details = {
             "prune_after_days": cfg.CONSOLIDATION_PRUNE_AFTER_DAYS,

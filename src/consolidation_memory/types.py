@@ -25,6 +25,21 @@ class ContentType(str, Enum):
     PREFERENCE = "preference"
 
 
+VALID_EPISODE_CONTENT_TYPES: frozenset[str] = frozenset(
+    member.value for member in ContentType
+)
+
+
+def validate_episode_content_type(value: object, *, field_name: str = "content_type") -> str:
+    """Validate episode content_type consistently across all surfaces."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    if value not in VALID_EPISODE_CONTENT_TYPES:
+        allowed = ", ".join(sorted(VALID_EPISODE_CONTENT_TYPES))
+        raise ValueError(f"{field_name} must be one of: {allowed}")
+    return value
+
+
 class RecordType(str, Enum):
     """Valid knowledge record types."""
     FACT = "fact"

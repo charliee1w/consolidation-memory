@@ -328,10 +328,21 @@ class ReadTopicRequest(BaseModel):
 
 class ContradictionsRequest(BaseModel):
     topic: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
+    scope: _ScopeInput | None = None
+
+
+class StatusRequest(BaseModel):
+    lightweight: bool | None = None
+    scope: _ScopeInput | None = None
+
+
+class DecayReportRequest(BaseModel):
+    scope: _ScopeInput | None = None
 
 
 class ConsolidationLogRequest(BaseModel):
     last_n: int = Field(default=5, ge=1, le=20)
+    scope: _ScopeInput | None = None
 
 
 def create_app(*, bind_host: str | None = None) -> FastAPI:
@@ -611,6 +622,12 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         """Get memory system statistics, including fast-path consolidation metrics."""
         return await _execute("memory_status", {})
 
+    @app.post("/memory/status")
+    async def status_with_scope(req: StatusRequest | None = None):
+        """Get memory statistics with optional explicit scope."""
+        payload = {} if req is None else req.model_dump(exclude_none=True)
+        return await _execute("memory_status", payload)
+
     @app.delete("/memory/episodes/{episode_id}")
     async def forget(episode_id: str):
         """Soft-delete an episode."""
@@ -726,3 +743,9 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     async def decay_report():
         """Show what would be forgotten if pruning ran right now."""
         return await _execute("memory_decay_report", {})
+
+    @app.post("/memory/decay-report")
+    async def decay_report_with_scope(req: DecayReportRequest | None = None):
+        """Show decay candidates with optional explicit scope."""
+        payload = {} if req is None else req.model_dump(exclude_none=True)
+        return await _execute("memory_decay_report", payload)

@@ -11,10 +11,10 @@ if TYPE_CHECKING:
     from consolidation_memory.client import MemoryClient
 
 from consolidation_memory.types import (
-    ContentType,
     OUTCOME_TYPES,
     ScopeEnvelope,
     coerce_scope_envelope,
+    validate_episode_content_type,
 )
 
 _MAX_CONTENT_LENGTH = 50_000
@@ -29,7 +29,6 @@ _MAX_OUTCOME_SOURCE_IDS = 500
 _UNSAFE_FILENAME_RE = re.compile(r"[/\\]|\.\.")
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[a-zA-Z]:[/\\]")
 _URI_PREFIX_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
-_VALID_CONTENT_TYPES = frozenset(content_type.value for content_type in ContentType)
 _VALID_OUTCOME_TYPES = frozenset(OUTCOME_TYPES)
 
 
@@ -92,12 +91,7 @@ def _validate_required_text(field_name: str, value: object, *, max_length: int) 
 
 
 def _validate_content_type(value: object, *, field_name: str = "content_type") -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{field_name} must be a string")
-    if value not in _VALID_CONTENT_TYPES:
-        allowed = ", ".join(sorted(_VALID_CONTENT_TYPES))
-        raise ValueError(f"{field_name} must be one of: {allowed}")
-    return value
+    return validate_episode_content_type(value, field_name=field_name)
 
 
 def _validate_content_type_list(field_name: str, value: object) -> list[str] | None:
@@ -599,7 +593,12 @@ def execute_tool_call(
         client = _require_client(client, name)
         lightweight_arg = arguments.get("lightweight")
         lightweight = bool(lightweight_arg) if lightweight_arg is not None else None
-        return dataclasses.asdict(client.status(lightweight=lightweight))
+        return dataclasses.asdict(
+            client.status(
+                lightweight=lightweight,
+                scope=_validate_scope(arguments.get("scope")),
+            )
+        )
 
     if name == "memory_forget":
         client = _require_client(client, name)
@@ -681,7 +680,8 @@ def execute_tool_call(
                     arguments.get("topic"),
                     max_length=_MAX_FILENAME_LENGTH,
                     allow_empty=False,
-                )
+                ),
+                scope=_validate_scope(arguments.get("scope")),
             )
         )
 
@@ -701,7 +701,9 @@ def execute_tool_call(
 
     if name == "memory_decay_report":
         client = _require_client(client, name)
-        return dataclasses.asdict(client.decay_report())
+        return dataclasses.asdict(
+            client.decay_report(scope=_validate_scope(arguments.get("scope")))
+        )
 
     if name == "memory_consolidation_log":
         client = _require_client(client, name)
@@ -712,7 +714,8 @@ def execute_tool_call(
                     arguments.get("last_n", 5),
                     minimum=1,
                     maximum=20,
-                )
+                ),
+                scope=_validate_scope(arguments.get("scope")),
             )
         )
 

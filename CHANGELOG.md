@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-### Other
+### Bug Fixes
 
-- Maintenance release.
+- fix: scope audit APIs and unify content_type validation
+
+### Documentation
+
+- docs: add architectural debt register for future agents
 
 ## 0.17.0 - 2026-06-13
 

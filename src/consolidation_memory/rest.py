@@ -329,20 +329,24 @@ class ReadTopicRequest(BaseModel):
 class ContradictionsRequest(BaseModel):
     topic: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
     scope: _ScopeInput | None = None
+    global_scope: bool = False
 
 
 class StatusRequest(BaseModel):
     lightweight: bool | None = None
     scope: _ScopeInput | None = None
+    global_scope: bool = False
 
 
 class DecayReportRequest(BaseModel):
     scope: _ScopeInput | None = None
+    global_scope: bool = False
 
 
 class ConsolidationLogRequest(BaseModel):
     last_n: int = Field(default=5, ge=1, le=20)
     scope: _ScopeInput | None = None
+    global_scope: bool = False
 
 
 def create_app(*, bind_host: str | None = None) -> FastAPI:

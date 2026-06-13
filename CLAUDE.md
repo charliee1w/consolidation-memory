@@ -43,8 +43,8 @@ mypy src/consolidation_memory/
 
 Prioritized blind spots — check this before large refactors; update when fixed.
 
-**P0 (trust / scope)** — largely addressed 2026-06-13
-- ~~Scope on audit APIs (explicit `scope` arg)~~: `contradictions`, `decay_report`, `consolidation_log`, `status` filter when `scope` is passed. Remaining: unscoped calls still global (intentional); default-resolved scope on `None` not yet applied to audit paths.
+**P0 (trust / scope)** — addressed 2026-06-13
+- ~~Scope on audit APIs~~: `contradictions`, `decay_report`, `consolidation_log`, `status` use resolved default scope; explicit `scope` narrows further; `global_scope=True` for corpus-wide ops view.
 - ~~`content_type` validation~~: shared `validate_episode_content_type()` in `types.py`.
 - ~~`trust_profile` in scoped `status()`~~: `get_claim_trust_stats`, `count_active_challenged_claims`, `get_recently_contradicted_topic_ids` accept `scope`.
 

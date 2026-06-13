@@ -110,7 +110,7 @@ from consolidation_memory.types import (
 
 logger = logging.getLogger("consolidation_memory")
 
-_status_cache: dict[tuple[str, bool], tuple[float, StatusResult]] = {}
+_status_cache: dict[tuple[str, bool, str], tuple[float, StatusResult]] = {}
 _status_cache_lock = threading.Lock()
 
 _DEFAULT_NAMESPACE_SLUG = "default"
@@ -182,14 +182,39 @@ def _build_last_run_trigger(
     return payload
 
 
+def _status_cache_scope_key(scope_filter: dict[str, str | None] | None) -> str:
+    if scope_filter is None:
+        return "global"
+    items = sorted(
+        (key, value)
+        for key, value in scope_filter.items()
+        if value is not None
+    )
+    return json.dumps(items, separators=(",", ":"), sort_keys=True)
+
+
+def _resolve_audit_scope_filter(
+    client: object,
+    scope: ScopeEnvelope | dict[str, object] | None,
+    *,
+    global_scope: bool = False,
+) -> dict[str, str | None] | None:
+    """Resolve audit read scope: default envelope unless global_scope is requested."""
+    if global_scope:
+        return None
+    resolved_scope = client.resolve_scope(scope)
+    return _resolved_scope_to_query_filter(resolved_scope)
+
+
 def _get_cached_status(
     db_path: Path,
     lightweight: bool,
+    scope_cache_key: str,
     ttl_seconds: float,
 ) -> StatusResult | None:
     if ttl_seconds <= 0:
         return None
-    cache_key = (str(db_path), lightweight)
+    cache_key = (str(db_path), lightweight, scope_cache_key)
     now = time.monotonic()
     with _status_cache_lock:
         entry = _status_cache.get(cache_key)
@@ -205,12 +230,13 @@ def _get_cached_status(
 def _store_cached_status(
     db_path: Path,
     lightweight: bool,
+    scope_cache_key: str,
     result: StatusResult,
     ttl_seconds: float,
 ) -> None:
     if ttl_seconds <= 0:
         return
-    cache_key = (str(db_path), lightweight)
+    cache_key = (str(db_path), lightweight, scope_cache_key)
     with _status_cache_lock:
         _status_cache[cache_key] = (time.monotonic(), result)
 
@@ -1777,13 +1803,17 @@ class MemoryClient:
         *,
         lightweight: bool | None = None,
         scope: ScopeEnvelope | dict[str, object] | None = None,
+        global_scope: bool = False,
     ) -> StatusResult:
         """Get memory system statistics.
 
         Args:
             lightweight: When True, skip markdown/DB consistency scans and use a
                 short-lived cache. Defaults to ``STATUS_LIGHTWEIGHT_DEFAULT``.
-            scope: Optional scope filter for episodic/knowledge counts in stats.
+            scope: Optional scope override. When omitted, uses resolved default
+                scope (same as recall/browse) unless ``global_scope`` is True.
+            global_scope: When True, return corpus-wide stats and use the global
+                status cache key (ops dashboard view).
 
         Returns:
             StatusResult with counts, backend info, health, and last consolidation.
@@ -1792,15 +1822,22 @@ class MemoryClient:
         from consolidation_memory.config import get_config
 
         cfg = get_config()
-        scope_filter: dict[str, str | None] | None = None
-        if scope is not None:
-            resolved_scope = self.resolve_scope(scope)
-            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
+        scope_filter = _resolve_audit_scope_filter(
+            self,
+            scope,
+            global_scope=global_scope,
+        )
+        scope_cache_key = _status_cache_scope_key(scope_filter)
         use_lightweight = (
             cfg.STATUS_LIGHTWEIGHT_DEFAULT if lightweight is None else lightweight
         )
-        cached = _get_cached_status(cfg.DB_PATH, use_lightweight, cfg.STATUS_CACHE_TTL_SECONDS)
-        if cached is not None and scope is None:
+        cached = _get_cached_status(
+            cfg.DB_PATH,
+            use_lightweight,
+            scope_cache_key,
+            cfg.STATUS_CACHE_TTL_SECONDS,
+        )
+        if cached is not None:
             return cached
 
         from consolidation_memory.database import (
@@ -2082,8 +2119,13 @@ class MemoryClient:
             scaling=scaling,
             trust_profile=trust_profile,
         )
-        if scope is None:
-            _store_cached_status(cfg.DB_PATH, use_lightweight, result, cfg.STATUS_CACHE_TTL_SECONDS)
+        _store_cached_status(
+            cfg.DB_PATH,
+            use_lightweight,
+            scope_cache_key,
+            result,
+            cfg.STATUS_CACHE_TTL_SECONDS,
+        )
         return result
 
     def forget(
@@ -2828,12 +2870,14 @@ class MemoryClient:
         topic: str | None = None,
         *,
         scope: ScopeEnvelope | dict[str, object] | None = None,
+        global_scope: bool = False,
     ) -> ContradictionResult:
         """List contradictions from the audit log, optionally filtered by topic.
 
         Args:
             topic: Optional topic filename or title to filter by.
-            scope: Optional scope filter for contradiction topics.
+            scope: Optional scope override for contradiction topics.
+            global_scope: When True, include contradictions across all scopes.
 
         Returns:
             ContradictionResult with logged contradictions.
@@ -2845,10 +2889,11 @@ class MemoryClient:
         )
 
         self._ensure_open()
-        scope_filter: dict[str, str | None] | None = None
-        if scope is not None:
-            resolved_scope = self.resolve_scope(scope)
-            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
+        scope_filter = _resolve_audit_scope_filter(
+            self,
+            scope,
+            global_scope=global_scope,
+        )
         topic_id = None
         if topic:
             topics = get_all_knowledge_topics(scope=scope_filter)
@@ -2876,6 +2921,7 @@ class MemoryClient:
         last_n: int = 5,
         *,
         scope: ScopeEnvelope | dict[str, object] | None = None,
+        global_scope: bool = False,
     ) -> ConsolidationLogResult:
         """Show recent consolidation activity as a human-readable changelog.
 
@@ -2884,7 +2930,8 @@ class MemoryClient:
 
         Args:
             last_n: Number of recent runs to include (default 5, max 20).
-            scope: Optional scope filter for contradiction counts per run.
+            scope: Optional scope override for contradiction counts per run.
+            global_scope: When True, count contradictions across all scopes.
 
         Returns:
             ConsolidationLogResult with formatted changelog entries.
@@ -2895,10 +2942,11 @@ class MemoryClient:
         )
 
         self._ensure_open()
-        scope_filter: dict[str, str | None] | None = None
-        if scope is not None:
-            resolved_scope = self.resolve_scope(scope)
-            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
+        scope_filter = _resolve_audit_scope_filter(
+            self,
+            scope,
+            global_scope=global_scope,
+        )
         last_n = min(max(1, last_n), 20)
         runs = get_recent_consolidation_runs(limit=last_n)
 
@@ -2981,6 +3029,7 @@ class MemoryClient:
         self,
         *,
         scope: ScopeEnvelope | dict[str, object] | None = None,
+        global_scope: bool = False,
     ) -> DecayReportResult:
         """Show what would be forgotten if pruning ran right now.
 
@@ -2988,7 +3037,8 @@ class MemoryClient:
         episode counts. Does NOT actually delete anything.
 
         Args:
-            scope: Optional scope filter for decay candidates and protected counts.
+            scope: Optional scope override for decay candidates and protected counts.
+            global_scope: When True, report decay candidates across all scopes.
 
         Returns:
             DecayReportResult with counts and details.
@@ -3002,10 +3052,11 @@ class MemoryClient:
 
         self._ensure_open()
         cfg = get_config()
-        scope_filter: dict[str, str | None] | None = None
-        if scope is not None:
-            resolved_scope = self.resolve_scope(scope)
-            scope_filter = _resolved_scope_to_query_filter(resolved_scope)
+        scope_filter = _resolve_audit_scope_filter(
+            self,
+            scope,
+            global_scope=global_scope,
+        )
 
         prunable = get_prunable_episodes(
             days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS,

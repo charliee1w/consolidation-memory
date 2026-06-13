@@ -153,6 +153,17 @@ SCOPE_INPUT_SCHEMA: dict[str, Any] = {
     ],
 }
 
+GLOBAL_SCOPE_PROPERTY: dict[str, Any] = {
+    "global_scope": {
+        "type": "boolean",
+        "description": (
+            "When true, return corpus-wide audit stats ignoring resolved default scope. "
+            "Default false — audit reads use the same resolved scope as recall/browse."
+        ),
+        "default": False,
+    },
+}
+
 MEMORY_STORE_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -357,6 +368,7 @@ MEMORY_STATUS_SCHEMA: dict[str, Any] = {
                     ),
                 },
                 "scope": SCOPE_INPUT_SCHEMA,
+                **GLOBAL_SCOPE_PROPERTY,
             },
             "required": [],
         },
@@ -874,6 +886,7 @@ MEMORY_CONTRADICTIONS_SCHEMA: dict[str, Any] = {
                     "description": "Optional topic filename or title to filter results.",
                 },
                 "scope": SCOPE_INPUT_SCHEMA,
+                **GLOBAL_SCOPE_PROPERTY,
             },
             "required": [],
         },
@@ -938,6 +951,7 @@ MEMORY_DECAY_REPORT_SCHEMA: dict[str, Any] = {
             "additionalProperties": False,
             "properties": {
                 "scope": SCOPE_INPUT_SCHEMA,
+                **GLOBAL_SCOPE_PROPERTY,
             },
             "required": [],
         },
@@ -965,6 +979,7 @@ MEMORY_CONSOLIDATION_LOG_SCHEMA: dict[str, Any] = {
                     "default": 5,
                 },
                 "scope": SCOPE_INPUT_SCHEMA,
+                **GLOBAL_SCOPE_PROPERTY,
             },
             "required": [],
         },

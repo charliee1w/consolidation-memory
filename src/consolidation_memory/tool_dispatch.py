@@ -234,6 +234,12 @@ def _validate_bool(field_name: str, value: object) -> bool:
     return value
 
 
+def _validate_global_scope(value: object) -> bool:
+    if value is None:
+        return False
+    return _validate_bool("global_scope", value)
+
+
 def _validate_scope(value: object) -> ScopeEnvelope | dict[str, object] | None:
     if value is None:
         return None
@@ -597,6 +603,7 @@ def execute_tool_call(
             client.status(
                 lightweight=lightweight,
                 scope=_validate_scope(arguments.get("scope")),
+                global_scope=_validate_global_scope(arguments.get("global_scope")),
             )
         )
 
@@ -682,6 +689,7 @@ def execute_tool_call(
                     allow_empty=False,
                 ),
                 scope=_validate_scope(arguments.get("scope")),
+                global_scope=_validate_global_scope(arguments.get("global_scope")),
             )
         )
 
@@ -702,7 +710,10 @@ def execute_tool_call(
     if name == "memory_decay_report":
         client = _require_client(client, name)
         return dataclasses.asdict(
-            client.decay_report(scope=_validate_scope(arguments.get("scope")))
+            client.decay_report(
+                scope=_validate_scope(arguments.get("scope")),
+                global_scope=_validate_global_scope(arguments.get("global_scope")),
+            )
         )
 
     if name == "memory_consolidation_log":
@@ -716,6 +727,7 @@ def execute_tool_call(
                     maximum=20,
                 ),
                 scope=_validate_scope(arguments.get("scope")),
+                global_scope=_validate_global_scope(arguments.get("global_scope")),
             )
         )
 

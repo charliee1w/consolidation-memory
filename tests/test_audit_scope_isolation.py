@@ -131,6 +131,73 @@ class TestAuditScopeIsolation:
             )
             assert result.status == "stored"
 
+    def test_audit_reads_use_resolved_default_scope(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_contradiction,
+            insert_episode,
+            protect_episode,
+            upsert_knowledge_topic,
+        )
+
+        ensure_schema()
+        old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        insert_episode(content="in default scope")
+        foreign_episode = insert_episode(
+            content="foreign scope episode",
+            scope=_scope_filter(_SCOPE_B),
+        )
+        insert_episode(
+            content="foreign prunable",
+            consolidated=1,
+            consolidated_at=old,
+            indexed=1,
+            scope=_scope_filter(_SCOPE_B),
+        )
+        protect_episode(foreign_episode, scope=_scope_filter(_SCOPE_B))
+        topic_default = upsert_knowledge_topic(
+            filename="default-topic.md",
+            title="Default",
+            summary="D",
+            source_episodes=[],
+        )
+        topic_foreign = upsert_knowledge_topic(
+            filename="foreign-topic.md",
+            title="Foreign",
+            summary="F",
+            source_episodes=[],
+            scope=_scope_filter(_SCOPE_B),
+        )
+        insert_contradiction(topic_default, None, None, "old-d", "new-d")
+        insert_contradiction(topic_foreign, None, None, "old-f", "new-f")
+
+        with MemoryClient(auto_consolidate=False) as client:
+            status_default = client.status(lightweight=True)
+            assert status_default.episodic_buffer is not None
+            assert status_default.episodic_buffer["total"] == 1
+
+            contradictions_default = client.contradictions()
+            assert contradictions_default.total == 1
+            assert contradictions_default.contradictions[0]["topic_id"] == topic_default
+
+            decay_default = client.decay_report()
+            assert decay_default.prunable_episodes == 0
+            assert decay_default.protected_episodes == 0
+
+    def test_audit_global_scope_returns_corpus_wide_view(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, insert_episode
+
+        ensure_schema()
+        insert_episode(content="in default scope")
+        insert_episode(content="foreign scope episode", scope=_scope_filter(_SCOPE_B))
+
+        with MemoryClient(auto_consolidate=False) as client:
+            status_global = client.status(lightweight=True, global_scope=True)
+            assert status_global.episodic_buffer is not None
+            assert status_global.episodic_buffer["total"] == 2
+
     def test_status_trust_profile_respects_scope(self, tmp_data_dir):
         from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (

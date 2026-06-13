@@ -1097,6 +1097,7 @@ async def memory_detect_drift(
 async def memory_status(
     lightweight: bool | None = None,
     scope: ScopeInput = None,
+    global_scope: bool = False,
 ) -> str:
     """Show memory system statistics, including fast-path consolidation metrics."""
     payload: dict[str, object] = {}
@@ -1106,6 +1107,8 @@ async def memory_status(
         payload["lightweight"] = _STATUS_LIGHTWEIGHT_DEFAULT
     if scope is not None:
         payload["scope"] = scope
+    if global_scope:
+        payload["global_scope"] = True
     return await _call_tool_json("memory_status", payload)
 
 
@@ -1160,18 +1163,25 @@ async def memory_consolidate() -> str:
 async def memory_consolidation_log(
     last_n: int = 5,
     scope: ScopeInput = None,
+    global_scope: bool = False,
 ) -> str:
     """Show recent consolidation activity as a human-readable changelog."""
-    return await _call_tool_json(
-        "memory_consolidation_log",
-        {"last_n": last_n, "scope": scope},
-    )
+    payload: dict[str, object] = {"last_n": last_n, "scope": scope}
+    if global_scope:
+        payload["global_scope"] = True
+    return await _call_tool_json("memory_consolidation_log", payload)
 
 
 @_tracked_tool()
-async def memory_decay_report(scope: ScopeInput = None) -> str:
+async def memory_decay_report(
+    scope: ScopeInput = None,
+    global_scope: bool = False,
+) -> str:
     """Show what would be forgotten if pruning ran right now."""
-    return await _call_tool_json("memory_decay_report", {"scope": scope})
+    payload: dict[str, object] = {"scope": scope}
+    if global_scope:
+        payload["global_scope"] = True
+    return await _call_tool_json("memory_decay_report", payload)
 
 
 @_tracked_tool()
@@ -1197,12 +1207,13 @@ async def memory_timeline(topic: str, scope: ScopeInput = None) -> str:
 async def memory_contradictions(
     topic: str | None = None,
     scope: ScopeInput = None,
+    global_scope: bool = False,
 ) -> str:
     """List detected contradictions from the audit log."""
-    return await _call_tool_json(
-        "memory_contradictions",
-        {"topic": topic, "scope": scope},
-    )
+    payload: dict[str, object] = {"topic": topic, "scope": scope}
+    if global_scope:
+        payload["global_scope"] = True
+    return await _call_tool_json("memory_contradictions", payload)
 
 
 @_tracked_tool()

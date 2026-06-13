@@ -10,6 +10,10 @@
 
 - fix: scope audit APIs and unify content_type validation
 
+### Refactoring
+
+- refactor(db): split database.py into db/ package with facade
+
 ### Documentation
 
 - docs: add architectural debt register for future agents

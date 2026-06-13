@@ -228,7 +228,7 @@ else:
             lines = []
             lines.append("=== Episode Counts ===")
             by_type = stats["episodes_by_type"]
-            for ct in ("exchange", "fact", "solution", "preference"):
+            for ct in ("exchange", "fact", "solution", "preference", "procedure"):
                 lines.append(f"  {ct:12s}: {by_type.get(ct, 0)}")
             lines.append(f"  {'total':12s}: {stats['total_episodes']}")
 

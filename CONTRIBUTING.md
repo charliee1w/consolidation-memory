@@ -23,6 +23,30 @@ Behavior changes must preserve:
 
 Schema changes must be additive migrations with tests that call `ensure_schema()`. Invalidate caches (`topic_cache`, `record_cache`, `claim_cache`) after graph or knowledge mutations.
 
+## Scope vs global operations
+
+Some tools are **scope-aware** by default; others are **global by design**.
+
+**Scope-aware reads and writes** (use resolved default scope when omitted):
+
+- `memory_store`, `memory_recall`, `memory_forget`, browse/search paths
+- Audit reads when `scope` is passed: `memory_contradictions`, `memory_decay_report`, `memory_status`, `memory_consolidation_log`
+
+**Global by design** (intentionally corpus- or repo-wide):
+
+- `memory_consolidate` / `consolidate()` — processes unconsolidated episodes across the DB
+- `memory_compact` / FAISS compaction — rebuilds the shared vector index
+- `memory_detect_drift` — git diff against a base ref (namespace/project scope only narrows challenged-claim attribution)
+- Unscoped audit calls (`scope` omitted) — global ops dashboard view; `memory_status` uses a short-lived cache only in this mode
+
+When adding new tools, document whether they are scope-aware or global. Do not widen scope silently on read paths.
+
+## Episode `content_type` vs record `type`
+
+Episodes accept ingest types: `exchange`, `fact`, `solution`, `preference`, `procedure`.
+
+Consolidation may emit knowledge records with additional types (`procedure`, `strategy`). Store `strategy` episodes as structured JSON (`{"type": "strategy", ...}`) with any ingest `content_type` — see [docs/FAST_PATH_EPISODES.md](docs/FAST_PATH_EPISODES.md).
+
 ## Local validation
 
 ```bash

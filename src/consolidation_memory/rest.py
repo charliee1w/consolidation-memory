@@ -42,7 +42,7 @@ from consolidation_memory.runtime import MemoryRuntime
 from consolidation_memory.tool_dispatch import execute_tool_call
 
 # Valid content types accepted by the memory system.
-_ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference"]
+_ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference", "procedure"]
 _ScopeInput: TypeAlias = dict[str, object] | str
 
 # Maximum number of episodes in a single batch store request.

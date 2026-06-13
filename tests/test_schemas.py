@@ -786,7 +786,7 @@ class TestDispatch:
 
         assert not_list == {"error": "content_types must be a list of strings"}
         assert invalid_entry == {
-            "error": "content_types[1] must be one of: exchange, fact, preference, solution"
+            "error": "content_types[1] must be one of: exchange, fact, preference, procedure, solution"
         }
         client.query_recall.assert_not_called()
 
@@ -800,6 +800,6 @@ class TestDispatch:
         )
 
         assert result == {
-            "error": "content_types[1] must be one of: exchange, fact, preference, solution"
+            "error": "content_types[1] must be one of: exchange, fact, preference, procedure, solution"
         }
         client.query_search.assert_not_called()

@@ -176,13 +176,16 @@ MEMORY_STORE_SCHEMA: dict[str, Any] = {
                 },
                 "content_type": {
                     "type": "string",
-                    "enum": ["exchange", "fact", "solution", "preference"],
+                    "enum": ["exchange", "fact", "solution", "preference", "procedure"],
                     "description": (
                         "Category of the memory. 'exchange' for conversation, "
                         "'fact' for learned info, 'solution' for problem+fix "
                         "(use Problem:/Fix: lines, structured JSON type=solution, "
                         "or path anchors — see docs/FAST_PATH_EPISODES.md), "
-                        "'preference' for user preference."
+                        "'preference' for user preference, "
+                        "'procedure' for repeatable workflows (see docs/FAST_PATH_EPISODES.md). "
+                        "Post-consolidation 'strategy' records use structured JSON with any "
+                        "ingest content_type."
                     ),
                     "default": "exchange",
                 },
@@ -230,7 +233,7 @@ MEMORY_STORE_BATCH_SCHEMA: dict[str, Any] = {
                             },
                             "content_type": {
                                 "type": "string",
-                                "enum": ["exchange", "fact", "solution", "preference"],
+                                "enum": ["exchange", "fact", "solution", "preference", "procedure"],
                                 "default": "exchange",
                             },
                             "tags": {
@@ -292,7 +295,7 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["exchange", "fact", "solution", "preference"],
+                        "enum": ["exchange", "fact", "solution", "preference", "procedure"],
                     },
                     "description": "Filter to specific content types (e.g. ['solution', 'fact']).",
                 },
@@ -456,7 +459,7 @@ MEMORY_SEARCH_SCHEMA: dict[str, Any] = {
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["exchange", "fact", "solution", "preference"],
+                        "enum": ["exchange", "fact", "solution", "preference", "procedure"],
                     },
                     "description": "Filter to specific content types.",
                 },

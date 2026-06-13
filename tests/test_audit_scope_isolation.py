@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
+
+from tests.helpers import make_normalized_vec as _make_normalized_vec
 
 _SCOPE_A = {
     "namespace": {"slug": "team-a"},
@@ -113,3 +116,51 @@ class TestAuditScopeIsolation:
         with MemoryClient(auto_consolidate=False) as client:
             with pytest.raises(ValueError, match="content_type must be one of"):
                 client.store("bad type", content_type="not-a-real-type")
+
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_procedure_content_type_accepted_by_python_sdk(self, mock_embed, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
+
+        mock_embed.return_value = _make_normalized_vec(seed=7).reshape(1, -1)
+        ensure_schema()
+        with MemoryClient(auto_consolidate=False) as client:
+            result = client.store(
+                "Trigger: deploy\nSteps: run tests, publish",
+                content_type="procedure",
+            )
+            assert result.status == "stored"
+
+    def test_status_trust_profile_respects_scope(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_claim_sources,
+            insert_episode,
+            upsert_claim,
+        )
+
+        ensure_schema()
+        episode_a = insert_episode(content="scope a provenance", scope=_scope_filter(_SCOPE_A))
+        episode_b = insert_episode(content="scope b provenance", scope=_scope_filter(_SCOPE_B))
+        upsert_claim(
+            claim_id="claim-scope-a",
+            claim_type="fact",
+            canonical_text="scoped claim a",
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-scope-b",
+            claim_type="fact",
+            canonical_text="scoped claim b",
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources("claim-scope-a", [{"source_episode_id": episode_a}])
+        insert_claim_sources("claim-scope-b", [{"source_episode_id": episode_b}])
+
+        with MemoryClient(auto_consolidate=False) as client:
+            scoped = client.status(lightweight=True, scope=_SCOPE_A)
+            assert scoped.trust_profile is not None
+            current_state = scoped.trust_profile["current_state"]
+            assert current_state["total_claims"] == 1
+            assert current_state["currently_valid_claims"] == 1

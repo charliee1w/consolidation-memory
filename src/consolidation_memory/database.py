@@ -2369,16 +2369,30 @@ def get_contradictions(
     return [dict(r) for r in rows]
 
 
-def get_recently_contradicted_topic_ids(days: int = 30) -> set[str]:
+def get_recently_contradicted_topic_ids(
+    days: int = 30,
+    *,
+    scope: Mapping[str, Any] | None = None,
+) -> set[str]:
     """Return topic IDs that have had contradictions detected within the last N days."""
     from datetime import timedelta
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
     cutoff_str = cutoff_dt.isoformat()
+    conditions = ["cl.topic_id IS NOT NULL", "cl.detected_at >= ?"]
+    params: list[Any] = [cutoff_str]
+    if scope:
+        _apply_scope_filters(conditions, params, scope, table_alias="kt")
+    where_clause = " AND ".join(conditions)
+    join_clause = ""
+    if scope:
+        join_clause = " JOIN knowledge_topics kt ON cl.topic_id = kt.id"
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT DISTINCT topic_id FROM contradiction_log
-               WHERE topic_id IS NOT NULL AND detected_at >= ?""",
-            (cutoff_str,),
+            f"""SELECT DISTINCT cl.topic_id AS topic_id
+               FROM contradiction_log cl
+               {join_clause}
+               WHERE {where_clause}""",
+            params,
         ).fetchall()
     return {row["topic_id"] for row in rows}
 
@@ -2937,16 +2951,56 @@ def get_existing_claim_ids(claim_ids: Sequence[str]) -> set[str]:
     return {str(row["id"]) for row in rows}
 
 
-def get_claim_trust_stats(as_of: str | None = None) -> dict[str, float | int]:
+def _scoped_claim_ids(scope: Mapping[str, Any] | None) -> set[str] | None:
+    """Return claim IDs visible within scope, or None when unscoped."""
+    if not scope:
+        return None
+    from consolidation_memory.query_semantics import filter_claims_for_scope
+
+    scoped = filter_claims_for_scope(get_all_claims(), scope)
+    return {str(claim["id"]) for claim in scoped if claim.get("id")}
+
+
+def _empty_claim_trust_stats() -> dict[str, float | int]:
+    return {
+        "total_claims": 0,
+        "currently_valid_claims": 0,
+        "active_claims": 0,
+        "challenged_claims": 0,
+        "claims_with_sources": 0,
+        "claims_without_sources": 0,
+        "claims_with_anchors": 0,
+        "source_coverage_ratio": 0.0,
+        "anchor_coverage_ratio": 0.0,
+    }
+
+
+def get_claim_trust_stats(
+    as_of: str | None = None,
+    *,
+    scope: Mapping[str, Any] | None = None,
+) -> dict[str, float | int]:
     """Return trust-oriented claim coverage stats for the current snapshot."""
+    scoped_ids = _scoped_claim_ids(scope)
+    if scoped_ids is not None and not scoped_ids:
+        return _empty_claim_trust_stats()
+
     as_of_utc = _normalize_utc_timestamp(as_of or _now())
+    scope_clause = ""
+    scope_params: list[Any] = []
+    if scoped_ids is not None:
+        placeholders = ",".join("?" for _ in scoped_ids)
+        scope_clause = f" AND id IN ({placeholders})"
+        scope_params = list(scoped_ids)
+
     with get_connection() as conn:
         row = conn.execute(
-            """WITH valid_claims AS (
+            f"""WITH valid_claims AS (
                    SELECT id, status
                    FROM claims
                    WHERE julianday(valid_from) <= julianday(?)
                      AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))
+                     {scope_clause}
                ),
                sourced_claims AS (
                    SELECT DISTINCT claim_id
@@ -2966,9 +3020,15 @@ def get_claim_trust_stats(as_of: str | None = None) -> dict[str, float | int]:
                FROM valid_claims vc
                LEFT JOIN sourced_claims sc ON sc.claim_id = vc.id
                LEFT JOIN anchored_claims ac ON ac.claim_id = vc.id""",
-            (as_of_utc, as_of_utc),
+            (as_of_utc, as_of_utc, *scope_params),
         ).fetchone()
-        total_row = conn.execute("SELECT COUNT(*) AS total_claims FROM claims").fetchone()
+        total_sql = "SELECT COUNT(*) AS total_claims FROM claims"
+        total_params: list[Any] = []
+        if scoped_ids is not None:
+            placeholders = ",".join("?" for _ in scoped_ids)
+            total_sql += f" WHERE id IN ({placeholders})"
+            total_params = list(scoped_ids)
+        total_row = conn.execute(total_sql, total_params).fetchone()
 
     currently_valid_claims = int(row["currently_valid_claims"]) if row else 0
     active_claims = int(row["active_claims"]) if row else 0
@@ -3239,17 +3299,33 @@ def expire_claims_without_sources(
     return orphaned_ids
 
 
-def count_active_challenged_claims(as_of: str | None = None) -> int:
+def count_active_challenged_claims(
+    as_of: str | None = None,
+    *,
+    scope: Mapping[str, Any] | None = None,
+) -> int:
     """Return count of challenged claims that are still temporally valid."""
+    scoped_ids = _scoped_claim_ids(scope)
+    if scoped_ids is not None and not scoped_ids:
+        return 0
+
     ts = _normalize_utc_timestamp(as_of or _now())
+    scope_clause = ""
+    scope_params: list[Any] = []
+    if scoped_ids is not None:
+        placeholders = ",".join("?" for _ in scoped_ids)
+        scope_clause = f" AND id IN ({placeholders})"
+        scope_params = list(scoped_ids)
+
     with get_connection() as conn:
         row = conn.execute(
-            """SELECT COUNT(*) AS c
+            f"""SELECT COUNT(*) AS c
                FROM claims
                WHERE status = 'challenged'
                  AND julianday(valid_from) <= julianday(?)
-                 AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))""",
-            (ts, ts),
+                 AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))
+                 {scope_clause}""",
+            (ts, ts, *scope_params),
         ).fetchone()
     return int(row["c"]) if row else 0
 

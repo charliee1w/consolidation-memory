@@ -426,6 +426,268 @@ class TestDatabase:
         assert topic_row is not None
         assert topic_row["storage_filename"] == "repair-topic.md"
 
+    @staticmethod
+    def _drop_action_outcome_tables(conn: sqlite3.Connection) -> None:
+        conn.execute("DROP TABLE IF EXISTS action_outcome_refs")
+        conn.execute("DROP TABLE IF EXISTS action_outcome_sources")
+        conn.execute("DROP TABLE IF EXISTS action_outcomes")
+
+    @staticmethod
+    def _rewrite_consolidation_metrics_without_fast_path(conn: sqlite3.Connection) -> None:
+        conn.execute("ALTER TABLE consolidation_metrics RENAME TO consolidation_metrics_with_fast_path")
+        conn.execute(
+            """CREATE TABLE consolidation_metrics (
+                id                  TEXT PRIMARY KEY,
+                run_id              TEXT NOT NULL,
+                timestamp           TEXT NOT NULL,
+                clusters_succeeded  INTEGER NOT NULL DEFAULT 0,
+                clusters_failed     INTEGER NOT NULL DEFAULT 0,
+                avg_confidence      REAL NOT NULL DEFAULT 0.0,
+                episodes_processed  INTEGER NOT NULL DEFAULT 0,
+                duration_seconds    REAL NOT NULL DEFAULT 0.0,
+                api_calls           INTEGER NOT NULL DEFAULT 0,
+                topics_created      INTEGER NOT NULL DEFAULT 0,
+                topics_updated      INTEGER NOT NULL DEFAULT 0,
+                episodes_pruned     INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO consolidation_metrics (
+                id, run_id, timestamp, clusters_succeeded, clusters_failed,
+                avg_confidence, episodes_processed, duration_seconds, api_calls,
+                topics_created, topics_updated, episodes_pruned
+            )
+            SELECT
+                id, run_id, timestamp, clusters_succeeded, clusters_failed,
+                avg_confidence, episodes_processed, duration_seconds, api_calls,
+                topics_created, topics_updated, episodes_pruned
+            FROM consolidation_metrics_with_fast_path"""
+        )
+        conn.execute("DROP TABLE consolidation_metrics_with_fast_path")
+
+    @staticmethod
+    def _rewrite_claims_table_without_precision(conn: sqlite3.Connection) -> None:
+        conn.execute("ALTER TABLE claims RENAME TO claims_with_precision")
+        conn.execute(
+            """CREATE TABLE claims (
+                id              TEXT PRIMARY KEY,
+                claim_type      TEXT NOT NULL,
+                canonical_text  TEXT NOT NULL,
+                payload         TEXT NOT NULL DEFAULT '{}',
+                status          TEXT NOT NULL DEFAULT 'active',
+                confidence      REAL NOT NULL DEFAULT 0.8,
+                valid_from      TEXT NOT NULL,
+                valid_until     TEXT,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO claims (
+                id, claim_type, canonical_text, payload, status, confidence,
+                valid_from, valid_until, created_at, updated_at
+            )
+            SELECT
+                id, claim_type, canonical_text, payload, status, confidence,
+                valid_from, valid_until, created_at, updated_at
+            FROM claims_with_precision"""
+        )
+        conn.execute("DROP TABLE claims_with_precision")
+
+    @staticmethod
+    def _rewrite_scheduler_without_trigger_breakdown(conn: sqlite3.Connection) -> None:
+        conn.execute("ALTER TABLE consolidation_scheduler RENAME TO consolidation_scheduler_with_breakdown")
+        conn.execute(
+            """CREATE TABLE consolidation_scheduler (
+                id                      TEXT PRIMARY KEY,
+                last_run_started_at     TEXT,
+                last_run_completed_at   TEXT,
+                last_status             TEXT NOT NULL DEFAULT 'idle',
+                last_error              TEXT,
+                last_trigger            TEXT,
+                last_utility_score      REAL,
+                next_due_at             TEXT,
+                lease_owner             TEXT,
+                lease_expires_at        TEXT,
+                updated_at              TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO consolidation_scheduler (
+                id, last_run_started_at, last_run_completed_at, last_status,
+                last_error, last_trigger, last_utility_score, next_due_at,
+                lease_owner, lease_expires_at, updated_at
+            )
+            SELECT
+                id, last_run_started_at, last_run_completed_at, last_status,
+                last_error, last_trigger, last_utility_score, next_due_at,
+                lease_owner, lease_expires_at, updated_at
+            FROM consolidation_scheduler_with_breakdown"""
+        )
+        conn.execute("DROP TABLE consolidation_scheduler_with_breakdown")
+
+    def test_action_outcomes_migration_from_v16_creates_tables(self):
+        from consolidation_memory.database import CURRENT_SCHEMA_VERSION, ensure_schema, get_connection
+
+        ensure_schema()
+        with get_connection() as conn:
+            self._drop_action_outcome_tables(conn)
+            conn.execute("DELETE FROM schema_version WHERE version >= 17")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (16, datetime.now(timezone.utc).isoformat()),
+            )
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            table_names = {str(row["name"]) for row in rows}
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+
+        assert {
+            "action_outcomes",
+            "action_outcome_sources",
+            "action_outcome_refs",
+        }.issubset(table_names)
+        assert row is not None and row["v"] == CURRENT_SCHEMA_VERSION
+
+    def test_fast_path_metrics_migration_from_v17_is_additive(self):
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+            insert_consolidation_metrics,
+        )
+
+        ensure_schema()
+        run_id = "run-v18-test"
+        insert_consolidation_metrics(
+            run_id=run_id,
+            clusters_succeeded=2,
+            clusters_failed=0,
+            avg_confidence=0.9,
+            episodes_processed=4,
+            duration_seconds=1.5,
+            api_calls=0,
+            topics_created=1,
+            topics_updated=0,
+            episodes_pruned=0,
+            fast_path_hits=3,
+            llm_fallbacks=1,
+        )
+
+        with get_connection() as conn:
+            self._rewrite_consolidation_metrics_without_fast_path(conn)
+            conn.execute("DELETE FROM schema_version WHERE version >= 18")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (17, datetime.now(timezone.utc).isoformat()),
+            )
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+            cols = {
+                str(column["name"])
+                for column in conn.execute("PRAGMA table_info(consolidation_metrics)").fetchall()
+            }
+            metric_row = conn.execute(
+                "SELECT clusters_succeeded, fast_path_hits, llm_fallbacks "
+                "FROM consolidation_metrics WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+
+        assert row is not None and row["v"] == CURRENT_SCHEMA_VERSION
+        assert {"fast_path_hits", "llm_fallbacks"}.issubset(cols)
+        assert metric_row is not None
+        assert metric_row["clusters_succeeded"] == 2
+        assert metric_row["fast_path_hits"] == 0
+        assert metric_row["llm_fallbacks"] == 0
+
+    def test_claim_precision_migration_from_v18_is_additive(self):
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+            upsert_claim,
+        )
+
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-v19-test",
+            claim_type="fact",
+            canonical_text="precision migration claim",
+            precision=0.65,
+        )
+
+        with get_connection() as conn:
+            self._rewrite_claims_table_without_precision(conn)
+            conn.execute("DELETE FROM schema_version WHERE version >= 19")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (18, datetime.now(timezone.utc).isoformat()),
+            )
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+            cols = {
+                str(column["name"])
+                for column in conn.execute("PRAGMA table_info(claims)").fetchall()
+            }
+            claim_row = conn.execute(
+                "SELECT canonical_text, precision FROM claims WHERE id = ?",
+                ("claim-v19-test",),
+            ).fetchone()
+
+        assert row is not None and row["v"] == CURRENT_SCHEMA_VERSION
+        assert "precision" in cols
+        assert claim_row is not None
+        assert claim_row["canonical_text"] == "precision migration claim"
+        assert claim_row["precision"] == 1.0
+
+    def test_scheduler_trigger_breakdown_migration_from_v19_is_additive(self):
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+            get_consolidation_scheduler_state,
+        )
+
+        ensure_schema()
+        with get_connection() as conn:
+            conn.execute(
+                """UPDATE consolidation_scheduler
+                   SET last_trigger_breakdown = ?
+                   WHERE id = 'global'""",
+                ('{"reason":"backlog"}',),
+            )
+
+        with get_connection() as conn:
+            self._rewrite_scheduler_without_trigger_breakdown(conn)
+            conn.execute("DELETE FROM schema_version WHERE version >= 20")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (19, datetime.now(timezone.utc).isoformat()),
+            )
+
+        ensure_schema()
+
+        with get_connection() as conn:
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+            cols = {
+                str(column["name"])
+                for column in conn.execute("PRAGMA table_info(consolidation_scheduler)").fetchall()
+            }
+
+        state = get_consolidation_scheduler_state()
+        assert row is not None and row["v"] == CURRENT_SCHEMA_VERSION
+        assert "last_trigger_breakdown" in cols
+        assert state.get("last_trigger_breakdown") is None
+
     def test_get_connection_depth_restored_on_commit_failure(self):
         import consolidation_memory.database as database
 

@@ -23,6 +23,7 @@ class ContentType(str, Enum):
     FACT = "fact"
     SOLUTION = "solution"
     PREFERENCE = "preference"
+    PROCEDURE = "procedure"
 
 
 VALID_EPISODE_CONTENT_TYPES: frozenset[str] = frozenset(

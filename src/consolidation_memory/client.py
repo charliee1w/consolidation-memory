@@ -2010,11 +2010,15 @@ class MemoryClient:
                 self._vector_store.size >= cfg.FAISS_PLATFORM_REVIEW_THRESHOLD
             ),
         }
-        trust_counts = get_claim_trust_stats()
+        trust_counts = get_claim_trust_stats(scope=scope_filter)
         evolving_topic_ids = get_recently_contradicted_topic_ids(
-            days=cfg.EVOLVING_TOPIC_LOOKBACK_DAYS
+            days=cfg.EVOLVING_TOPIC_LOOKBACK_DAYS,
+            scope=scope_filter,
         )
-        challenged_backlog = count_active_challenged_claims(as_of=now_utc.isoformat())
+        challenged_backlog = count_active_challenged_claims(
+            as_of=now_utc.isoformat(),
+            scope=scope_filter,
+        )
         source_coverage = float(trust_counts["source_coverage_ratio"])
         if int(trust_counts["currently_valid_claims"]) == 0:
             trust_posture = "bootstrapping"

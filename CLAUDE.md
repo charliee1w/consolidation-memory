@@ -7,7 +7,8 @@ Compact maintainer guide aligned with the codebase.
 ```text
 src/consolidation_memory/
   client.py          orchestration + tool-facing operations
-  database.py        SQLite schema/migrations
+  database.py        backward-compatible facade (re-exports db/)
+  db/                SQLite schema/migrations + domain CRUD
   query_service.py   canonical query envelopes
   context_assembler.py  hybrid recall
   claim_graph.py     deterministic claim canonicalization
@@ -58,7 +59,7 @@ Prioritized blind spots — check this before large refactors; update when fixed
 - ~~Global-by-design tools~~: documented in CONTRIBUTING (scope-aware vs global contract).
 - ~~Migration regression v17–v20~~: additive tests in `tests/test_core.py`.
 - ~~Multi-process lock test~~: `tests/test_process_write_lock.py` for `ProcessWriteLease`.
-- `database.py` god-module (~5.4k lines); split by domain when touching migrations heavily.
+- ~~`database.py` god-module~~: split into `db/` domain modules (2026-06-13); `database.py` remains a thin re-export facade.
 
 **Keep (do not rewrite)**
 - Episodes → records → claims → topics stack; `tool_dispatch` seam; FAISS write lease; fast-path before LLM; `query_service` envelopes.

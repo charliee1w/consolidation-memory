@@ -32,7 +32,8 @@ All surfaces route to `MemoryClient` and canonical query semantics in `query_ser
 
 - `client.py`: orchestration, lifecycle, tool-facing operations, scope resolution.
 - `client_runtime.py`: consolidation scheduler and backend health runtime helpers.
-- `database.py`: SQLite schema/migrations and persistence operations.
+- `database.py`: backward-compatible facade; re-exports the `db/` persistence API.
+- `db/`: SQLite schema/migrations and domain CRUD (`connection`, `migrations`, `scope`, `episodes`, `topics`, `records`, `claims`, `consolidation`, `outcomes`, `export`, `stats`).
 - `vector_store.py`: FAISS wrapper, tombstones, compaction, reload signaling.
 - `knowledge_consistency.py`: markdown/DB drift auditing for topic consistency.
 - `markdown_records.py`: markdown-to-record parser used by correction/audits.
@@ -76,7 +77,9 @@ flowchart TD
 
 ## Persistence Model
 
-`database.py` uses `CURRENT_SCHEMA_VERSION = 20`.
+Persistence lives under `src/consolidation_memory/db/`, split by domain. Import paths remain stable via `database.py`, which re-exports the public API (schema version, connections, scope filters, and CRUD).
+
+`db/migrations.py` owns `CURRENT_SCHEMA_VERSION = 20` and `ensure_schema()` — the single schema entry point.
 
 Primary tables:
 
@@ -214,7 +217,8 @@ PY
 
 And inspect:
 
-- `src/consolidation_memory/database.py`
+- `src/consolidation_memory/database.py` (facade)
+- `src/consolidation_memory/db/`
 - `src/consolidation_memory/client.py`
 - `src/consolidation_memory/query_service.py`
 - `src/consolidation_memory/context_assembler.py`

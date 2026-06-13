@@ -8,6 +8,7 @@
 
 ### Bug Fixes
 
+- fix(ci): stabilize Windows lock test and mypy after db split
 - fix: scope audit APIs and unify content_type validation
 
 ### Refactoring

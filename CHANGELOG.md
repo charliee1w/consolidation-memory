@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 - 2026-06-13
 
 ### Features
 
@@ -8,9 +8,10 @@
 
 ### Documentation
 
-- docs: remove internal strategy and agent-ops docs from public repo
-- docs: trim README to user-facing content only
 - docs: rewrite README for trust positioning and visual clarity
+- docs: trim README to user-facing content only
+- docs: remove internal strategy and agent-ops docs from public repo
+
 
 ## 0.16.0 - 2026-06-12
 

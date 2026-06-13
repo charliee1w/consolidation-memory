@@ -16,6 +16,7 @@
 
 ### Other
 
+- Apply default-resolved scope to audit read APIs
 - Address P2 architectural debt: scope, types, migrations, locks
 
 ## 0.17.0 - 2026-06-13

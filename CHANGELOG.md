@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+- feat: P1 trust enforcement - CI gate, cache lock, security docs
+
 ### Bug Fixes
 
 - fix: scope audit APIs and unify content_type validation

@@ -194,7 +194,7 @@ def _status_cache_scope_key(scope_filter: dict[str, str | None] | None) -> str:
 
 
 def _resolve_audit_scope_filter(
-    client: object,
+    client: MemoryClient,
     scope: ScopeEnvelope | dict[str, object] | None,
     *,
     global_scope: bool = False,

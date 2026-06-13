@@ -133,34 +133,6 @@ def _apply_scope_filters(
         params.append(value)
 
 
-_POLICY_SELECTOR_KEYS: tuple[str, ...] = (
-    "namespace_slug",
-    "project_slug",
-    "app_client_name",
-    "app_client_type",
-    "app_client_provider",
-    "app_client_external_key",
-    "agent_name",
-    "agent_external_key",
-    "session_external_key",
-    "session_kind",
-)
-
-_EXACT_SCOPE_MATCH_KEYS: tuple[str, ...] = (
-    "namespace_slug",
-    "namespace_sharing_mode",
-    "project_slug",
-    "app_client_name",
-    "app_client_type",
-    "app_client_provider",
-    "app_client_external_key",
-    "agent_name",
-    "agent_external_key",
-    "session_external_key",
-    "session_kind",
-)
-
-
 def _normalize_principal_token(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("principal value must be a string")

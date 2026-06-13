@@ -6,6 +6,10 @@ stored episodes, claims, and repository drift signals.
 Unlike synthetic harnesses (`novelty_eval`, `coding_agent_eval`), this benchmark
 uses your actual memory corpus and reports messy-world performance.
 
+**CI note:** `real_world_eval` is not CI-gated (it requires your live corpus).
+Unit tests cover harness logic in `tests/test_real_world_eval.py`; run quick/full
+locally to track messy-world performance.
+
 ## Run It
 
 ```bash

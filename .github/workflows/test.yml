@@ -53,6 +53,26 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Run coding agent eval quick
+        run: python -m benchmarks.coding_agent_eval --mode quick --output benchmarks/results/coding_agent_eval_ci_quick.json
+
+      - name: Enforce coding agent metric gate
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path("benchmarks/results/coding_agent_eval_ci_quick.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          overall_pass = bool(data.get("overall_pass"))
+          print(f"coding_agent_eval overall_pass={overall_pass}")
+          if not overall_pass:
+              for key, passed in data.get("section_passes", {}).items():
+                  print(f"{key}: pass={passed}")
+              sys.exit(1)
+          PY
+
   packaging:
     runs-on: ubuntu-latest
     steps:

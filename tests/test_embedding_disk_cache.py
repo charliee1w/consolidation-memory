@@ -79,6 +79,20 @@ def test_clear_namespace_forces_reembed(disk_cache_dir):
         assert mock_encode.call_count == 2
 
 
+def test_disk_save_acquires_cross_process_write_lease(disk_cache_dir):
+    vectors = np.random.randn(1, 384).astype(np.float32)
+    items = [("a", "alpha")]
+
+    with patch(
+        "consolidation_memory.embedding_disk_cache._disk_write_lease"
+    ) as mock_lease_factory:
+        mock_lease_factory.return_value.acquire.return_value.__enter__ = lambda *_a, **_k: None
+        mock_lease_factory.return_value.acquire.return_value.__exit__ = lambda *_a, **_k: None
+        with patch("consolidation_memory.backends.encode_documents", return_value=vectors):
+            embed_items_incremental(items, namespace="records")
+        mock_lease_factory.return_value.acquire.assert_called()
+
+
 def test_fingerprint_mismatch_rebuilds_cache(disk_cache_dir):
     vectors = np.random.randn(1, 384).astype(np.float32)
     items = [("a", "alpha")]

@@ -47,10 +47,10 @@ Prioritized blind spots — check this before large refactors; update when fixed
 - ~~Scope on audit APIs (explicit `scope` arg)~~: `contradictions`, `decay_report`, `consolidation_log`, `status` filter when `scope` is passed. Remaining: unscoped calls still global; `trust_profile` in `status()` always global; default-resolved scope on `None` not yet applied to audit paths.
 - ~~`content_type` validation~~: shared `validate_episode_content_type()` in `types.py`.
 
-**P1 (enforcement / ops)**
-- `coding_agent_eval` / `real_world_eval` documented as “enforced” but not CI-gated (only `novelty_eval` is).
-- `embedding_disk_cache` lacks cross-process write lock (FAISS has `.faiss_write.lock`).
-- `SECURITY.md` still lists `0.13.x`; package is `0.16.x`. MCP stdio trust boundary undocumented.
+**P1 (enforcement / ops)** — largely addressed 2026-06-13
+- ~~`coding_agent_eval` CI gate~~: `quick` mode in `novelty_gates` job. `real_world_eval` remains manual (live corpus).
+- ~~`embedding_disk_cache` cross-process lock~~: `.embedding_cache_write.lock` via `process_write_lock.py`.
+- ~~`SECURITY.md` + MCP trust boundary~~: updated for `0.16.x` with stdio trust model documented.
 
 **P2 (structure / tests)**
 - `ContentType` (4 ingest types) vs `RecordType` (+ `procedure`, `strategy` post-consolidation only).

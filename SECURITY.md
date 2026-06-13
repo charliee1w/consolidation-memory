@@ -6,8 +6,24 @@ The project currently supports security fixes for the latest published minor rel
 
 | Version line | Supported |
 | --- | --- |
-| `0.13.x` | Yes |
-| `<0.13.0` | No |
+| `0.16.x` | Yes |
+| `<0.16.0` | No |
+
+## Trust Boundaries
+
+### MCP (stdio)
+
+The default MCP server speaks JSON-RPC over stdio. **Any process that can launch the server can read and write the full memory database** for the configured project. There is no authentication layer on stdio transport.
+
+Treat MCP as a **local trust boundary** (IDE, agent host, same user session). Do not expose the MCP subprocess to untrusted multi-tenant environments without OS-level isolation.
+
+### REST API
+
+When bound beyond loopback, REST requires a bearer token (see README REST section). Binding to non-loopback addresses without a token is rejected at startup.
+
+### Python SDK
+
+Direct `MemoryClient` usage inherits the privileges of the calling process and reads/writes the same on-disk project data as MCP.
 
 ## Reporting a Vulnerability
 

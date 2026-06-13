@@ -2,6 +2,9 @@
 
 These metrics are enforced by `benchmarks/coding_agent_eval.py`.
 
+CI runs `quick` mode on every push/PR to `main` (see `.github/workflows/test.yml`).
+Run `full` mode locally or before releases for baseline tracking.
+
 Unlike conversational-memory benchmarks (for example LoCoMo), this harness measures
 trust workflows that matter for coding agents: debug-solution reuse, drift
 suppression, scope isolation, contradiction visibility, and outcome-informed ranking.

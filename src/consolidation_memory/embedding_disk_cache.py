@@ -19,10 +19,22 @@ from typing import Iterable
 
 import numpy as np
 
+from consolidation_memory.process_write_lock import ProcessWriteLease
+
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _runtime_stores: dict[str, dict[str, tuple[str, np.ndarray]]] = {}
+
+
+def _disk_write_lease() -> ProcessWriteLease:
+    from consolidation_memory.config import get_config
+
+    cfg = get_config()
+    return ProcessWriteLease(
+        cfg.EMBEDDING_CACHE_WRITE_LOCK_PATH,
+        cfg.EMBEDDING_CACHE_WRITE_LOCK_TIMEOUT_SECONDS,
+    )
 
 
 def _hash_text(text: str) -> str:
@@ -59,7 +71,9 @@ def clear_namespace(namespace: str) -> None:
     if not _disk_cache_enabled():
         return
     path = _namespace_dir(namespace)
-    if path.exists():
+    if not path.exists():
+        return
+    with _disk_write_lease().acquire():
         shutil.rmtree(path, ignore_errors=True)
 
 
@@ -135,22 +149,23 @@ def _save_disk_store(namespace: str, store: dict[str, tuple[str, np.ndarray]]) -
     if not _disk_cache_enabled() or not store:
         return
 
-    base = _namespace_dir(namespace)
-    base.mkdir(parents=True, exist_ok=True)
+    with _disk_write_lease().acquire():
+        base = _namespace_dir(namespace)
+        base.mkdir(parents=True, exist_ok=True)
 
-    ids = np.array(sorted(store.keys()), dtype=str)
-    hashes = np.array([store[item_id][0] for item_id in ids], dtype=str)
-    vecs = np.stack([store[item_id][1] for item_id in ids]).astype(np.float32, copy=False)
+        ids = np.array(sorted(store.keys()), dtype=str)
+        hashes = np.array([store[item_id][0] for item_id in ids], dtype=str)
+        vecs = np.stack([store[item_id][1] for item_id in ids]).astype(np.float32, copy=False)
 
-    meta = {"fingerprint": _fingerprint(), "count": int(len(ids))}
-    _atomic_write_bytes(
-        base / "meta.json",
-        json.dumps(meta, indent=2, sort_keys=True).encode("utf-8"),
-    )
+        meta = {"fingerprint": _fingerprint(), "count": int(len(ids))}
+        _atomic_write_bytes(
+            base / "meta.json",
+            json.dumps(meta, indent=2, sort_keys=True).encode("utf-8"),
+        )
 
-    buffer = io.BytesIO()
-    np.savez_compressed(buffer, ids=ids, hashes=hashes, vecs=vecs)
-    _atomic_write_bytes(base / "vectors.npz", buffer.getvalue())
+        buffer = io.BytesIO()
+        np.savez_compressed(buffer, ids=ids, hashes=hashes, vecs=vecs)
+        _atomic_write_bytes(base / "vectors.npz", buffer.getvalue())
 
 
 def embed_items_incremental(

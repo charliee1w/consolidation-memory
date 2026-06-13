@@ -159,9 +159,11 @@ class Config:
     BACKUP_DIR: Path = field(default_factory=lambda: Path("."))
     KNOWLEDGE_VERSIONS_DIR: Path = field(default_factory=lambda: Path("."))
     EMBEDDING_CACHE_DIR: Path = field(default_factory=lambda: Path("."))
+    EMBEDDING_CACHE_WRITE_LOCK_PATH: Path = field(default_factory=lambda: Path("."))
 
     # ── Embedding model ──────────────────────────────────────────────────
     EMBEDDING_DISK_CACHE_ENABLED: bool = True
+    EMBEDDING_CACHE_WRITE_LOCK_TIMEOUT_SECONDS: float = 30.0
     EMBEDDING_ENCODE_BATCH_SIZE: int = 128
     EMBEDDING_BACKEND: str = "fastembed"
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
@@ -327,6 +329,7 @@ class Config:
         self.LOG_DIR = self._base_data_dir / "logs"
         self.BACKUP_DIR = self.DATA_DIR / "backups"
         self.EMBEDDING_CACHE_DIR = self.DATA_DIR / "embedding_cache"
+        self.EMBEDDING_CACHE_WRITE_LOCK_PATH = self.DATA_DIR / ".embedding_cache_write.lock"
 
 
 def _apply_env_overrides(c: Config) -> None:
@@ -737,6 +740,7 @@ def maybe_migrate_to_projects(base_dir: Path) -> bool:
     _FILES_TO_MOVE = [
         "memory.db", "faiss_index.bin", "faiss_id_map.json",
         "faiss_tombstones.json", ".faiss_reload", ".faiss_write.lock",
+        ".embedding_cache_write.lock",
     ]
     _DIRS_TO_MOVE = ["knowledge", "backups", "consolidation_logs"]
 
@@ -843,6 +847,11 @@ def _validate_config(c: Config) -> None:
         errors.append(
             "faiss.write_lock_timeout_seconds = "
             f"{c.FAISS_WRITE_LOCK_TIMEOUT_SECONDS}, must be > 0"
+        )
+    if c.EMBEDDING_CACHE_WRITE_LOCK_TIMEOUT_SECONDS <= 0:
+        errors.append(
+            "embedding_cache.write_lock_timeout_seconds = "
+            f"{c.EMBEDDING_CACHE_WRITE_LOCK_TIMEOUT_SECONDS}, must be > 0"
         )
     if c.FAISS_PLATFORM_REVIEW_THRESHOLD <= 0:
         errors.append(

@@ -4,6 +4,8 @@
 
 ### Features
 
+- feat: P0 adoption — simple MCP profile and live eval metrics
+- feat: adoption slice — simple tools, browser UI, warmup CLI
 - feat: policy admin surface parity and agent MCP config
 
 ## 0.18.0 - 2026-06-14

@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-### Other
+### Features
 
-- Maintenance release.
+- feat: policy admin surface parity and agent MCP config
 
 ## 0.18.0 - 2026-06-14
 

@@ -149,6 +149,70 @@ def upsert_claim(
     return claim_id
 
 
+def get_claims_by_ids(claim_ids: Sequence[str]) -> list[dict[str, Any]]:
+    """Return claim rows for the provided IDs."""
+    normalized = [str(claim_id).strip() for claim_id in claim_ids if str(claim_id).strip()]
+    if not normalized:
+        return []
+    placeholders = ",".join("?" for _ in normalized)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM claims WHERE id IN ({placeholders})",
+            normalized,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_contradicting_partner_claim_ids(
+    claim_ids: Sequence[str],
+    *,
+    partner_statuses: frozenset[str] | None = None,
+) -> dict[str, set[str]]:
+    """Map claim IDs to contradicting partner claim IDs via claim_edges."""
+    normalized = sorted({str(claim_id).strip() for claim_id in claim_ids if str(claim_id).strip()})
+    if not normalized:
+        return {}
+
+    placeholders = ",".join("?" for _ in normalized)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT from_claim_id, to_claim_id
+                FROM claim_edges
+                WHERE edge_type = 'contradicts'
+                  AND (from_claim_id IN ({placeholders})
+                       OR to_claim_id IN ({placeholders}))""",
+            [*normalized, *normalized],
+        ).fetchall()
+
+    partners: dict[str, set[str]] = {claim_id: set() for claim_id in normalized}
+    for row in rows:
+        from_id = str(row["from_claim_id"])
+        to_id = str(row["to_claim_id"])
+        if from_id in partners:
+            partners[from_id].add(to_id)
+        if to_id in partners:
+            partners[to_id].add(from_id)
+
+    if not partner_statuses:
+        return partners
+
+    all_partner_ids = sorted({pid for partner_set in partners.values() for pid in partner_set})
+    if not all_partner_ids:
+        return partners
+
+    status_by_id = {
+        str(row["id"]): str(row.get("status") or "active")
+        for row in get_claims_by_ids(all_partner_ids)
+    }
+    for claim_id, partner_set in partners.items():
+        partners[claim_id] = {
+            partner_id
+            for partner_id in partner_set
+            if status_by_id.get(partner_id, "active") in partner_statuses
+        }
+    return partners
+
+
 def get_active_claims(
     claim_type: str | None = None,
     limit: int = 100,

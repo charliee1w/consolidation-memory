@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,6 +35,12 @@ class EvalModeConfig:
 
 
 MODE_CONFIG: dict[str, EvalModeConfig] = {
+    "ci": EvalModeConfig(
+        max_solution_cases=5,
+        max_claim_cases=5,
+        max_challenged_cases=3,
+        max_provenance_queries=5,
+    ),
     "quick": EvalModeConfig(
         max_solution_cases=30,
         max_claim_cases=25,
@@ -553,18 +561,163 @@ def evaluate_memory_health_snapshot() -> dict[str, Any]:
     }
 
 
+def _reset_ci_environment(tmp_root: Path) -> None:
+    from consolidation_memory import claim_cache, database, record_cache, topic_cache
+    from consolidation_memory.backends import reset_backends
+    from consolidation_memory.config import get_config, reset_config
+    from consolidation_memory.database import ensure_schema
+
+    database.close_all_connections()
+    reset_backends()
+    topic_cache.invalidate()
+    record_cache.invalidate()
+    claim_cache.invalidate()
+
+    data_root = tmp_root / "data"
+    reset_config(
+        _base_data_dir=data_root,
+        active_project="real_world_eval_ci",
+        EMBEDDING_BACKEND="fastembed",
+        LLM_BACKEND="disabled",
+        CONSOLIDATION_AUTO_RUN=False,
+        EMBEDDING_DIMENSION=384,
+    )
+    cfg = get_config()
+    for directory in [
+        cfg.DATA_DIR,
+        cfg.KNOWLEDGE_DIR,
+        cfg.CONSOLIDATION_LOG_DIR,
+        cfg.LOG_DIR,
+        cfg.BACKUP_DIR,
+    ]:
+        directory.mkdir(parents=True, exist_ok=True)
+    ensure_schema()
+
+
+def _seed_ci_corpus() -> None:
+    from consolidation_memory import MemoryClient
+    from consolidation_memory.database import (
+        insert_claim_event,
+        insert_claim_sources,
+        mark_consolidated,
+        upsert_claim,
+    )
+
+    solutions = [
+        (
+            "Problem: pytest fails on Windows path separators in MCP recall tests.\n"
+            "Fix: normalize scope paths before anchor extraction in server.py.\n"
+            "Context: path:src/consolidation_memory/server.py"
+        ),
+        (
+            "Problem: REST recall times out when record cache is cold on first call.\n"
+            "Fix: defer knowledge until record_cache is warm and inject recall deadlines.\n"
+            "Context: path:src/consolidation_memory/rest.py"
+        ),
+        (
+            "Problem: policy ACL rows exist but operators cannot inspect them easily.\n"
+            "Fix: add consolidation-memory policy list and policy grant CLI commands.\n"
+            "Context: path:src/consolidation_memory/cli.py"
+        ),
+    ]
+    client = MemoryClient(auto_consolidate=False)
+    episode_ids: list[str] = []
+    try:
+        for content in solutions:
+            result = client.store(content=content, content_type="solution", tags=["ci-seed"])
+            if result.id:
+                episode_ids.append(result.id)
+    finally:
+        client.close()
+
+    if episode_ids:
+        mark_consolidated(episode_ids, "ci-seed-topic.md")
+
+    upsert_claim(
+        claim_id="ci-claim-active-a",
+        claim_type="solution",
+        canonical_text="normalize scope paths before anchor extraction",
+        payload={"problem": "pytest fails on Windows path separators", "fix": "normalize paths"},
+        status="active",
+        valid_from="2026-06-01T00:00:00+00:00",
+    )
+    upsert_claim(
+        claim_id="ci-claim-active-b",
+        claim_type="fact",
+        canonical_text="defer knowledge until record cache is warm",
+        payload={"subject": "recall", "info": "defer knowledge until record cache is warm"},
+        status="active",
+        valid_from="2026-06-01T00:00:00+00:00",
+    )
+    upsert_claim(
+        claim_id="ci-claim-challenged",
+        claim_type="procedure",
+        canonical_text="legacy deploy script still referenced in docs",
+        payload={"trigger": "deploy", "steps": "run legacy deploy script"},
+        status="challenged",
+        valid_from="2026-06-01T00:00:00+00:00",
+    )
+    if episode_ids:
+        insert_claim_sources("ci-claim-active-a", [{"source_episode_id": episode_ids[0]}])
+        insert_claim_event(
+            claim_id="ci-claim-active-a",
+            event_type="created",
+            details={"source": "real_world_eval_ci"},
+            created_at="2026-06-01T00:00:00+00:00",
+        )
+    insert_claim_event(
+        claim_id="ci-claim-challenged",
+        event_type="challenged",
+        details={"reason": "drift"},
+        created_at="2026-06-02T00:00:00+00:00",
+    )
+
+
 def run_eval(mode: str, repo_path: Path | None = None) -> dict[str, Any]:
     cfg = MODE_CONFIG[mode]
     repo = repo_path or _REPO_ROOT
+    data_source = "live_active_project"
+    tmp_root: Path | None = None
 
-    sections = {
-        "live_solution_recall_at_5": evaluate_live_solution_recall(cfg.max_solution_cases),
-        "live_claim_recall_at_5": evaluate_live_claim_recall(cfg.max_claim_cases),
-        "challenged_claim_suppression": evaluate_challenged_claim_suppression(cfg.max_challenged_cases),
-        "live_provenance_coverage_on_recall": evaluate_live_provenance_on_recall(cfg.max_provenance_queries),
-        "live_drift_response": evaluate_live_drift_response(repo),
-        "memory_health_snapshot": evaluate_memory_health_snapshot(),
-    }
+    if mode == "ci":
+        from consolidation_memory import database
+
+        local_tmp_base = Path.cwd() / ".tmp_real_world_eval_runtime"
+        local_tmp_base.mkdir(parents=True, exist_ok=True)
+        tmp_root = Path(tempfile.mkdtemp(prefix="real_world_eval_ci_", dir=str(local_tmp_base)))
+        data_source = "ci_fixture_project"
+        try:
+            _reset_ci_environment(tmp_root)
+            _seed_ci_corpus()
+            sections = {
+                "live_solution_recall_at_5": evaluate_live_solution_recall(cfg.max_solution_cases),
+                "live_claim_recall_at_5": evaluate_live_claim_recall(cfg.max_claim_cases),
+                "challenged_claim_suppression": evaluate_challenged_claim_suppression(
+                    cfg.max_challenged_cases
+                ),
+                "live_provenance_coverage_on_recall": evaluate_live_provenance_on_recall(
+                    cfg.max_provenance_queries
+                ),
+                "live_drift_response": evaluate_live_drift_response(repo),
+                "memory_health_snapshot": evaluate_memory_health_snapshot(),
+            }
+        finally:
+            database.close_all_connections()
+            shutil.rmtree(tmp_root, ignore_errors=True)
+    else:
+        sections = {
+            "live_solution_recall_at_5": evaluate_live_solution_recall(cfg.max_solution_cases),
+            "live_claim_recall_at_5": evaluate_live_claim_recall(cfg.max_claim_cases),
+            "challenged_claim_suppression": evaluate_challenged_claim_suppression(
+                cfg.max_challenged_cases
+            ),
+            "live_provenance_coverage_on_recall": evaluate_live_provenance_on_recall(
+                cfg.max_provenance_queries
+            ),
+            "live_drift_response": evaluate_live_drift_response(repo),
+            "memory_health_snapshot": evaluate_memory_health_snapshot(),
+        }
+
     overall_pass = all(bool(section["pass"]) for section in sections.values())
 
     return {
@@ -572,7 +725,7 @@ def run_eval(mode: str, repo_path: Path | None = None) -> dict[str, Any]:
         "run_id": f"real_world_eval_{mode}_{uuid.uuid4().hex[:12]}",
         "mode": mode,
         "generated_at": _iso_now(),
-        "data_source": "live_active_project",
+        "data_source": data_source,
         "cloud_dependencies_used": False,
         "aligned_metrics_doc": "docs/REAL_WORLD_METRICS.md",
         "sections": sections,

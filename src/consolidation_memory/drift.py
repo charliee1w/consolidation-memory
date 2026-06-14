@@ -57,6 +57,21 @@ def _normalize_changed_path(value: str) -> str:
     return normalized
 
 
+_IGNORED_DRIFT_PATH_PREFIXES = (
+    "terminals/",
+    "agent-tools/",
+    "mcps/",
+    ".tmp_",
+)
+
+
+def _is_ignored_drift_path(path: str) -> bool:
+    normalized = _normalize_changed_path(path)
+    if not normalized:
+        return True
+    return any(normalized.startswith(prefix) for prefix in _IGNORED_DRIFT_PATH_PREFIXES)
+
+
 def _resolve_repo_dir(repo_path: str | PathLike[str] | None) -> Path:
     repo_dir = Path(repo_path).expanduser().resolve() if repo_path else Path.cwd().resolve()
     if not repo_dir.exists() or not repo_dir.is_dir():
@@ -159,7 +174,7 @@ def get_changed_files(
 
     for path in raw_paths:
         normalized = _normalize_changed_path(path)
-        if normalized:
+        if normalized and not _is_ignored_drift_path(normalized):
             changed.add(normalized)
 
     changed_list = sorted(changed)

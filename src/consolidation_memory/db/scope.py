@@ -324,6 +324,31 @@ def upsert_policy_acl_entry(
         return _upsert(managed_conn)
 
 
+def list_policy_admin_rows() -> list[dict[str, Any]]:
+    """Return persisted access policies with principals and ACL bindings."""
+    query = """SELECT
+            p.id AS policy_id,
+            p.namespace_slug,
+            p.project_slug,
+            p.app_client_name,
+            p.app_client_type,
+            p.enabled,
+            p.updated_at AS policy_updated_at,
+            pae.id AS acl_entry_id,
+            pae.write_mode,
+            pae.read_visibility,
+            pp.principal_type,
+            pp.principal_key,
+            pae.updated_at AS acl_updated_at
+        FROM access_policies p
+        LEFT JOIN policy_acl_entries pae ON pae.policy_id = p.id
+        LEFT JOIN policy_principals pp ON pp.id = pae.principal_id
+        ORDER BY p.updated_at DESC, pae.updated_at DESC, p.id ASC"""
+    with get_connection() as conn:
+        rows = conn.execute(query).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_matching_policy_acl_entries(
     scope: Mapping[str, Any] | None,
     principals: Sequence[tuple[str, str]],

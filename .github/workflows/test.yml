@@ -73,6 +73,26 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Run real world eval ci fixture mode
+        run: python -m benchmarks.real_world_eval --mode ci --output benchmarks/results/real_world_eval_ci.json
+
+      - name: Enforce real world eval ci gate
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path("benchmarks/results/real_world_eval_ci.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          overall_pass = bool(data.get("overall_pass"))
+          print(f"real_world_eval overall_pass={overall_pass} data_source={data.get('data_source')}")
+          if not overall_pass:
+              for key, section in data.get("sections", {}).items():
+                  print(f"{key}: pass={section.get('pass')}, measured={section.get('measured')}")
+              sys.exit(1)
+          PY
+
   packaging:
     runs-on: ubuntu-latest
     steps:

@@ -6,13 +6,14 @@ stored episodes, claims, and repository drift signals.
 Unlike synthetic harnesses (`novelty_eval`, `coding_agent_eval`), this benchmark
 uses your actual memory corpus and reports messy-world performance.
 
-**CI note:** `real_world_eval` is not CI-gated (it requires your live corpus).
-Unit tests cover harness logic in `tests/test_real_world_eval.py`; run quick/full
-locally to track messy-world performance.
+**CI note:** `ci` mode runs against an isolated fixture corpus in GitHub Actions.
+`quick` and `full` remain manual on your live project. Unit tests cover harness
+logic in `tests/test_real_world_eval.py`.
 
 ## Run It
 
 ```bash
+python -m benchmarks.real_world_eval --mode ci
 python -m benchmarks.real_world_eval --mode quick
 python -m benchmarks.real_world_eval --mode full --output benchmarks/results/real_world_eval_full.json
 ```

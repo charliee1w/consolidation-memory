@@ -8,6 +8,11 @@ Includes schema versioning with automatic migration.
 import uuid
 
 from consolidation_memory.db import connection as _connection_mod
+from consolidation_memory.db.anchors import (
+    get_claim_ids_by_subject_token,
+    get_episode_ids_by_entity_anchors,
+    get_record_ids_by_subject_token,
+)
 from consolidation_memory.db._helpers import (
     OUTCOME_TYPES,
     _derive_action_key,
@@ -34,6 +39,8 @@ from consolidation_memory.db.claims import (
     get_claims_as_of,
     get_claims_by_anchor,
     get_claims_by_anchor_values,
+    get_claims_by_ids,
+    get_contradicting_partner_claim_ids,
     get_existing_claim_ids,
     insert_claim_edge,
     insert_claim_event,
@@ -160,6 +167,7 @@ from consolidation_memory.db.scope import (
     _normalize_principal_token,
     _normalize_scope_token,
     get_matching_policy_acl_entries,
+    list_policy_admin_rows,
     upsert_access_policy,
     upsert_policy_acl_entry,
     upsert_policy_principal,
@@ -253,8 +261,12 @@ __all__ = [
     "get_claim_source_scope_rows",
     "get_claim_trust_stats",
     "get_claims_as_of",
+    "get_claim_ids_by_subject_token",
     "get_claims_by_anchor",
     "get_claims_by_anchor_values",
+    "get_claims_by_ids",
+    "get_contradicting_partner_claim_ids",
+    "get_episode_ids_by_entity_anchors",
     "get_connection",
     "get_consolidation_metrics",
     "get_consolidation_scheduler_state",
@@ -271,12 +283,14 @@ __all__ = [
     "get_last_consolidation_run",
     "get_low_confidence_records",
     "get_matching_policy_acl_entries",
+    "list_policy_admin_rows",
     "get_median_access_count",
     "get_outcome_failure_rate_since",
     "get_prunable_episodes",
     "get_recent_consolidation_runs",
     "get_recently_contradicted_topic_ids",
     "get_record_count",
+    "get_record_ids_by_subject_token",
     "get_records_as_of",
     "get_records_by_topic",
     "get_stats",

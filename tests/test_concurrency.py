@@ -210,6 +210,28 @@ class TestCacheVersionRace:
         assert vecs2 is not None
         assert len(records2) == vecs2.shape[0]
 
+    @patch("consolidation_memory.record_cache._embed_records")
+    @patch("consolidation_memory.record_cache.get_all_active_records")
+    def test_is_unexpired_cache_warm_tracks_populated_slot(
+        self,
+        mock_records,
+        mock_embed,
+        tmp_data_dir,
+    ):
+        import numpy as np
+        from consolidation_memory import record_cache
+
+        record_cache.invalidate()
+        assert record_cache.is_unexpired_cache_warm() is False
+
+        mock_records.return_value = [
+            {"embedding_text": "Record 0", "id": "r0"},
+        ]
+        mock_embed.return_value = np.random.randn(1, 384).astype(np.float32)
+
+        record_cache.get_record_vecs(include_expired=False)
+        assert record_cache.is_unexpired_cache_warm() is True
+
 
 class TestStoreDuringConsolidation:
     @patch("consolidation_memory.backends.encode_documents")

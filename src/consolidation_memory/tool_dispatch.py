@@ -10,6 +10,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from consolidation_memory.client import MemoryClient
 
+from consolidation_memory.tool_adapter import (
+    append_deferred_knowledge_warning,
+    deferred_knowledge_requested,
+    effective_include_knowledge,
+    inject_recall_deadline,
+    maybe_complete_deferred_recall,
+    recall_timeout_seconds,
+)
 from consolidation_memory.types import (
     OUTCOME_TYPES,
     ScopeEnvelope,
@@ -40,6 +48,20 @@ def _require_client(client: MemoryClient | None, name: str) -> MemoryClient:
     if client is None:
         raise RuntimeError(f"Tool {name} requires a MemoryClient instance")
     return client
+
+
+def _extract_recall_deadline_monotonic(arguments: Mapping[str, object]) -> float | None:
+    recall_deadline_value = arguments.get("_recall_deadline_monotonic")
+    if recall_deadline_value is None:
+        return None
+    if isinstance(recall_deadline_value, (int, float)):
+        return float(recall_deadline_value)
+    if isinstance(recall_deadline_value, str):
+        return float(recall_deadline_value)
+    raise TypeError(
+        "_recall_deadline_monotonic must be a number, "
+        f"got {type(recall_deadline_value).__name__}"
+    )
 
 
 def _run_detect_drift(*, base_ref: str | None = None, repo_path: str | None = None) -> dict[str, Any]:
@@ -316,6 +338,52 @@ def _validate_batch_episodes(episodes: object) -> list[dict[str, Any]]:
     return validated
 
 
+def _memory_recall_result(
+    client: MemoryClient,
+    arguments: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    query = _validate_required_text("query", arguments["query"], max_length=_MAX_QUERY_LENGTH)
+    n_results = _validate_bounded_int(
+        "n_results",
+        arguments.get("n_results", 10),
+        minimum=1,
+        maximum=50,
+    )
+    include_knowledge = _validate_bool(
+        "include_knowledge",
+        arguments.get("include_knowledge", True),
+    )
+    recall_deadline_monotonic = _extract_recall_deadline_monotonic(arguments)
+    recall_result = client.query_recall(
+        query=query,
+        n_results=n_results,
+        include_knowledge=effective_include_knowledge(include_knowledge),
+        content_types=_validate_content_type_list(
+            "content_types",
+            arguments.get("content_types"),
+        ),
+        tags=_validate_tags(arguments.get("tags")),
+        after=_validate_optional_text("after", arguments.get("after"), max_length=64),
+        before=_validate_optional_text("before", arguments.get("before"), max_length=64),
+        include_expired=_validate_bool(
+            "include_expired",
+            arguments.get("include_expired", False),
+        ),
+        as_of=_validate_optional_text("as_of", arguments.get("as_of"), max_length=64),
+        entity=_validate_optional_text("entity", arguments.get("entity"), max_length=512),
+        hypothesis_competition=_validate_bool(
+            "hypothesis_competition",
+            arguments.get("hypothesis_competition", False),
+        ),
+        scope=_validate_scope(arguments.get("scope")),
+        recall_deadline_monotonic=recall_deadline_monotonic,
+    )
+    result = dataclasses.asdict(recall_result)
+    if deferred_knowledge_requested(include_knowledge):
+        result = append_deferred_knowledge_warning(result)
+    return result, include_knowledge
+
+
 def execute_tool_call(
     name: str,
     arguments: dict[str, Any],
@@ -358,36 +426,21 @@ def execute_tool_call(
         return dataclasses.asdict(batch_result)
 
     if name == "memory_recall":
-        client = _require_client(client, name)
-        query = _validate_required_text("query", arguments["query"], max_length=_MAX_QUERY_LENGTH)
-        n_results = _validate_bounded_int(
-            "n_results",
-            arguments.get("n_results", 10),
-            minimum=1,
-            maximum=50,
+        resolved_client = _require_client(client, name)
+        result, include_knowledge = _memory_recall_result(resolved_client, arguments)
+
+        def recall_again() -> dict[str, Any]:
+            retry_args = dict(arguments)
+            inject_recall_deadline(retry_args, timeout_seconds=recall_timeout_seconds())
+            payload, _ = _memory_recall_result(resolved_client, retry_args)
+            return payload
+
+        return maybe_complete_deferred_recall(
+            result,
+            include_knowledge=include_knowledge,
+            recall_executor=recall_again,
+            client=resolved_client,
         )
-        recall_result = client.query_recall(
-            query=query,
-            n_results=n_results,
-            include_knowledge=_validate_bool(
-                "include_knowledge",
-                arguments.get("include_knowledge", True),
-            ),
-            content_types=_validate_content_type_list(
-                "content_types",
-                arguments.get("content_types"),
-            ),
-            tags=_validate_tags(arguments.get("tags")),
-            after=_validate_optional_text("after", arguments.get("after"), max_length=64),
-            before=_validate_optional_text("before", arguments.get("before"), max_length=64),
-            include_expired=_validate_bool(
-                "include_expired",
-                arguments.get("include_expired", False),
-            ),
-            as_of=_validate_optional_text("as_of", arguments.get("as_of"), max_length=64),
-            scope=_validate_scope(arguments.get("scope")),
-        )
-        return dataclasses.asdict(recall_result)
 
     if name == "memory_search":
         client = _require_client(client, name)
@@ -449,6 +502,7 @@ def execute_tool_call(
                 maximum=200,
             ),
             scope=_validate_scope(arguments.get("scope")),
+            recall_deadline_monotonic=_extract_recall_deadline_monotonic(arguments),
         )
         return dataclasses.asdict(claim_search_result)
 
@@ -524,6 +578,7 @@ def execute_tool_call(
                 allow_empty=False,
             ),
             scope=_validate_scope(arguments.get("scope")),
+            recall_deadline_monotonic=_extract_recall_deadline_monotonic(arguments),
         )
         return dataclasses.asdict(outcome_result)
 
@@ -567,6 +622,7 @@ def execute_tool_call(
                 maximum=200,
             ),
             scope=_validate_scope(arguments.get("scope")),
+            recall_deadline_monotonic=_extract_recall_deadline_monotonic(arguments),
         )
         return dataclasses.asdict(outcome_browse_result)
 

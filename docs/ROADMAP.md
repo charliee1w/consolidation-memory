@@ -15,12 +15,11 @@ Make local-first agent memory dependable for coding workflows: useful recall, ex
 - LLM-optional fast-path consolidation for structured episodes
 - Claim precision ranking and outcome-driven consolidation scheduling
 - Scope columns and persisted policy/ACL primitives
+- Entity-centric recall — optional `entity` on `memory_recall` boosts path/subject-linked episodes, records, and claims via anchors
+- Hypothesis competition — config `hypothesis_competition_enabled` keeps contradicted records during consolidation with lowered precision; optional `hypothesis_competition` on `memory_recall` surfaces competing claims
 - MCP, REST, Python, and OpenAI tool parity through `MemoryClient`
 
 ## Near term
-
-- **Hypothesis competition** — optional mode to keep competing claims visible with lowered precision instead of immediate expiry
-- **Entity-centric recall** — thin structural layer from anchors and record subjects, without new heavyweight infrastructure
 - **Policy ergonomics** — clearer admin surfaces for namespace and ACL management in self-hosted deployments
 - **Adapter maturity** — keep transport parity as new retrieval and trust features land
 

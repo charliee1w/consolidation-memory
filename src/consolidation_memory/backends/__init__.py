@@ -231,14 +231,21 @@ def encode_documents(texts: list[str]) -> np.ndarray:
 
     from consolidation_memory.config import get_config
 
+    from consolidation_memory.recall_budget import RecallBudgetExceeded, deadline_exceeded, is_active
+
     batch_size = max(1, int(get_config().EMBEDDING_ENCODE_BATCH_SIZE))
     if len(texts) <= batch_size:
+        if is_active() and deadline_exceeded():
+            raise RecallBudgetExceeded("recall embedding deadline exceeded before encode")
         return _encode_documents_chunk(texts)
 
-    chunks = [
-        _encode_documents_chunk(texts[index : index + batch_size])
-        for index in range(0, len(texts), batch_size)
-    ]
+    chunks: list[np.ndarray] = []
+    for index in range(0, len(texts), batch_size):
+        if is_active() and deadline_exceeded():
+            raise RecallBudgetExceeded(
+                f"recall embedding deadline exceeded after {len(chunks)} batch(es)"
+            )
+        chunks.append(_encode_documents_chunk(texts[index : index + batch_size]))
     return np.vstack(chunks)
 
 

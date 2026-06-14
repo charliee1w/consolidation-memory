@@ -207,7 +207,9 @@ class TestDispatch:
         client.query_recall.assert_called_once_with(
             query="test", n_results=10, include_knowledge=True,
             content_types=None, tags=None, after=None, before=None,
-            include_expired=False, as_of=None, scope=None,
+            include_expired=False, as_of=None, entity=None,
+            hypothesis_competition=False, scope=None,
+            recall_deadline_monotonic=None,
         )
 
     def test_dispatch_recall_with_scope(self):
@@ -230,7 +232,10 @@ class TestDispatch:
             before=None,
             include_expired=False,
             as_of=None,
+            entity=None,
+            hypothesis_competition=False,
             scope={"project": {"slug": "repo-a"}},
+            recall_deadline_monotonic=None,
         )
 
     def test_dispatch_recall_accepts_project_string_scope_shorthand(self):
@@ -254,7 +259,10 @@ class TestDispatch:
             before=None,
             include_expired=False,
             as_of=None,
+            entity=None,
+            hypothesis_competition=False,
             scope={"project": "repo-a"},
+            recall_deadline_monotonic=None,
         )
 
     def test_dispatch_status(self):
@@ -477,6 +485,7 @@ class TestDispatch:
             as_of="2026-01-01T00:00:00+00:00",
             limit=50,
             scope=None,
+            recall_deadline_monotonic=None,
         )
 
     def test_dispatch_claim_browse_with_scope(self):
@@ -510,6 +519,7 @@ class TestDispatch:
             as_of=None,
             limit=50,
             scope={"namespace": {"slug": "team-a"}},
+            recall_deadline_monotonic=None,
         )
 
     def test_dispatch_outcome_record_with_scope(self):
@@ -548,6 +558,7 @@ class TestDispatch:
             provenance=None,
             observed_at=None,
             scope={"project": {"slug": "repo-a"}},
+            recall_deadline_monotonic=None,
         )
 
     def test_dispatch_outcome_browse_with_scope(self):
@@ -573,6 +584,7 @@ class TestDispatch:
             as_of=None,
             limit=50,
             scope={"namespace": {"slug": "team-a"}},
+            recall_deadline_monotonic=None,
         )
 
     def test_dispatch_protect_with_scope(self):

@@ -45,6 +45,8 @@ class RecallQuery:
     before: str | None = None
     include_expired: bool = False
     as_of: str | None = None
+    entity: str | None = None
+    hypothesis_competition: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,6 +130,8 @@ class CanonicalQueryService:
             include_expired=query.include_expired,
             as_of=query.as_of,
             scope=dict(scope_filter) if scope_filter is not None else None,
+            entity=query.entity,
+            hypothesis_competition=query.hypothesis_competition,
         )
         stats = get_stats(scope=scope_filter)
 
@@ -139,6 +143,7 @@ class CanonicalQueryService:
             total_episodes=stats["episodic_buffer"]["total"],
             total_knowledge_topics=stats["knowledge_base"]["total_topics"],
             warnings=list(payload.get("warnings", [])),
+            entity_resolution=payload.get("entity_resolution"),
         )
 
     def search(

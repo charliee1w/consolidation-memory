@@ -23,6 +23,8 @@ from consolidation_memory.database import (
     get_active_claims,
     get_claim_outcome_evidence,
     get_claims_as_of,
+    get_claims_by_ids,
+    get_contradicting_partner_claim_ids,
     get_connection,
     get_episodes_batch,
     get_recently_contradicted_topic_ids,
@@ -46,6 +48,12 @@ from consolidation_memory.query_semantics import (
     matches_scope_filter as _matches_scope_filter,
     strategy_reuse_profile as _strategy_reuse_profile,
 )
+from consolidation_memory.entity_recall import (
+    EntityResolution,
+    entity_content_match_multiplier,
+    resolve_entity_context,
+)
+from consolidation_memory.hypothesis_competition import _COMPETING_HYPOTHESIS_WARNING
 from consolidation_memory.episode_embedding import distinctive_token_set
 from consolidation_memory.vector_store import VectorStore
 from consolidation_memory import topic_cache
@@ -548,12 +556,161 @@ def _record_claim_id(record_content: object) -> str | None:
         return None
 
 
+def _apply_entity_relevance_boost(
+    relevance: float,
+    *,
+    item_id: str,
+    text: str,
+    entity_resolution: EntityResolution | None,
+) -> float:
+    if entity_resolution is None:
+        return relevance
+    cfg = get_config()
+    if item_id in entity_resolution.claim_ids or item_id in entity_resolution.record_ids:
+        return relevance * cfg.ENTITY_RECALL_BOOST + cfg.ENTITY_RECALL_LINKED_BONUS
+    return relevance * entity_content_match_multiplier(entity_resolution.entity, text)
+
+
+def _append_competing_hypothesis_claims(
+    scoped_claims: list[dict],
+    *,
+    query: str,
+    query_vec: np.ndarray | None,
+    as_of: str | None,
+    scope: dict[str, str | None] | None,
+    entity_resolution: EntityResolution | None,
+) -> tuple[list[dict], list[str]]:
+    """Include expired/challenged contradicting partners as competing hypotheses."""
+    cfg = get_config()
+    if not scoped_claims:
+        return scoped_claims, []
+
+    active_ids = [str(claim.get("id", "")) for claim in scoped_claims if claim.get("id")]
+    partner_map = get_contradicting_partner_claim_ids(
+        active_ids,
+        partner_statuses=frozenset({"expired", "challenged"}),
+    )
+    extra_ids = sorted({
+        partner_id
+        for partner_set in partner_map.values()
+        for partner_id in partner_set
+        if partner_id not in set(active_ids)
+    })
+    if not extra_ids:
+        return scoped_claims, []
+
+    competing_rows = get_claims_by_ids(extra_ids)
+    if scope:
+        competing_rows = _filter_claims_for_scope(competing_rows, scope)
+    if not competing_rows:
+        return scoped_claims, []
+
+    claim_payloads, claim_texts = claim_cache.build_claim_texts(competing_rows)
+    try:
+        if query_vec is None:
+            query_vec = backends.encode_query(query)
+        claim_vecs = (
+            backends.encode_documents(claim_texts)
+            if as_of
+            else claim_cache.get_claim_vecs(competing_rows, claim_texts)
+        )
+        sims = (query_vec @ claim_vecs.T).flatten() if claim_vecs is not None else None
+    except (ConnectionError, RuntimeError, ValueError):
+        sims = None
+
+    query_lower = query.lower()
+    query_words = set(query_lower.split())
+    claim_ids = [str(claim.get("id")) for claim in competing_rows if claim.get("id")]
+    claim_evidence = get_claim_outcome_evidence(claim_ids, as_of=as_of, scope=scope)
+    appended: list[dict] = []
+    recall_factor = cfg.HYPOTHESIS_COMPETITION_RECALL_FACTOR
+
+    for i, claim in enumerate(competing_rows):
+        sem_score = float(sims[i]) if sims is not None else 0.0
+        text_lower = claim_texts[i].lower()
+        kw_hits = sum(1 for word in query_words if word in text_lower)
+        kw_score = kw_hits / len(query_words) if query_words else 0.0
+        phrase_hit = 1.0 if query_lower and query_lower in text_lower else 0.0
+        confidence = float(claim.get("confidence", 0.8) or 0.8)
+        claim_id = str(claim.get("id", ""))
+        evidence_payload = {
+            **claim_evidence.get(claim_id, {}),
+            "claim_status": claim.get("status", "active"),
+        }
+        reliability_profile = _claim_reliability_profile(
+            evidence_payload,
+            claim_status=str(claim.get("status", "active")),
+            as_of=as_of,
+            claim_updated_at=str(claim.get("updated_at") or ""),
+        )
+        precision = float(claim.get("precision", 1.0) or 1.0) * recall_factor
+        ranking_profile = _claim_query_rank_profile(
+            semantic_similarity=sem_score,
+            keyword_relevance=kw_score,
+            phrase_match=phrase_hit,
+            confidence=confidence,
+            reliability=reliability_profile,
+            evidence=evidence_payload,
+            claim_status=str(claim.get("status", "active")),
+            valid_from=claim.get("valid_from"),
+            valid_until=claim.get("valid_until"),
+            as_of=as_of,
+            semantic_weight=cfg.RECORDS_SEMANTIC_WEIGHT,
+            keyword_weight=cfg.RECORDS_KEYWORD_WEIGHT,
+            precision=precision,
+        )
+        relevance = _coerce_numeric_float(ranking_profile.get("score"), default=0.0)
+        relevance = _apply_entity_relevance_boost(
+            relevance,
+            item_id=claim_id,
+            text=claim_texts[i],
+            entity_resolution=entity_resolution,
+        )
+        relevance *= recall_factor
+        if relevance < 0.05 and phrase_hit <= 0.0 and kw_score <= 0.0:
+            continue
+
+        uncertainty_parts = [_COMPETING_HYPOTHESIS_WARNING]
+        if str(claim.get("status", "")) == "expired":
+            uncertainty_parts.append("Expired competing claim")
+        elif str(claim.get("status", "")) == "challenged":
+            uncertainty_parts.append("Challenged competing claim")
+
+        appended.append({
+            "id": claim["id"],
+            "claim_type": claim.get("claim_type", ""),
+            "canonical_text": claim.get("canonical_text", ""),
+            "payload": claim_payloads[i],
+            "status": claim.get("status", "active"),
+            "confidence": confidence,
+            "valid_from": claim.get("valid_from"),
+            "valid_until": claim.get("valid_until"),
+            "relevance": round(relevance, 3),
+            "reliability": reliability_profile,
+            "ranking": ranking_profile,
+            "competing_hypothesis": True,
+            "uncertainty": " | ".join(uncertainty_parts),
+        })
+
+    if not appended:
+        return scoped_claims, []
+
+    merged = [*scoped_claims, *appended]
+    merged.sort(key=lambda row: row["relevance"], reverse=True)
+    return merged[: cfg.RECORDS_MAX_RESULTS], [
+        f"{len(appended)} competing hypothes{'es' if len(appended) != 1 else 'is'} "
+        f"included via contradicts edges"
+    ]
+
+
 def _search_claims(
     query: str,
     query_vec: np.ndarray | None = None,
     *,
     as_of: str | None = None,
     scope: dict[str, str | None] | None = None,
+    entity_resolution: EntityResolution | None = None,
+    hypothesis_competition: bool = False,
 ) -> tuple[list[dict], list[str]]:
     """Search claims by semantic and keyword relevance with uncertainty labels."""
     cfg = get_config()
@@ -648,11 +805,22 @@ def _search_claims(
             ranking_profile.get("score"),
             default=0.0,
         )
+        relevance = _apply_entity_relevance_boost(
+            relevance,
+            item_id=claim_id,
+            text=claim_texts[i],
+            entity_resolution=entity_resolution,
+        )
         if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
             if phrase_hit > 0.0 or kw_score > 0.0:
                 # Keep directly-matching weak/stale claims inspectable without
                 # allowing them to outrank durable, supported claims.
                 relevance = max(relevance, 0.08)
+            elif (
+                entity_resolution is not None
+                and claim_id in entity_resolution.claim_ids
+            ):
+                relevance = max(relevance, cfg.ENTITY_RECALL_LINKED_FLOOR)
             else:
                 continue
 
@@ -680,6 +848,16 @@ def _search_claims(
 
     scored_claims.sort(key=lambda x: x["relevance"], reverse=True)
     scoped_claims = scored_claims[:cfg.RECORDS_MAX_RESULTS]
+    if hypothesis_competition:
+        scoped_claims, competition_warnings = _append_competing_hypothesis_claims(
+            scoped_claims,
+            query=query,
+            query_vec=query_vec,
+            as_of=as_of,
+            scope=scope,
+            entity_resolution=entity_resolution,
+        )
+        warnings.extend(competition_warnings)
     claim_ids = [str(claim.get("id", "")) for claim in scoped_claims]
     contradicted_ids = _recently_contradicted_claim_ids(claim_ids, as_of=as_of)
     low_conf_count = 0
@@ -848,6 +1026,8 @@ def recall(
     include_expired: bool = False,
     as_of: str | None = None,
     scope: dict[str, str | None] | None = None,
+    entity: str | None = None,
+    hypothesis_competition: bool = False,
 ) -> dict:
     """Main retrieval function. Returns ranked episodes + knowledge + claims.
 
@@ -863,9 +1043,14 @@ def recall(
             that did not yet exist. Implicitly caps episode results to
             episodes created on or before this time.
         scope: Canonical scope filter dict for namespace/project/client isolation.
+        entity: Optional file path, module, or subject token to boost entity-linked
+            episodes, records, and claims (e.g. ``context_assembler.py``).
+        hypothesis_competition: When True, include expired/challenged contradicting
+            partner claims as competing hypotheses with lowered ranking weight.
     """
     cfg = get_config()
     n_results = min(n_results, cfg.RECALL_MAX_N)
+    entity_resolution = resolve_entity_context(entity, scope=scope)
 
     # Parse date filters to proper datetime objects once, so all downstream
     # comparisons are temporal rather than lexicographic string ordering.
@@ -899,9 +1084,12 @@ def recall(
         fts_results = fts_search(query, limit=cfg.HYBRID_FTS_CANDIDATES)
         bm25_map = {eid: score for eid, score in fts_results}
 
-    # Merge candidate IDs from both sources
+    # Merge candidate IDs from vector, FTS, and entity linkage
+    entity_episode_ids = (
+        list(entity_resolution.episode_ids) if entity_resolution is not None else []
+    )
     all_candidate_ids = list(dict.fromkeys(
-        [eid for eid, _ in candidates] + list(bm25_map.keys())
+        [eid for eid, _ in candidates] + list(bm25_map.keys()) + entity_episode_ids
     ))
 
     logger.debug(
@@ -959,6 +1147,16 @@ def recall(
             query=query,
             content_type_filter=_ct_set,
         )
+        if entity_resolution is not None:
+            if episode_id in entity_resolution.episode_ids:
+                if hybrid_sim <= 0.0:
+                    score = max(score, cfg.ENTITY_RECALL_LINKED_FLOOR)
+                score = score * cfg.ENTITY_RECALL_BOOST + cfg.ENTITY_RECALL_LINKED_BONUS
+            else:
+                score *= entity_content_match_multiplier(
+                    entity_resolution.entity,
+                    str(ep.get("content", "")),
+                )
         scored.append((ep, score, cosine_sim, bm25_norm))
 
     logger.debug(
@@ -999,14 +1197,43 @@ def recall(
     claims: list[dict] = []
     warnings = []
     if include_knowledge:
-        knowledge, kw_warnings = _search_knowledge(query, query_vec, as_of=as_of, scope=scope)
-        warnings.extend(kw_warnings)
-        records, rec_warnings = _search_records(
-            query, query_vec, include_expired=include_expired, as_of=as_of, scope=scope,
-        )
-        warnings.extend(rec_warnings)
-        claims, claim_warnings = _search_claims(query, query_vec, as_of=as_of, scope=scope)
-        warnings.extend(claim_warnings)
+        from consolidation_memory.recall_budget import deadline_exceeded, is_active
+
+        if is_active() and deadline_exceeded():
+            warnings.append(
+                "Knowledge retrieval skipped: recall deadline reached after episode search."
+            )
+        else:
+            knowledge, kw_warnings = _search_knowledge(query, query_vec, as_of=as_of, scope=scope)
+            warnings.extend(kw_warnings)
+            if is_active() and deadline_exceeded():
+                warnings.append(
+                    "Records and claims skipped: recall deadline reached after knowledge search."
+                )
+            else:
+                records, rec_warnings = _search_records(
+                    query,
+                    query_vec,
+                    include_expired=include_expired,
+                    as_of=as_of,
+                    scope=scope,
+                    entity_resolution=entity_resolution,
+                )
+                warnings.extend(rec_warnings)
+                if is_active() and deadline_exceeded():
+                    warnings.append(
+                        "Claims skipped: recall deadline reached after record search."
+                    )
+                else:
+                    claims, claim_warnings = _search_claims(
+                        query,
+                        query_vec,
+                        as_of=as_of,
+                        scope=scope,
+                        entity_resolution=entity_resolution,
+                        hypothesis_competition=hypothesis_competition,
+                    )
+                    warnings.extend(claim_warnings)
 
         # Source traceability: enrich records and topics with source dates
         if records:
@@ -1018,13 +1245,16 @@ def recall(
     if cfg.RECALL_DEDUP_ENABLED and records:
         episodes = _deduplicate_episodes(episodes, records)
 
-    return {
+    result = {
         "episodes": episodes,
         "knowledge": knowledge,
         "records": records,
         "claims": claims,
         "warnings": warnings,
     }
+    if entity_resolution is not None:
+        result["entity_resolution"] = entity_resolution.as_dict()
+    return result
 
 
 def _search_knowledge(
@@ -1191,6 +1421,7 @@ def _search_records(
     include_expired: bool = False,
     as_of: str | None = None,
     scope: dict[str, str | None] | None = None,
+    entity_resolution: EntityResolution | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Search individual knowledge records by semantic + keyword similarity.
 
@@ -1300,8 +1531,22 @@ def _search_records(
         if claim_id:
             relevance *= _claim_precision_multiplier(precision_by_claim_id.get(claim_id))
 
+        record_id = str(rec.get("id", ""))
+        relevance = _apply_entity_relevance_boost(
+            relevance,
+            item_id=record_id,
+            text=str(rec.get("embedding_text", "")),
+            entity_resolution=entity_resolution,
+        )
+
         if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
-            continue
+            if (
+                entity_resolution is not None
+                and record_id in entity_resolution.record_ids
+            ):
+                relevance = max(relevance, cfg.ENTITY_RECALL_LINKED_FLOOR)
+            else:
+                continue
 
         # Parse source_episodes for deduplication downstream
         src_eps: list[str] = parse_json_list(rec.get("source_episodes"))

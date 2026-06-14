@@ -469,8 +469,6 @@ class TestMCPServerLifecycle:
                     asyncio.run(server._warm_client_background())
 
     def test_warm_recall_caches_primes_records_by_default(self):
-        import consolidation_memory.server as server
-
         with (
             patch("consolidation_memory.backends.get_embedding_backend") as mock_embed,
             patch("consolidation_memory.topic_cache.get_topic_vecs", return_value=([], None)),
@@ -480,7 +478,9 @@ class TestMCPServerLifecycle:
             ) as mock_records,
             patch("consolidation_memory.claim_cache.warm_active_claim_vecs") as mock_claims,
         ):
-            server._warm_recall_caches()
+            from consolidation_memory.tool_adapter import warm_recall_caches
+
+            warm_recall_caches()
 
         mock_embed.assert_called_once()
         mock_records.assert_called_once_with(include_expired=False)
@@ -683,7 +683,10 @@ class TestMCPRecallTool:
             before=None,
             include_expired=False,
             as_of="2025-06-01T00:00:00+00:00",
+            entity=None,
+            hypothesis_competition=False,
             scope={"project": {"slug": "repo-a"}},
+            recall_deadline_monotonic=ANY,
         )
 
     def test_memory_recall_returns_client_init_error_json(self):
@@ -726,7 +729,10 @@ class TestMCPRecallTool:
             before=None,
             include_expired=False,
             as_of=None,
+            entity=None,
+            hypothesis_competition=False,
             scope={"project": "repo-a"},
+            recall_deadline_monotonic=ANY,
         )
 
     def test_memory_recall_accepts_scope_string_path_and_auto_coerces(self):
@@ -756,7 +762,10 @@ class TestMCPRecallTool:
             before=None,
             include_expired=False,
             as_of=None,
+            entity=None,
+            hypothesis_competition=False,
             scope={"project": {"root_uri": r"C:\\Users\\gore\\consolidation-memory"}},
+            recall_deadline_monotonic=ANY,
         )
 
     def test_memory_store_rejects_invalid_scope_enum(self):
@@ -1028,6 +1037,7 @@ class TestMCPClaimTools:
             as_of=None,
             limit=50,
             scope={"namespace": {"slug": "team-a"}},
+            recall_deadline_monotonic=None,
         )
 
 
@@ -1071,6 +1081,7 @@ class TestMCPOutcomeTools:
             provenance=None,
             observed_at=None,
             scope={"project": {"slug": "repo-a"}},
+            recall_deadline_monotonic=None,
         )
 
     def test_memory_outcome_browse_calls_canonical_query_service(self):
@@ -1099,6 +1110,7 @@ class TestMCPOutcomeTools:
             as_of=None,
             limit=50,
             scope={"namespace": {"slug": "team-a"}},
+            recall_deadline_monotonic=None,
         )
 
 

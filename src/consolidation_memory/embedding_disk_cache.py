@@ -199,31 +199,63 @@ def embed_items_incremental(
 
     if missing:
         from consolidation_memory.backends import encode_documents
+        from consolidation_memory.config import get_config
+        from consolidation_memory.recall_budget import RecallBudgetExceeded, deadline_exceeded, is_active
 
-        texts_to_embed = [text for _, _, text in missing]
-        try:
-            fresh_vecs = encode_documents(texts_to_embed)
-        except Exception as exc:
-            logger.warning(
-                "Incremental embedding failed for namespace=%s: %s",
-                namespace,
-                exc,
-                exc_info=True,
-            )
-            return None
-
-        if fresh_vecs.shape[0] != len(missing):
-            logger.warning(
-                "Incremental embedding returned unexpected shape for namespace=%s",
-                namespace,
-            )
-            return None
-
+        batch_size = max(1, int(get_config().EMBEDDING_ENCODE_BATCH_SIZE))
         changed = False
-        for (index, item_id, text), vector in zip(missing, fresh_vecs, strict=True):
-            content_hash = _hash_text(text)
-            store[item_id] = (content_hash, np.asarray(vector, dtype=np.float32))
-            changed = True
+        for batch_start in range(0, len(missing), batch_size):
+            if is_active() and deadline_exceeded():
+                if changed:
+                    with _lock:
+                        _runtime_stores[namespace] = store
+                    try:
+                        _save_disk_store(namespace, store)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to persist partial embedding disk cache for namespace=%s: %s",
+                            namespace,
+                            exc,
+                        )
+                return None
+
+            batch = missing[batch_start : batch_start + batch_size]
+            texts_to_embed = [text for _, _, text in batch]
+            try:
+                fresh_vecs = encode_documents(texts_to_embed)
+            except RecallBudgetExceeded:
+                if changed:
+                    with _lock:
+                        _runtime_stores[namespace] = store
+                    try:
+                        _save_disk_store(namespace, store)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to persist partial embedding disk cache for namespace=%s: %s",
+                            namespace,
+                            exc,
+                        )
+                return None
+            except Exception as exc:
+                logger.warning(
+                    "Incremental embedding failed for namespace=%s: %s",
+                    namespace,
+                    exc,
+                    exc_info=True,
+                )
+                return None
+
+            if fresh_vecs.shape[0] != len(batch):
+                logger.warning(
+                    "Incremental embedding returned unexpected shape for namespace=%s",
+                    namespace,
+                )
+                return None
+
+            for (_, item_id, text), vector in zip(batch, fresh_vecs, strict=True):
+                content_hash = _hash_text(text)
+                store[item_id] = (content_hash, np.asarray(vector, dtype=np.float32))
+                changed = True
 
         if retain_ids is not None:
             stale_ids = [item_id for item_id in store if item_id not in retain_ids]

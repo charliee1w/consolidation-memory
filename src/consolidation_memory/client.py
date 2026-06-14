@@ -739,7 +739,10 @@ class MemoryClient:
         before: str | None = None,
         include_expired: bool = False,
         as_of: str | None = None,
+        entity: str | None = None,
+        hypothesis_competition: bool = False,
         scope: ScopeEnvelope | dict[str, object] | None = None,
+        recall_deadline_monotonic: float | None = None,
     ) -> RecallResult:
         """Canonical recall entrypoint shared by all adapter surfaces."""
         operation_context = self.build_operation_context(scope)
@@ -753,7 +756,10 @@ class MemoryClient:
             before=before,
             include_expired=include_expired,
             as_of=as_of,
+            entity=entity,
+            hypothesis_competition=hypothesis_competition,
             resolved_scope=operation_context.scope,
+            recall_deadline_monotonic=recall_deadline_monotonic,
         )
 
     def recall_with_scope(
@@ -767,6 +773,8 @@ class MemoryClient:
         before: str | None = None,
         include_expired: bool = False,
         as_of: str | None = None,
+        entity: str | None = None,
+        hypothesis_competition: bool = False,
         scope: ScopeEnvelope | dict[str, object] | None = None,
     ) -> RecallResult:
         """Backward-compatible scoped wrapper for canonical recall."""
@@ -780,6 +788,8 @@ class MemoryClient:
             before=before,
             include_expired=include_expired,
             as_of=as_of,
+            entity=entity,
+            hypothesis_competition=hypothesis_competition,
             scope=scope,
         )
 
@@ -1342,6 +1352,8 @@ class MemoryClient:
         before: str | None = None,
         include_expired: bool = False,
         as_of: str | None = None,
+        entity: str | None = None,
+        hypothesis_competition: bool = False,
     ) -> RecallResult:
         """Retrieve relevant memories using backward-compatible default scope."""
         return self.query_recall(
@@ -1354,6 +1366,8 @@ class MemoryClient:
             before=before,
             include_expired=include_expired,
             as_of=as_of,
+            entity=entity,
+            hypothesis_competition=hypothesis_competition,
         )
 
     def _recall_internal(
@@ -1368,27 +1382,35 @@ class MemoryClient:
         before: str | None,
         include_expired: bool,
         as_of: str | None,
+        entity: str | None,
+        hypothesis_competition: bool,
         resolved_scope: ResolvedScopeEnvelope,
+        recall_deadline_monotonic: float | None = None,
     ) -> RecallResult:
         """Retrieve relevant memories with canonical scope filtering."""
+        from consolidation_memory.recall_budget import recall_deadline
+
         self._vector_store.reload_if_stale()
         scope_filter = _resolved_scope_to_query_filter(resolved_scope)
 
         try:
-            recall_result = self._query_service.recall(
-                RecallQuery(
-                    query=query,
-                    n_results=n_results,
-                    include_knowledge=include_knowledge,
-                    content_types=content_types,
-                    tags=tags,
-                    after=after,
-                    before=before,
-                    include_expired=include_expired,
-                    as_of=as_of,
-                ),
-                scope_filter=scope_filter,
-            )
+            with recall_deadline(recall_deadline_monotonic):
+                recall_result = self._query_service.recall(
+                    RecallQuery(
+                        query=query,
+                        n_results=n_results,
+                        include_knowledge=include_knowledge,
+                        content_types=content_types,
+                        tags=tags,
+                        after=after,
+                        before=before,
+                        include_expired=include_expired,
+                        as_of=as_of,
+                        entity=entity,
+                        hypothesis_competition=hypothesis_competition,
+                    ),
+                    scope_filter=scope_filter,
+                )
         except ConnectionError as e:
             logger.error("Embedding backend unreachable during recall: %s", e)
             self._record_recall_signal(fallback=True)
@@ -1536,19 +1558,23 @@ class MemoryClient:
         limit: int = 50,
         *,
         scope: ScopeEnvelope | dict[str, object] | None = None,
+        recall_deadline_monotonic: float | None = None,
     ) -> ClaimSearchResult:
         """Canonical claim-search entrypoint for all adapters."""
+        from consolidation_memory.recall_budget import recall_deadline
+
         operation_context = self.build_operation_context(scope)
         scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
-        result = self._query_service.search_claims(
-            ClaimSearchQuery(
-                query=query,
-                claim_type=claim_type,
-                as_of=as_of,
-                limit=limit,
-            ),
-            scope_filter=scope_filter,
-        )
+        with recall_deadline(recall_deadline_monotonic):
+            result = self._query_service.search_claims(
+                ClaimSearchQuery(
+                    query=query,
+                    claim_type=claim_type,
+                    as_of=as_of,
+                    limit=limit,
+                ),
+                scope_filter=scope_filter,
+            )
         logger.info(
             "Search claims query=%r claim_type=%r as_of=%r returned %d matches",
             query.strip(),
@@ -1646,64 +1672,67 @@ class MemoryClient:
         provenance: dict[str, object] | str | None = None,
         observed_at: str | None = None,
         scope: ScopeEnvelope | dict[str, object] | None = None,
+        recall_deadline_monotonic: float | None = None,
     ) -> OutcomeRecordResult:
         """Record an outcome observation for a proposed strategy/action."""
         from consolidation_memory.database import record_action_outcome
+        from consolidation_memory.recall_budget import recall_deadline
 
-        self._ensure_open()
-        resolved_scope = self.resolve_scope(scope)
-        denied_message = _write_denied_message(resolved_scope)
-        if denied_message is not None:
-            return OutcomeRecordResult(status="write_denied", message=denied_message)
+        with recall_deadline(recall_deadline_monotonic):
+            self._ensure_open()
+            resolved_scope = self.resolve_scope(scope)
+            denied_message = _write_denied_message(resolved_scope)
+            if denied_message is not None:
+                return OutcomeRecordResult(status="write_denied", message=denied_message)
 
-        action_summary_token = str(action_summary or "").strip()
-        if not action_summary_token:
-            raise ValueError("action_summary must not be empty")
-        outcome_type_token = _normalize_outcome_type_token(outcome_type)
+            action_summary_token = str(action_summary or "").strip()
+            if not action_summary_token:
+                raise ValueError("action_summary must not be empty")
+            outcome_type_token = _normalize_outcome_type_token(outcome_type)
 
-        normalized_claim_ids = sorted({str(claim_id).strip() for claim_id in source_claim_ids or [] if str(claim_id).strip()})
-        normalized_record_ids = sorted({str(record_id).strip() for record_id in source_record_ids or [] if str(record_id).strip()})
-        normalized_episode_ids = sorted({str(episode_id).strip() for episode_id in source_episode_ids or [] if str(episode_id).strip()})
-        if not normalized_claim_ids and not normalized_record_ids and not normalized_episode_ids:
-            raise ValueError(
-                "At least one source_claim_id, source_record_id, or source_episode_id is required"
+            normalized_claim_ids = sorted({str(claim_id).strip() for claim_id in source_claim_ids or [] if str(claim_id).strip()})
+            normalized_record_ids = sorted({str(record_id).strip() for record_id in source_record_ids or [] if str(record_id).strip()})
+            normalized_episode_ids = sorted({str(episode_id).strip() for episode_id in source_episode_ids or [] if str(episode_id).strip()})
+            if not normalized_claim_ids and not normalized_record_ids and not normalized_episode_ids:
+                raise ValueError(
+                    "At least one source_claim_id, source_record_id, or source_episode_id is required"
+                )
+
+            mutation_filter = _resolved_scope_to_mutation_filter(resolved_scope)
+            self._validate_outcome_sources_for_scope(
+                source_claim_ids=normalized_claim_ids,
+                source_record_ids=normalized_record_ids,
+                source_episode_ids=normalized_episode_ids,
+                mutation_filter=mutation_filter,
             )
 
-        mutation_filter = _resolved_scope_to_mutation_filter(resolved_scope)
-        self._validate_outcome_sources_for_scope(
-            source_claim_ids=normalized_claim_ids,
-            source_record_ids=normalized_record_ids,
-            source_episode_ids=normalized_episode_ids,
-            mutation_filter=mutation_filter,
-        )
-
-        canonical_action_key = (
-            str(action_key).strip() if action_key is not None and str(action_key).strip() else _derive_action_key(action_summary_token)
-        )
-        outcome_id = record_action_outcome(
-            action_summary=action_summary_token,
-            outcome_type=outcome_type_token,
-            source_claim_ids=normalized_claim_ids,
-            source_record_ids=normalized_record_ids,
-            source_episode_ids=normalized_episode_ids,
-            code_anchors=code_anchors,
-            issue_ids=issue_ids,
-            pr_ids=pr_ids,
-            action_key=canonical_action_key,
-            summary=summary,
-            details=details,
-            confidence=confidence,
-            provenance=provenance,
-            observed_at=observed_at,
-            scope=_resolved_scope_to_db_row(resolved_scope),
-        )
-        return OutcomeRecordResult(
-            status="recorded",
-            id=outcome_id,
-            action_key=canonical_action_key,
-            outcome_type=outcome_type_token,
-            observed_at=observed_at,
-        )
+            canonical_action_key = (
+                str(action_key).strip() if action_key is not None and str(action_key).strip() else _derive_action_key(action_summary_token)
+            )
+            outcome_id = record_action_outcome(
+                action_summary=action_summary_token,
+                outcome_type=outcome_type_token,
+                source_claim_ids=normalized_claim_ids,
+                source_record_ids=normalized_record_ids,
+                source_episode_ids=normalized_episode_ids,
+                code_anchors=code_anchors,
+                issue_ids=issue_ids,
+                pr_ids=pr_ids,
+                action_key=canonical_action_key,
+                summary=summary,
+                details=details,
+                confidence=confidence,
+                provenance=provenance,
+                observed_at=observed_at,
+                scope=_resolved_scope_to_db_row(resolved_scope),
+            )
+            return OutcomeRecordResult(
+                status="recorded",
+                id=outcome_id,
+                action_key=canonical_action_key,
+                outcome_type=outcome_type_token,
+                observed_at=observed_at,
+            )
 
     def query_browse_outcomes(
         self,
@@ -1716,22 +1745,26 @@ class MemoryClient:
         as_of: str | None = None,
         limit: int = 50,
         scope: ScopeEnvelope | dict[str, object] | None = None,
+        recall_deadline_monotonic: float | None = None,
     ) -> OutcomeBrowseResult:
         """Canonical outcome-browse entrypoint for all adapters."""
+        from consolidation_memory.recall_budget import recall_deadline
+
         operation_context = self.build_operation_context(scope)
         scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
-        result = self._query_service.browse_outcomes(
-            OutcomeBrowseQuery(
-                outcome_type=_normalize_optional_outcome_type_token(outcome_type),
-                action_key=action_key,
-                source_claim_id=source_claim_id,
-                source_record_id=source_record_id,
-                source_episode_id=source_episode_id,
-                as_of=as_of,
-                limit=limit,
-            ),
-            scope_filter=scope_filter,
-        )
+        with recall_deadline(recall_deadline_monotonic):
+            result = self._query_service.browse_outcomes(
+                OutcomeBrowseQuery(
+                    outcome_type=_normalize_optional_outcome_type_token(outcome_type),
+                    action_key=action_key,
+                    source_claim_id=source_claim_id,
+                    source_record_id=source_record_id,
+                    source_episode_id=source_episode_id,
+                    as_of=as_of,
+                    limit=limit,
+                ),
+                scope_filter=scope_filter,
+            )
         logger.info(
             "Browse outcomes outcome_type=%r action_key=%r source_claim_id=%r returned %d rows",
             outcome_type,

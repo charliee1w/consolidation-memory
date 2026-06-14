@@ -284,13 +284,12 @@ class TestMCPConfigRecommendation:
         with patch("sys.executable", "C:/Python313/python.exe"):
             config = _recommended_mcp_server_config("default")
 
+        from consolidation_memory.cli import _recommended_mcp_fast_env
+
         assert config == {
             "command": "C:/Python313/python.exe",
             "args": ["-m", "consolidation_memory", "--project", "default", "serve"],
-            "env": {
-                "PYTHONUNBUFFERED": "1",
-                "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "900",
-            },
+            "env": _recommended_mcp_fast_env(),
         }
 
     def test_toml_basic_string_escapes_quotes_and_newlines(self):

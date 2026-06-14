@@ -51,3 +51,11 @@ def test_episode_recall_hit_accepts_claim_provenance_link():
         records = []
 
     assert _episode_recall_hit(_Recall(), "ep-1") is True
+
+
+def test_ci_mode_fixture_eval_passes():
+    from benchmarks.real_world_eval import run_eval
+
+    results = run_eval("ci")
+    assert results["data_source"] == "ci_fixture_project"
+    assert results["overall_pass"] is True

@@ -12,6 +12,9 @@ Usage:
     consolidation-memory import PATH # Import from JSON export
     consolidation-memory reindex     # Re-embed all episodes with current backend
     consolidation-memory dashboard   # Launch TUI dashboard
+    consolidation-memory policy list # List persisted access policies
+    consolidation-memory policy grant --principal-type app_client \
+        --principal-key python_sdk:legacy_client --write-mode deny
 """
 
 import argparse
@@ -55,16 +58,35 @@ def _toml_basic_string(value: str) -> str:
     return json.dumps(value)
 
 
+def _recommended_mcp_fast_env() -> dict[str, str]:
+    """Environment overrides for low-latency MCP tool calls."""
+    return {
+        "PYTHONUNBUFFERED": "1",
+        "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": _RECOMMENDED_MCP_IDLE_TIMEOUT_SECONDS,
+        "CONSOLIDATION_MEMORY_EMBEDDING_BACKEND": "fastembed",
+        "CONSOLIDATION_MEMORY_LLM_BACKEND": "disabled",
+        "CONSOLIDATION_MEMORY_WARMUP_ON_START": "1",
+        "CONSOLIDATION_MEMORY_PRELOAD_NUMERIC_BACKENDS_ON_START": "1",
+        "CONSOLIDATION_MEMORY_STATUS_LIGHTWEIGHT": "1",
+        "CONSOLIDATION_MEMORY_MCP_AUTO_CONSOLIDATE": "0",
+        "CONSOLIDATION_MEMORY_CONSOLIDATION_AUTO_RUN": "0",
+        "CONSOLIDATION_MEMORY_WARMUP_PRIME_TOPIC_CACHE": "1",
+        "CONSOLIDATION_MEMORY_WARMUP_PRIME_RECORD_CACHE": "1",
+        "CONSOLIDATION_MEMORY_WARMUP_PRIME_CLAIM_CACHE": "0",
+        "CONSOLIDATION_MEMORY_WARMUP_AWAIT_SECONDS": "0",
+        "CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS": "20",
+        "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS": "25",
+        "CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS": "10",
+    }
+
+
 def _recommended_mcp_server_config(project: str) -> dict[str, object]:
     """Return the most stable MCP launch configuration for the current interpreter."""
     command = sys.executable or "python"
     return {
         "command": command,
         "args": ["-m", "consolidation_memory", "--project", project, "serve"],
-        "env": {
-            "PYTHONUNBUFFERED": "1",
-            "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": _RECOMMENDED_MCP_IDLE_TIMEOUT_SECONDS,
-        },
+        "env": _recommended_mcp_fast_env(),
     }
 
 
@@ -1036,6 +1058,7 @@ def cmd_reindex() -> None:
     os.replace(tomb_tmp, str(cfg.FAISS_TOMBSTONE_PATH))
 
     VectorStore.signal_reload()
+    VectorStore()._save_embedding_metadata()
 
     print(f"\nReindex complete: {len(all_ids)} vectors in {dim}-dim index")
 
@@ -1167,6 +1190,81 @@ def cmd_setup_memory(path: str = "AGENTS.md"):
     print("\nMemory instructions are installed for this agent instruction file.")
 
 
+def cmd_policy_list() -> None:
+    """List persisted access policies and ACL bindings."""
+    from consolidation_memory.database import ensure_schema, list_policy_admin_rows
+
+    ensure_schema()
+    rows = list_policy_admin_rows()
+    if not rows:
+        print("No persisted access policies.")
+        return
+
+    print(f"{'policy_id':<38} {'namespace':<12} {'project':<12} {'principal':<28} {'write':<6} {'read':<10}")
+    print("-" * 112)
+    for row in rows:
+        principal = ""
+        if row.get("principal_type") and row.get("principal_key"):
+            principal = f"{row['principal_type']}:{row['principal_key']}"
+        print(
+            f"{str(row.get('policy_id', '')):<38} "
+            f"{str(row.get('namespace_slug') or '*'):<12} "
+            f"{str(row.get('project_slug') or '*'):<12} "
+            f"{principal:<28} "
+            f"{str(row.get('write_mode') or '-'):<6} "
+            f"{str(row.get('read_visibility') or '-'):<10}"
+        )
+
+
+def cmd_policy_grant(
+    *,
+    namespace: str | None,
+    project: str | None,
+    principal_type: str,
+    principal_key: str,
+    write_mode: str | None,
+    read_visibility: str | None,
+) -> None:
+    """Create or update a persisted policy ACL binding."""
+    from consolidation_memory.database import (
+        ensure_schema,
+        upsert_access_policy,
+        upsert_policy_acl_entry,
+        upsert_policy_principal,
+    )
+
+    if write_mode is None and read_visibility is None:
+        print("Provide at least one of --write-mode or --read-visibility.", file=sys.stderr)
+        sys.exit(1)
+
+    ensure_schema()
+    principal_id = upsert_policy_principal(principal_type, principal_key)
+    policy_id = upsert_access_policy(namespace_slug=namespace, project_slug=project)
+    acl_id = upsert_policy_acl_entry(
+        policy_id=policy_id,
+        principal_id=principal_id,
+        write_mode=write_mode,
+        read_visibility=read_visibility,
+    )
+    print(
+        json.dumps(
+            {
+                "status": "granted",
+                "policy_id": policy_id,
+                "principal_id": principal_id,
+                "acl_entry_id": acl_id,
+                "namespace": namespace,
+                "project": project,
+                "principal_type": principal_type,
+                "principal_key": principal_key,
+                "write_mode": write_mode,
+                "read_visibility": read_visibility,
+            },
+            indent=2,
+        )
+    )
+
+
 def cmd_dashboard():
     """Launch the TUI dashboard."""
     try:
@@ -1245,6 +1343,35 @@ def main():
     )
     sub.add_parser("dashboard", help="Launch TUI dashboard")
 
+    p_policy = sub.add_parser("policy", help="Manage persisted scope policies and ACL bindings")
+    policy_sub = p_policy.add_subparsers(dest="policy_command", required=True)
+    policy_sub.add_parser("list", help="List access policies and ACL bindings")
+    p_grant = policy_sub.add_parser("grant", help="Grant or update an ACL binding for a principal")
+    p_grant.add_argument("--namespace", default=None, help="Namespace slug selector (wildcard when omitted)")
+    p_grant.add_argument("--project", default=None, help="Project slug selector (wildcard when omitted)")
+    p_grant.add_argument(
+        "--principal-type",
+        required=True,
+        help="Principal type (e.g. app_client, agent, user)",
+    )
+    p_grant.add_argument(
+        "--principal-key",
+        required=True,
+        help="Principal key (e.g. python_sdk:legacy_client)",
+    )
+    p_grant.add_argument(
+        "--write-mode",
+        choices=["allow", "deny"],
+        default=None,
+        help="Write policy: allow or deny",
+    )
+    p_grant.add_argument(
+        "--read-visibility",
+        choices=["private", "project", "namespace"],
+        default=None,
+        help="Read visibility policy",
+    )
+
     args = parser.parse_args()
 
     # Activate project namespace before any command
@@ -1278,6 +1405,18 @@ def main():
         cmd_setup_memory(args.path)
     elif args.command == "dashboard":
         cmd_dashboard()
+    elif args.command == "policy":
+        if args.policy_command == "list":
+            cmd_policy_list()
+        elif args.policy_command == "grant":
+            cmd_policy_grant(
+                namespace=args.namespace,
+                project=args.project,
+                principal_type=args.principal_type,
+                principal_key=args.principal_key,
+                write_mode=args.write_mode,
+                read_visibility=args.read_visibility,
+            )
 
 
 if __name__ == "__main__":

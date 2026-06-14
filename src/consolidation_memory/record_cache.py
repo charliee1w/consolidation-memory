@@ -191,6 +191,14 @@ def _derive_unexpired_slot(
     return filtered_records, filtered_vecs
 
 
+def is_unexpired_cache_warm() -> bool:
+    """Return True when unexpired record embeddings are ready without a cold embed."""
+    with _lock:
+        if _slot_is_fresh(_cache_unexpired, include_expired=False):
+            return True
+        return _slot_is_fresh(_cache_all, include_expired=True)
+
+
 def get_record_vecs(
     include_expired: bool = False,
     scope: dict[str, str | None] | None = None,

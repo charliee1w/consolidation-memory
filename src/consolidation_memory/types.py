@@ -910,6 +910,7 @@ class RecallResult:
     total_knowledge_topics: int = 0
     message: str | None = None
     warnings: list[str] = field(default_factory=list)
+    entity_resolution: dict[str, Any] | None = None
 
 
 @dataclass

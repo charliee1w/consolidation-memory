@@ -3,6 +3,7 @@
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -15,6 +16,16 @@ def pytest_configure(config: pytest.Config) -> None:
         temp_root = os.environ.get("TEMP") or os.environ.get("TMP") or None
         if temp_root:
             config.option.basetemp = str(Path(temp_root) / "pytest-consolidation-memory")
+
+
+@pytest.fixture(autouse=True)
+def warm_recall_knowledge_cache():
+    """Keep recall contract tests on the full-knowledge path by default."""
+    with patch(
+        "consolidation_memory.tool_adapter.recall_knowledge_cache_ready",
+        return_value=True,
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

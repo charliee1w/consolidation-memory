@@ -20,11 +20,13 @@ from scipy.spatial.distance import squareform
 from consolidation_memory import claim_cache, record_cache, topic_cache
 from consolidation_memory.claim_graph import claim_from_record
 from consolidation_memory.config import get_config
+from consolidation_memory.hypothesis_competition import apply_competing_hypothesis_precision
 from consolidation_memory.database import (
     complete_consolidation_run,
     ensure_schema,
     expire_claim,
     expire_record,
+    get_claims_by_ids,
     get_connection,
     get_all_knowledge_topics,
     get_prunable_episodes,
@@ -986,9 +988,15 @@ def _merge_into_existing(
 
     now_ts = datetime.now(timezone.utc).isoformat()
 
-    # Log contradictions to audit log before expiring
+    # Log contradictions to audit log before expiring or entering competition mode
     existing_by_id = {r["id"]: r for r in existing_db_records}
     pm = get_plugin_manager()
+    competition_pairs: list[tuple[str, str]] = []
+    contradiction_resolution = (
+        "competing_hypotheses"
+        if cfg.HYPOTHESIS_COMPETITION_ENABLED
+        else "expired_old"
+    )
     for new_idx, ex_id in contradictions:
         old_rec = existing_by_id.get(ex_id, {})
         old_content = old_rec.get("content", "")
@@ -1004,7 +1012,7 @@ def _merge_into_existing(
                 new_record_id=None,
                 old_content=old_content,
                 new_content=new_content,
-                resolution="expired_old",
+                resolution=contradiction_resolution,
             )
             pm.fire(
                 "on_contradiction",
@@ -1038,6 +1046,7 @@ def _merge_into_existing(
             )
 
         if new_claim_id and old_claim_id:
+            competition_pairs.append((new_claim_id, old_claim_id))
             contradiction_details = {
                 "topic_id": existing["id"],
                 "topic_filename": existing["filename"],
@@ -1079,42 +1088,75 @@ def _merge_into_existing(
     if contradicted_existing_ids:
         confidence = confidence * 0.9
 
-    # Expire contradicted records instead of soft-deleting them
-    for ex_id in contradicted_existing_ids:
-        expire_record(ex_id, valid_until=now_ts)
-        logger.info("Expired contradicted record %s in topic %s", ex_id, existing["filename"])
-        old_rec = existing_by_id.get(ex_id, {})
-        old_content_dict = _coerce_content_dict(old_rec.get("content", {}))
-        if not old_content_dict:
-            continue
-        expired_claim_id = _materialize_claim_for_record(
-            old_content_dict,
-            topic_id=existing["id"],
-            source_episode_ids=[],
-            source_record_id=ex_id,
-            confidence=float(old_rec.get("confidence", confidence) or confidence),
-            valid_from=old_rec.get("valid_from") or old_rec.get("created_at"),
-            event_type=None,
-        )
-        if not expired_claim_id:
-            continue
-        try:
-            expire_claim(expired_claim_id, valid_until=now_ts)
-        except Exception as e:
-            logger.warning("Failed to expire claim %s for record %s: %s", expired_claim_id, ex_id, e)
-        try:
-            insert_claim_event(
-                expired_claim_id,
-                event_type="expire",
-                details={
-                    "topic_id": existing["id"],
-                    "topic_filename": existing["filename"],
-                    "record_id": ex_id,
-                    "reason": "contradiction",
-                },
+    if cfg.HYPOTHESIS_COMPETITION_ENABLED:
+        precision_by_id = {
+            str(row["id"]): float(row.get("precision", 1.0) or 1.0)
+            for row in get_claims_by_ids(
+                [claim_id for pair in competition_pairs for claim_id in pair]
             )
-        except Exception as e:
-            logger.warning("Failed to insert expire claim event for %s: %s", expired_claim_id, e)
+        }
+        for new_claim_id, old_claim_id in competition_pairs:
+            apply_competing_hypothesis_precision(
+                new_claim_id,
+                current_precision=precision_by_id.get(new_claim_id),
+                factor=cfg.HYPOTHESIS_COMPETITION_PRECISION_FACTOR,
+            )
+            apply_competing_hypothesis_precision(
+                old_claim_id,
+                current_precision=precision_by_id.get(old_claim_id),
+                factor=cfg.HYPOTHESIS_COMPETITION_PRECISION_FACTOR,
+            )
+        logger.info(
+            "Hypothesis competition retained %d contradicted record(s) in topic %s",
+            len(contradicted_existing_ids),
+            existing["filename"],
+        )
+    else:
+        # Expire contradicted records instead of soft-deleting them
+        for ex_id in contradicted_existing_ids:
+            expire_record(ex_id, valid_until=now_ts)
+            logger.info("Expired contradicted record %s in topic %s", ex_id, existing["filename"])
+            old_rec = existing_by_id.get(ex_id, {})
+            old_content_dict = _coerce_content_dict(old_rec.get("content", {}))
+            if not old_content_dict:
+                continue
+            expired_claim_id = _materialize_claim_for_record(
+                old_content_dict,
+                topic_id=existing["id"],
+                source_episode_ids=[],
+                source_record_id=ex_id,
+                confidence=float(old_rec.get("confidence", confidence) or confidence),
+                valid_from=old_rec.get("valid_from") or old_rec.get("created_at"),
+                event_type=None,
+            )
+            if not expired_claim_id:
+                continue
+            try:
+                expire_claim(expired_claim_id, valid_until=now_ts)
+            except Exception as e:
+                logger.warning(
+                    "Failed to expire claim %s for record %s: %s",
+                    expired_claim_id,
+                    ex_id,
+                    e,
+                )
+            try:
+                insert_claim_event(
+                    expired_claim_id,
+                    event_type="expire",
+                    details={
+                        "topic_id": existing["id"],
+                        "topic_filename": existing["filename"],
+                        "record_id": ex_id,
+                        "reason": "contradiction",
+                    },
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to insert expire claim event for %s: %s",
+                    expired_claim_id,
+                    e,
+                )
 
     # Soft-delete remaining old records (non-contradicted ones replaced by merge)
     non_contradicted_ids = [

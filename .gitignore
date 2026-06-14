@@ -57,8 +57,10 @@ ruff_output.txt
 test_output.txt
 .tmp_novelty_eval_runtime/
 .tmp_coding_agent_eval_runtime/
+.tmp_real_world_eval_runtime/
 UsersgoreAppDataLocalTemppytest-cm/
 agent-tools/
+terminals/
 mcps/
 
 # Benchmark data and results (user-provided)

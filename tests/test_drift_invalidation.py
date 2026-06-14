@@ -71,6 +71,28 @@ class TestChangedFiles:
         assert changed == ["src/a.py"]
         assert timeouts_seen == [15.0, 45.0]
 
+    def test_get_changed_files_ignores_dev_runtime_paths(self, monkeypatch, tmp_path):
+        from consolidation_memory import drift
+
+        def fake_run_git_lines(repo_dir, git_args):
+            del repo_dir
+            key = tuple(git_args)
+            if key == ("diff", "--name-only"):
+                return [
+                    "src/a.py",
+                    "terminals/3.txt",
+                    "agent-tools/run.log",
+                    "mcps/consolidation_memory/tools/recall.json",
+                    ".tmp_real_world_eval_runtime/state.json",
+                ]
+            return []
+
+        monkeypatch.setattr(drift, "_run_git_lines", fake_run_git_lines)
+
+        changed = drift.get_changed_files(repo_path=tmp_path)
+
+        assert changed == ["src/a.py"]
+
     def test_get_changed_files_truncates_large_sets(self, monkeypatch, tmp_path):
         from consolidation_memory import drift
 

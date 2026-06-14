@@ -1,28 +1,37 @@
 # Changelog
 
-## Unreleased
+## 0.18.0 - 2026-06-14
 
 ### Features
 
-- feat: P1 trust enforcement - CI gate, cache lock, security docs
+- feat: collapse MCP/REST recall orchestration into `tool_adapter` with shared deadline, fallback, and warmup helpers
+- feat: auto-retry deferred-knowledge recall in canonical `execute_tool_call` (all surfaces: MCP, REST, OpenAI dispatch)
+- feat: `real_world_eval --mode ci` in PR CI with isolated fixture corpus
+- feat: policy admin CLI (`consolidation-memory policy list|grant`)
+- feat: P1 trust enforcement — CI gate, embedding cache cross-process lock, SECURITY.md for 0.17.x
 
 ### Bug Fixes
 
 - fix(ci): stabilize Windows lock test and mypy after db split
-- fix: scope audit APIs and unify content_type validation
+- fix: scope audit APIs and unify `content_type` validation
+- fix: drift scans ignore dev-runtime paths (`terminals/`, `agent-tools/`, `mcps/`, `.tmp_*`)
+- fix: cold-start recall UX — warm caches and retry once when record embedding cache is still building
 
 ### Refactoring
 
-- refactor(db): split database.py into db/ package with facade
+- refactor(db): split `database.py` into `db/` package with facade
+- refactor: thin MCP/REST transports; canonical semantics live in `tool_dispatch` + `tool_adapter`
 
 ### Documentation
 
 - docs: add architectural debt register for future agents
+- docs: REAL_WORLD_METRICS.md documents `ci` mode; SECURITY.md supported line 0.17.x
 
 ### Other
 
 - Apply default-resolved scope to audit read APIs
-- Address P2 architectural debt: scope, types, migrations, locks
+- Address P2 architectural debt: scope, types, migrations, locks, Python 3.14 classifier
+- Surface contract tests simplified via `tests/surface_contract_helpers.py` (1170+ tests passing)
 
 ## 0.17.0 - 2026-06-13
 

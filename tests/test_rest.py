@@ -171,7 +171,10 @@ class TestRecallEndpoint:
             before=None,
             include_expired=False,
             as_of=None,
+            entity=None,
+            hypothesis_competition=False,
             scope={"project": {"root_uri": r"C:\\Users\\gore\\consolidation-memory"}},
+            recall_deadline_monotonic=ANY,
         )
 
     def test_recall_timeout_falls_back_to_episodes_only(self):
@@ -683,6 +686,7 @@ class TestClaimEndpoints:
             as_of=None,
             limit=50,
             scope={"namespace": {"slug": "team-a"}},
+            recall_deadline_monotonic=ANY,
         )
 
 
@@ -755,6 +759,7 @@ class TestOutcomeEndpoints:
             as_of=None,
             limit=50,
             scope={"project": {"slug": "repo-a"}},
+            recall_deadline_monotonic=ANY,
         )
 
     def test_outcome_scope_visibility(self, api_client):

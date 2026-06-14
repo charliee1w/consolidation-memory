@@ -39,6 +39,11 @@ from contextlib import asynccontextmanager
 from consolidation_memory import __version__
 from consolidation_memory.drift_subprocess import run_detect_drift_subprocess
 from consolidation_memory.runtime import MemoryRuntime
+from consolidation_memory.tool_adapter import (
+    build_recall_search_arguments,
+    build_recall_timeout_fallback_result,
+    inject_recall_deadline,
+)
 from consolidation_memory.tool_dispatch import execute_tool_call
 
 # Valid content types accepted by the memory system.
@@ -212,6 +217,8 @@ class RecallRequest(BaseModel):
     before: str | None = Field(default=None, max_length=64)
     include_expired: bool = False
     as_of: str | None = Field(default=None, max_length=64)
+    entity: str | None = Field(default=None, max_length=512)
+    hypothesis_competition: bool = False
     scope: _ScopeInput | None = None
 
 
@@ -483,25 +490,17 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         payload["content_types"] = cast(list[str] | None, req.content_types)
         timeout_seconds = _recall_timeout_seconds()
         fallback_timeout = _recall_fallback_timeout_seconds()
+        inject_recall_deadline(payload, timeout_seconds=timeout_seconds)
         try:
             return await _execute("memory_recall", payload, timeout=timeout_seconds)
         except HTTPException as exc:
             if exc.status_code != 408:
                 raise
 
-        search_payload: dict[str, object] = {
-            "query": req.query,
-            "content_types": cast(list[str] | None, req.content_types),
-            "tags": req.tags,
-            "after": req.after,
-            "before": req.before,
-            "limit": req.n_results,
-            "scope": req.scope,
-        }
         try:
             keyword_result = await _execute(
                 "memory_search",
-                search_payload,
+                build_recall_search_arguments(payload),
                 timeout=fallback_timeout,
             )
         except HTTPException as exc:
@@ -523,35 +522,11 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
                 ),
             ) from exc
 
-        warnings = [
-            f"Recall timed out after {timeout_seconds:g}s; returned episodes-only fallback."
-        ]
-        if req.include_knowledge:
-            warnings.append("Knowledge retrieval skipped in fallback mode.")
-
-        episodes_value = keyword_result.get("episodes")
-        fallback_episodes = episodes_value if isinstance(episodes_value, list) else []
-        total_matches_value = keyword_result.get("total_matches")
-        if isinstance(total_matches_value, int):
-            total_episodes = total_matches_value
-        elif isinstance(total_matches_value, str):
-            try:
-                total_episodes = int(total_matches_value)
-            except ValueError:
-                total_episodes = len(fallback_episodes)
-        else:
-            total_episodes = len(fallback_episodes)
-
-        return {
-            "episodes": fallback_episodes,
-            "knowledge": [],
-            "records": [],
-            "claims": [],
-            "total_episodes": total_episodes,
-            "total_knowledge_topics": 0,
-            "message": "Semantic recall timed out; returned keyword episodes-only fallback.",
-            "warnings": warnings,
-        }
+        return build_recall_timeout_fallback_result(
+            keyword_result,
+            recall_timeout_seconds=timeout_seconds,
+            include_knowledge=req.include_knowledge,
+        )
 
     @app.post("/memory/search")
     async def search(req: SearchRequest):
@@ -568,7 +543,9 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     @app.post("/memory/claims/search")
     async def search_claims(req: ClaimSearchRequest):
         """Search claims by text with optional type and temporal filtering."""
-        return await _execute("memory_claim_search", req.model_dump())
+        payload = req.model_dump()
+        inject_recall_deadline(payload, timeout_seconds=_recall_timeout_seconds())
+        return await _execute("memory_claim_search", payload)
 
     @app.post("/memory/outcomes/record")
     async def record_outcome(req: OutcomeRecordRequest):
@@ -576,12 +553,15 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         payload = req.model_dump()
         if req.code_anchors is not None:
             payload["code_anchors"] = [anchor.model_dump() for anchor in req.code_anchors]
+        inject_recall_deadline(payload, timeout_seconds=_recall_timeout_seconds())
         return await _execute("memory_outcome_record", payload)
 
     @app.post("/memory/outcomes/browse")
     async def browse_outcomes(req: OutcomeBrowseRequest):
         """Browse recorded action outcomes."""
-        return await _execute("memory_outcome_browse", req.model_dump())
+        payload = req.model_dump()
+        inject_recall_deadline(payload, timeout_seconds=_recall_timeout_seconds())
+        return await _execute("memory_outcome_browse", payload)
 
     @app.post("/memory/detect-drift")
     async def detect_drift(req: DetectDriftRequest):

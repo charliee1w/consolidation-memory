@@ -339,6 +339,23 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
                         "been superseded (e.g. '2025-06-15T00:00:00+00:00')."
                     ),
                 },
+                "entity": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "description": (
+                        "Optional file path, module, or subject token to boost "
+                        "entity-linked memories (e.g. 'context_assembler.py' or "
+                        "'memory_status')."
+                    ),
+                },
+                "hypothesis_competition": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, include expired or challenged contradicting "
+                        "partner claims as competing hypotheses with lowered ranking."
+                    ),
+                    "default": False,
+                },
                 "scope": SCOPE_INPUT_SCHEMA,
             },
             "required": ["query"],

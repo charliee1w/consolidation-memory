@@ -8,6 +8,7 @@ keeps only MCP-specific timeout and fallback behavior.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import functools
 import gc
 import hashlib
@@ -28,6 +29,13 @@ from mcp.server.fastmcp import FastMCP
 
 from consolidation_memory.drift_subprocess import run_detect_drift_subprocess
 from consolidation_memory.runtime import MemoryRuntime
+from consolidation_memory.tool_adapter import (
+    build_recall_search_arguments,
+    build_recall_timeout_fallback_result,
+    inject_recall_deadline,
+    recall_result_needs_background_warm,
+    warm_recall_caches,
+)
 from consolidation_memory.tool_dispatch import execute_tool_call
 
 # Configure logging to stderr (stdout is the MCP JSON-RPC channel).
@@ -136,6 +144,10 @@ _WARMUP_START_DELAY_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_WARMUP_START_DELAY_SECONDS",
     0.25,
 )
+_WARMUP_AWAIT_SECONDS = _env_float(
+    "CONSOLIDATION_MEMORY_WARMUP_AWAIT_SECONDS",
+    0.0,
+)
 _STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS = _env_float(
     "CONSOLIDATION_MEMORY_STDIO_SINGLETON_TAKEOVER_TIMEOUT_SECONDS",
     10.0,
@@ -158,6 +170,7 @@ _runtime = MemoryRuntime(
     max_workers=_MCP_BLOCKING_WORKERS,
 )
 _warmup_task: asyncio.Task | None = None
+_warmup_executor: concurrent.futures.ThreadPoolExecutor | None = None
 _idle_task: asyncio.Task | None = None
 _active_tool_calls = 0
 _last_activity_monotonic = time.monotonic()
@@ -207,6 +220,38 @@ def _warmup_on_start() -> bool:
 def _warmup_start_delay_seconds() -> float:
     configured = _WARMUP_START_DELAY_SECONDS
     return configured if configured > 0 else 0.0
+
+
+def _warmup_await_seconds() -> float:
+    configured = _WARMUP_AWAIT_SECONDS
+    return configured if configured > 0 else 0.0
+
+
+async def _await_warmup_ready() -> bool:
+    """Wait briefly for background cache warmup before interactive recall."""
+    global _warmup_task
+    if _warmup_task is None or _warmup_task.done():
+        return True
+
+    wait_seconds = _warmup_await_seconds()
+    if wait_seconds <= 0:
+        return False
+
+    try:
+        await asyncio.wait_for(asyncio.shield(_warmup_task), timeout=wait_seconds)
+        return True
+    except asyncio.TimeoutError:
+        logger.debug(
+            "Warmup still running after %.2fs; proceeding with bounded recall",
+            wait_seconds,
+        )
+        return False
+
+
+def _schedule_deferred_cache_warm(client) -> None:
+    """Finish embedding cache priming in the background after a bounded recall."""
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(_get_warmup_executor(), warm_recall_caches, client)
 
 
 def _idle_timeout_seconds() -> float:
@@ -600,6 +645,25 @@ async def _idle_shutdown_monitor() -> None:
         _recycle_idle_runtime()
 
 
+def _get_warmup_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Dedicated pool so bulk cache warmup cannot starve interactive MCP tools."""
+    global _warmup_executor
+    if _warmup_executor is None:
+        _warmup_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="consolidation_memory_warmup",
+        )
+    return _warmup_executor
+
+
+def _shutdown_warmup_executor() -> None:
+    global _warmup_executor
+    executor = _warmup_executor
+    _warmup_executor = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 async def _warm_client_background() -> None:
     try:
         delay_seconds = _warmup_start_delay_seconds()
@@ -608,55 +672,12 @@ async def _warm_client_background() -> None:
         if _runtime.shutting_down:
             return
         client = await _get_client_with_timeout()
-        await _run_blocking(_warm_recall_caches, client)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_get_warmup_executor(), warm_recall_caches, client)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.warning("Background client warmup failed: %s", exc)
-
-
-def _warm_recall_caches(client=None) -> None:
-    """Prime recall caches without blocking MCP tools on bulk embedding work."""
-    from consolidation_memory import claim_cache, record_cache, topic_cache
-    from consolidation_memory.backends import get_embedding_backend
-    from consolidation_memory.client import _resolved_scope_to_query_filter
-    from consolidation_memory.config import get_config
-
-    cfg = get_config()
-    get_embedding_backend()
-
-    warmed_topics = 0
-    if cfg.WARMUP_PRIME_TOPIC_CACHE:
-        topics, _ = topic_cache.get_topic_vecs()
-        warmed_topics = len(topics)
-
-    warmed_records = 0
-    if cfg.WARMUP_PRIME_RECORD_CACHE:
-        records, _ = record_cache.get_record_vecs(include_expired=False)
-        warmed_records = len(records)
-        if client is not None:
-            try:
-                default_scope_filter = _resolved_scope_to_query_filter(client.resolve_scope())
-                scoped_records, _ = record_cache.get_record_vecs(
-                    include_expired=False,
-                    scope=default_scope_filter,
-                )
-                warmed_records = max(warmed_records, len(scoped_records))
-            except Exception as exc:
-                logger.debug("Scoped warmup skipped: %s", exc)
-
-    warmed_claims = 0
-    if cfg.WARMUP_PRIME_CLAIM_CACHE:
-        warmed_claims = claim_cache.warm_active_claim_vecs(
-            limit=max(1, int(cfg.WARMUP_CLAIM_LIMIT)),
-        )
-
-    logger.info(
-        "Warmup complete (topics=%d, records=%d, claims=%d)",
-        warmed_topics,
-        warmed_records,
-        warmed_claims,
-    )
 
 
 async def _call_tool_payload(
@@ -738,6 +759,7 @@ async def lifespan(server: FastMCP):
             pass
         _warmup_task = None
 
+    _shutdown_warmup_executor()
     _runtime.shutdown()
     _runtime_started = False
     _startup_error = None
@@ -799,13 +821,17 @@ async def memory_recall(
     before: str | None = None,
     include_expired: bool = False,
     as_of: str | None = None,
+    entity: str | None = None,
+    hypothesis_competition: bool = False,
     scope: ScopeInput = None,
 ) -> str:
     """Retrieve relevant memories by semantic similarity."""
     try:
+        await _await_warmup_ready()
         client = await _get_client_with_timeout()
         bounded_n_results = max(1, min(n_results, 50))
-        arguments = {
+        recall_timeout = _recall_timeout_seconds()
+        arguments: dict[str, object] = {
             "query": query,
             "n_results": bounded_n_results,
             "include_knowledge": include_knowledge,
@@ -815,9 +841,11 @@ async def memory_recall(
             "before": before,
             "include_expired": include_expired,
             "as_of": as_of,
+            "entity": entity,
+            "hypothesis_competition": hypothesis_competition,
             "scope": scope,
         }
-        recall_timeout = _recall_timeout_seconds()
+        inject_recall_deadline(arguments, timeout_seconds=recall_timeout)
 
         try:
             result = await _run_blocking(
@@ -837,15 +865,7 @@ async def memory_recall(
                 keyword_result = await _run_blocking(
                     execute_tool_call,
                     "memory_search",
-                    {
-                        "query": query,
-                        "content_types": content_types,
-                        "tags": tags,
-                        "after": after,
-                        "before": before,
-                        "limit": bounded_n_results,
-                        "scope": scope,
-                    },
+                    build_recall_search_arguments(arguments),
                     client=client,
                     timeout=fallback_timeout,
                 )
@@ -866,28 +886,21 @@ async def memory_recall(
                 logger.error(message)
                 return json.dumps({"error": message})
 
-            warnings = [
-                f"Recall timed out after {recall_timeout:g}s; returned episodes-only fallback."
-            ]
-            if include_knowledge:
-                warnings.append("Knowledge retrieval skipped in fallback mode.")
-
-            payload = {
-                "episodes": list(keyword_result.get("episodes", [])),
-                "knowledge": [],
-                "records": [],
-                "claims": [],
-                "total_episodes": int(
-                    keyword_result.get(
-                        "total_matches",
-                        len(keyword_result.get("episodes", [])),
-                    )
-                ),
-                "total_knowledge_topics": 0,
-                "message": "Semantic recall timed out; returned keyword episodes-only fallback.",
-                "warnings": warnings,
-            }
+            payload = build_recall_timeout_fallback_result(
+                keyword_result,
+                recall_timeout_seconds=recall_timeout,
+                include_knowledge=include_knowledge,
+            )
             return json.dumps(payload, default=str)
+
+        result_warnings_raw = result.get("warnings")
+        result_warnings: list[str] = (
+            list(result_warnings_raw)
+            if isinstance(result_warnings_raw, list)
+            else []
+        )
+        if recall_result_needs_background_warm(result_warnings):
+            _schedule_deferred_cache_warm(client)
 
         return json.dumps(result, default=str)
     except Exception as exc:

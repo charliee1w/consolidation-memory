@@ -227,6 +227,9 @@ class Config:
     CONTRADICTION_PROMPT_RECORD_CHAR_LIMIT: int = 700
     MERGE_DROP_DETECTION_ENABLED: bool = True
     MERGE_DROP_SIMILARITY_THRESHOLD: float = 0.5
+    HYPOTHESIS_COMPETITION_ENABLED: bool = False
+    HYPOTHESIS_COMPETITION_PRECISION_FACTOR: float = 0.55
+    HYPOTHESIS_COMPETITION_RECALL_FACTOR: float = 0.65
     CONSOLIDATION_STOPWORDS: frozenset[str] = field(default_factory=lambda: _DEFAULT_STOPWORDS)
     CONSOLIDATION_PRIORITY_WEIGHTS: dict[str, float] = field(
         default_factory=lambda: {"surprise": 0.4, "recency": 0.35, "access_frequency": 0.25}
@@ -284,6 +287,11 @@ class Config:
     WARMUP_PRIME_RECORD_CACHE: bool = True
     WARMUP_PRIME_CLAIM_CACHE: bool = False
     WARMUP_CLAIM_LIMIT: int = 100
+
+    # ── Entity-centric recall ───────────────────────────────────────────────
+    ENTITY_RECALL_BOOST: float = 1.35
+    ENTITY_RECALL_LINKED_BONUS: float = 2.0
+    ENTITY_RECALL_LINKED_FLOOR: float = 0.35
 
     # ── Recall deduplication ──────────────────────────────────────────────
     RECALL_DEDUP_ENABLED: bool = True
@@ -510,6 +518,15 @@ def _build_config(
         ),
         MERGE_DROP_DETECTION_ENABLED=_coerce_bool(_consol.get("merge_drop_detection_enabled", True)),
         MERGE_DROP_SIMILARITY_THRESHOLD=float(_consol.get("merge_drop_similarity_threshold", 0.5)),
+        HYPOTHESIS_COMPETITION_ENABLED=_coerce_bool(
+            _consol.get("hypothesis_competition_enabled", False),
+        ),
+        HYPOTHESIS_COMPETITION_PRECISION_FACTOR=float(
+            _consol.get("hypothesis_competition_precision_factor", 0.55),
+        ),
+        HYPOTHESIS_COMPETITION_RECALL_FACTOR=float(
+            _consol.get("hypothesis_competition_recall_factor", 0.65),
+        ),
         CONSOLIDATION_STOPWORDS=stopwords,
         CONSOLIDATION_PRIORITY_WEIGHTS=_consol.get(
             "priority_weights",

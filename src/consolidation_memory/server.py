@@ -65,6 +65,11 @@ _STDIO_SINGLETON_ENABLED = os.environ.get(
     "CONSOLIDATION_MEMORY_STDIO_SINGLETON",
     "1",
 ).strip().lower() not in {"0", "false", "no", "off"}
+_SIMPLE_MCP_TOOL_NAMES = frozenset({
+    "memory_recall",
+    "memory_remember",
+    "memory_ask",
+})
 
 
 def _env_float(name: str, default: float) -> float:
@@ -106,6 +111,20 @@ def _env_bool(name: str, default: bool) -> bool:
     if token in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _mcp_tool_profile() -> str:
+    """Return ``simple`` (3 tools) or ``full`` (default, all tools)."""
+    raw = os.environ.get("CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE", "full").strip().lower()
+    if raw in {"simple", "full"}:
+        return raw
+    return "full"
+
+
+def _mcp_tool_allowed(tool_name: str) -> bool:
+    if _mcp_tool_profile() == "simple":
+        return tool_name in _SIMPLE_MCP_TOOL_NAMES
+    return True
 
 
 _MEMORY_DETECT_DRIFT_TIMEOUT_SECONDS = _env_float(
@@ -777,6 +796,9 @@ def _tracked_tool() -> Callable[[Callable[..., Awaitable[str]]], Callable[..., A
     def _decorator(
         func: Callable[..., Awaitable[str]],
     ) -> Callable[..., Awaitable[str]]:
+        if not _mcp_tool_allowed(func.__name__):
+            return func
+
         @mcp.tool()
         @functools.wraps(func)
         async def _wrapped(*args: object, **kwargs: object) -> str:

@@ -28,8 +28,8 @@ Prioritized gaps between engineering maturity and broad adoption. Each item has 
 
 | Priority | Blocker | Done-when |
 | --- | --- | --- |
-| P0 | **No simple agent surface** — 24 MCP tools overwhelm newcomers | ~~`memory_remember` / `memory_ask` on MCP, REST, OpenAI~~ (shipped); optional simple-tool profile for agent configs (roadmap #2) |
-| P0 | **Live recall proof gap** — synthetic CI passes; messy corpora underperform | Publish trending `real_world_eval --mode full` on live corpus; CI fixture stays regression-only |
+| P0 | **No simple agent surface** — 24 MCP tools overwhelm newcomers | ~~`memory_remember` / `memory_ask` + `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`~~ (shipped) |
+| P0 | **Live recall proof gap** — synthetic CI passes; messy corpora underperform | ~~Trending `real_world_eval --mode full` on live `universal` corpus~~ (2026-06-14, see [REAL_WORLD_METRICS.md](REAL_WORLD_METRICS.md)); CI fixture stays regression-only |
 | P1 | **Setup friction** — Python path, embeddings, hooks, scope concepts | One-command `init --quick` + `ui`; in-browser setup wizard when config missing |
 | P1 | **Ops opacity** — stale consolidation / embedding health unclear to casual users | Actionable health in UI + `memory_ask` warnings; “fix it” flows (consolidate, reindex) |
 | P1 | **Corpus hygiene** — forget episodes does not retract claims | Claim retraction/expiry on forget; cleanup wizard for noisy corpora |
@@ -39,7 +39,7 @@ Prioritized gaps between engineering maturity and broad adoption. Each item has 
 
 ## Near term (adoption slice)
 
-1. **Agent simple profile** — documented MCP config exposing recall + remember + ask only (advanced tools opt-in)
+1. ~~**Agent simple profile**~~ — `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`; documented in README and CONTRIBUTING
 2. **UI setup wizard** — detect missing config from `/ui/`, guide `init --quick`
 3. **Live metrics dashboard** — chart `real_world_eval` sections in UI or release notes
 4. **Adapter maturity** — keep transport parity as new retrieval and trust features land

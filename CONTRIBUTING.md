@@ -69,6 +69,12 @@ For newcomers, prefer the plain-language aliases over raw store/recall parameter
 delegates to `memory_recall` and returns a trimmed preview-oriented payload. Agent hooks that require
 `memory_recall` on the first turn are unchanged — use `memory_ask` for ergonomic search afterward.
 
+#### MCP simple profile
+
+Set `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple` in the MCP server `env` to expose only
+`memory_recall`, `memory_remember`, and `memory_ask`. Default is `full` (all tools). `init` prints
+both configs; `cli._recommended_mcp_simple_server_config()` is the canonical JSON snippet.
+
 ## Episode `content_type` vs record `type`
 
 Episodes accept ingest types: `exchange`, `fact`, `solution`, `preference`, `procedure`.

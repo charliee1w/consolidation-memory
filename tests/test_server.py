@@ -32,6 +32,44 @@ def _patched_server_runtime():
             runtime.shutdown()
 
 
+class TestMcpToolProfile:
+    def test_simple_profile_registers_only_recall_remember_ask(self, monkeypatch):
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE", "simple")
+
+        import consolidation_memory.server as server
+
+        server = importlib.reload(server)
+        tools = asyncio.run(server.mcp.list_tools())
+        names = {tool.name for tool in tools}
+
+        assert names == {"memory_recall", "memory_remember", "memory_ask"}
+
+    def test_full_profile_registers_all_tools(self, monkeypatch):
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE", "full")
+
+        import consolidation_memory.server as server
+
+        server = importlib.reload(server)
+        tools = asyncio.run(server.mcp.list_tools())
+        names = {tool.name for tool in tools}
+
+        assert "memory_store" in names
+        assert "memory_detect_drift" in names
+        assert len(names) >= 20
+
+    def test_invalid_profile_falls_back_to_full(self, monkeypatch):
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE", "tiny")
+
+        import consolidation_memory.server as server
+
+        server = importlib.reload(server)
+        tools = asyncio.run(server.mcp.list_tools())
+        names = {tool.name for tool in tools}
+
+        assert "memory_store" in names
+        assert len(names) >= 20
+
+
 class TestServerEnvParsing:
     def test_server_module_uses_defaults_when_numeric_env_values_are_invalid(self, monkeypatch):
         monkeypatch.setenv("CONSOLIDATION_MEMORY_DRIFT_TIMEOUT_SECONDS", "nan")

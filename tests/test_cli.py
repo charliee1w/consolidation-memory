@@ -413,6 +413,23 @@ class TestMCPConfigRecommendation:
             "env": _recommended_mcp_fast_env(),
         }
 
+    def test_recommended_mcp_simple_server_config_sets_tool_profile(self):
+        from consolidation_memory.cli import (
+            _recommended_mcp_fast_env,
+            _recommended_mcp_simple_server_config,
+        )
+
+        with patch("sys.executable", "C:/Python313/python.exe"):
+            config = _recommended_mcp_simple_server_config("universal")
+
+        env = dict(_recommended_mcp_fast_env())
+        env["CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE"] = "simple"
+        assert config == {
+            "command": "C:/Python313/python.exe",
+            "args": ["-m", "consolidation_memory", "--project", "universal", "serve"],
+            "env": env,
+        }
+
     def test_toml_basic_string_escapes_quotes_and_newlines(self):
         from consolidation_memory.cli import _toml_basic_string
 

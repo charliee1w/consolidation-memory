@@ -91,6 +91,14 @@ def _recommended_mcp_server_config(project: str) -> dict[str, object]:
     }
 
 
+def _recommended_mcp_simple_server_config(project: str) -> dict[str, object]:
+    """MCP config exposing only recall + remember + ask (newcomer-friendly)."""
+    config = _recommended_mcp_server_config(project)
+    env = dict(config["env"])
+    env["CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE"] = "simple"
+    return {**config, "env": env}
+
+
 def cmd_serve(args):
     """Start the MCP or REST server."""
     if getattr(args, "rest", False):
@@ -158,10 +166,16 @@ similarity_threshold = 0.95
     print("Database initialized.")
 
     active_project = get_active_project()
-    print("\n--- Add to your MCP client config ---")
+    print("\n--- Add to your MCP client config (full tools) ---")
     print(json.dumps({
         "mcpServers": {
             "consolidation_memory": _recommended_mcp_server_config(active_project)
+        }
+    }, indent=2))
+    print("\n--- Simple profile (recall + remember + ask only) ---")
+    print(json.dumps({
+        "mcpServers": {
+            "consolidation_memory": _recommended_mcp_simple_server_config(active_project)
         }
     }, indent=2))
     print(f"\nMCP project namespace: {active_project}")

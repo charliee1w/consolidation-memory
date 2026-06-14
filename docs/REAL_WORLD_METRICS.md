@@ -37,3 +37,25 @@ python -m benchmarks.real_world_eval --repo-path .
 
 Thresholds are intentionally lower than synthetic harnesses because this
 benchmark measures real, noisy memory — not controlled fixtures.
+
+## Live corpus trend (project `universal`)
+
+Published from `benchmarks/results/real_world_eval_full.json` (2026-06-14, `fastembed` embeddings).
+
+| Section | Measured | Threshold | Pass |
+| --- | --- | --- | --- |
+| Live Solution Recall@5 | **81.7%** (98/120) | ≥ 35% | yes |
+| Live Claim Recall@5 | **77.5%** (62/80) | ≥ 40% | yes |
+| Challenged Claim Suppression | **100%** (60/60) | ≥ 90% | yes |
+| Live Provenance Coverage | **100%** (300/300) | ≥ 85% | yes |
+| Live Drift Response | **100%** (42/42 impacted) | ≥ 80% when paths change | yes |
+| Memory Health Snapshot | degraded (consolidation 45h stale); backlog 10.4% | backlog ≤ 20% | yes |
+
+**Overall:** `overall_pass: true`
+
+Re-run after corpus or embedding backend changes:
+
+```bash
+consolidation-memory warmup
+python -m benchmarks.real_world_eval --mode full --output benchmarks/results/real_world_eval_full.json --repo-path .
+```

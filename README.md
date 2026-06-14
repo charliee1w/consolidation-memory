@@ -180,6 +180,10 @@ Use an **absolute Python path** — more reliable than a console script, especia
 
 Drop-in configs: [Cursor](examples/cursor-integration/README.md) · [Continue](examples/continue-dev/README.md)
 
+**Simple profile** (3 tools for newcomers): add `"CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE": "simple"` to
+`env` — exposes `memory_recall`, `memory_remember`, and `memory_ask` only. `consolidation-memory init`
+prints both full and simple JSON snippets.
+
 ### MCP tools (representative)
 
 | Tool | Purpose |

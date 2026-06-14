@@ -44,7 +44,7 @@ from consolidation_memory.tool_adapter import (
     build_recall_timeout_fallback_result,
     inject_recall_deadline,
 )
-from consolidation_memory.tool_dispatch import execute_tool_call
+from consolidation_memory.tool_dispatch import execute_tool_call, tool_requires_client
 
 # Valid content types accepted by the memory system.
 _ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference", "procedure"]
@@ -356,6 +356,15 @@ class ConsolidationLogRequest(BaseModel):
     global_scope: bool = False
 
 
+class PolicyGrantRequest(BaseModel):
+    principal_type: str
+    principal_key: str
+    namespace: str | None = None
+    project: str | None = None
+    write_mode: Literal["allow", "deny"] | None = None
+    read_visibility: Literal["private", "project", "namespace"] | None = None
+
+
 def create_app(*, bind_host: str | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
     if bind_host is not None:
@@ -437,7 +446,7 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         timeout: float | None = None,
     ) -> dict[str, object]:
         client = None
-        if name != "memory_detect_drift":
+        if tool_requires_client(name):
             timeout_seconds = _client_init_timeout_seconds()
             try:
                 client = await runtime.get_client_with_timeout(
@@ -733,3 +742,16 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         """Show decay candidates with optional explicit scope."""
         payload = {} if req is None else req.model_dump(exclude_none=True)
         return await _execute("memory_decay_report", payload)
+
+    @app.get("/memory/policy")
+    async def policy_list():
+        """List persisted access policies and ACL bindings."""
+        return await _execute("memory_policy_list", {})
+
+    @app.post("/memory/policy/grant")
+    async def policy_grant(req: PolicyGrantRequest):
+        """Create or update a persisted policy ACL binding."""
+        result = await _execute("memory_policy_grant", req.model_dump(exclude_none=True))
+        if isinstance(result, dict) and result.get("error"):
+            raise HTTPException(status_code=400, detail=str(result["error"]))
+        return result

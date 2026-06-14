@@ -20,7 +20,7 @@ Make local-first agent memory dependable for coding workflows: useful recall, ex
 - MCP, REST, Python, and OpenAI tool parity through `MemoryClient`
 
 ## Near term
-- **Policy ergonomics** — clearer admin surfaces for namespace and ACL management in self-hosted deployments
+- ~~**Policy ergonomics**~~ — `memory_policy_list` / `memory_policy_grant` on MCP, REST, and OpenAI dispatch; CLI `policy list|grant`
 - **Adapter maturity** — keep transport parity as new retrieval and trust features land
 
 ## Mid term

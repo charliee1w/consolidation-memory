@@ -1,0 +1,50 @@
+{
+  "description": "Require consolidation_memory memory_recall before any other agent tool",
+  "hooks": {
+    "sessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .grok/hooks/require_memory_recall.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .grok/hooks/require_memory_recall.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "preToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .grok/hooks/require_memory_recall.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "CallMcpTool|call_mcp_tool|mcp|memory_recall",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .grok/hooks/require_memory_recall.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

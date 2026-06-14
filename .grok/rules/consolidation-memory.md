@@ -1,5 +1,10 @@
 # consolidation-memory (Grok project rules)
 
+## Memory first
+
+See [00-memory-first.md](00-memory-first.md). `memory_recall` is the mandatory first
+tool on every user turn when `consolidation_memory` MCP is available.
+
 Read [CONTRIBUTING.md](../../CONTRIBUTING.md) and [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) before code changes.
 
 ## Workflow

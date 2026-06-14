@@ -32,6 +32,7 @@ def invoke_surfaces_with_execute_tool_call(
     mcp_coro_factory: Callable[[], Any],
     rest_path: str,
     rest_json: dict[str, Any] | None = None,
+    rest_method: str = "POST",
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], MagicMock]:
     """Run OpenAI dispatch, MCP wrapper, and REST with one execute_tool_call mock."""
     from consolidation_memory.rest import create_app
@@ -68,7 +69,10 @@ def invoke_surfaces_with_execute_tool_call(
             return_value=mock_client,
         ):
             with TestClient(app) as client:
-                rest_resp = client.post(rest_path, json=rest_body)
+                if rest_method.upper() == "GET":
+                    rest_resp = client.get(rest_path)
+                else:
+                    rest_resp = client.post(rest_path, json=rest_body)
         rest_out = rest_resp.json()
 
     assert rest_resp.status_code == 200

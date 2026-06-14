@@ -975,6 +975,72 @@ MEMORY_DECAY_REPORT_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_POLICY_LIST_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_policy_list",
+        "description": (
+            "List persisted namespace/project access policies and ACL bindings. "
+            "Use to inspect who can read or write memory in self-hosted deployments."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
+MEMORY_POLICY_GRANT_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_policy_grant",
+        "description": (
+            "Create or update a persisted ACL binding for a principal. "
+            "Omitted namespace or project selectors act as wildcards. "
+            "Provide at least one of write_mode or read_visibility."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "namespace": {
+                    "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
+                    "description": "Namespace slug selector (wildcard when omitted).",
+                },
+                "project": {
+                    "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
+                    "description": "Project slug selector (wildcard when omitted).",
+                },
+                "principal_type": {
+                    "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
+                    "description": "Principal type (e.g. app_client, agent_name).",
+                },
+                "principal_key": {
+                    "type": "string",
+                    "maxLength": _MAX_FILENAME_LENGTH,
+                    "description": "Principal key (e.g. python_sdk:legacy_client).",
+                },
+                "write_mode": {
+                    "type": "string",
+                    "enum": ["allow", "deny"],
+                    "description": "Write policy for the principal.",
+                },
+                "read_visibility": {
+                    "type": "string",
+                    "enum": ["private", "project", "namespace"],
+                    "description": "Read visibility policy for the principal.",
+                },
+            },
+            "required": ["principal_type", "principal_key"],
+        },
+    },
+}
+
 MEMORY_CONSOLIDATION_LOG_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -1027,6 +1093,8 @@ openai_tools: list[dict[str, Any]] = [
     MEMORY_READ_TOPIC_SCHEMA,
     MEMORY_DECAY_REPORT_SCHEMA,
     MEMORY_CONSOLIDATION_LOG_SCHEMA,
+    MEMORY_POLICY_LIST_SCHEMA,
+    MEMORY_POLICY_GRANT_SCHEMA,
 ]
 
 

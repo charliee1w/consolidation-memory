@@ -40,8 +40,17 @@ _URI_PREFIX_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 _VALID_OUTCOME_TYPES = frozenset(OUTCOME_TYPES)
 
 
+_CLIENTLESS_TOOLS = frozenset(
+    {
+        "memory_detect_drift",
+        "memory_policy_list",
+        "memory_policy_grant",
+    }
+)
+
+
 def tool_requires_client(name: str) -> bool:
-    return name != "memory_detect_drift"
+    return name not in _CLIENTLESS_TOOLS
 
 
 def _require_client(client: MemoryClient | None, name: str) -> MemoryClient:
@@ -785,6 +794,53 @@ def execute_tool_call(
                 scope=_validate_scope(arguments.get("scope")),
                 global_scope=_validate_global_scope(arguments.get("global_scope")),
             )
+        )
+
+    if name == "memory_policy_list":
+        from consolidation_memory.policy_admin import list_policy_bindings
+
+        return list_policy_bindings()
+
+    if name == "memory_policy_grant":
+        from consolidation_memory.policy_admin import grant_policy_binding
+
+        write_mode = _validate_optional_text(
+            "write_mode",
+            arguments.get("write_mode"),
+            max_length=16,
+            allow_empty=False,
+        )
+        read_visibility = _validate_optional_text(
+            "read_visibility",
+            arguments.get("read_visibility"),
+            max_length=16,
+            allow_empty=False,
+        )
+        return grant_policy_binding(
+            namespace=_validate_optional_text(
+                "namespace",
+                arguments.get("namespace"),
+                max_length=_MAX_FILENAME_LENGTH,
+                allow_empty=False,
+            ),
+            project=_validate_optional_text(
+                "project",
+                arguments.get("project"),
+                max_length=_MAX_FILENAME_LENGTH,
+                allow_empty=False,
+            ),
+            principal_type=_validate_required_text(
+                "principal_type",
+                arguments["principal_type"],
+                max_length=_MAX_FILENAME_LENGTH,
+            ),
+            principal_key=_validate_required_text(
+                "principal_key",
+                arguments["principal_key"],
+                max_length=_MAX_FILENAME_LENGTH,
+            ),
+            write_mode=write_mode,
+            read_visibility=read_visibility,
         )
 
     raise ValueError(f"Unknown tool: {name}")

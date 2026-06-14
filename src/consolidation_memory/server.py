@@ -36,7 +36,7 @@ from consolidation_memory.tool_adapter import (
     recall_result_needs_background_warm,
     warm_recall_caches,
 )
-from consolidation_memory.tool_dispatch import execute_tool_call
+from consolidation_memory.tool_dispatch import execute_tool_call, tool_requires_client
 
 # Configure logging to stderr (stdout is the MCP JSON-RPC channel).
 logging.basicConfig(
@@ -686,7 +686,9 @@ async def _call_tool_payload(
     *,
     timeout: float | None = None,
 ) -> dict[str, object]:
-    client = await _get_client_with_timeout()
+    client = None
+    if tool_requires_client(name):
+        client = await _get_client_with_timeout()
     return await _run_blocking(
         execute_tool_call,
         name,
@@ -1242,6 +1244,37 @@ async def memory_read_topic(
 ) -> str:
     """Read the full markdown content of a knowledge topic."""
     return await _call_tool_json("memory_read_topic", {"filename": filename, "scope": scope})
+
+
+@_tracked_tool()
+async def memory_policy_list() -> str:
+    """List persisted access policies and ACL bindings."""
+    return await _call_tool_json("memory_policy_list", {})
+
+
+@_tracked_tool()
+async def memory_policy_grant(
+    principal_type: str,
+    principal_key: str,
+    namespace: str | None = None,
+    project: str | None = None,
+    write_mode: str | None = None,
+    read_visibility: str | None = None,
+) -> str:
+    """Create or update a persisted policy ACL binding."""
+    payload: dict[str, object] = {
+        "principal_type": principal_type,
+        "principal_key": principal_key,
+    }
+    if namespace is not None:
+        payload["namespace"] = namespace
+    if project is not None:
+        payload["project"] = project
+    if write_mode is not None:
+        payload["write_mode"] = write_mode
+    if read_visibility is not None:
+        payload["read_visibility"] = read_visibility
+    return await _call_tool_json("memory_policy_grant", payload)
 
 
 def run_server() -> None:

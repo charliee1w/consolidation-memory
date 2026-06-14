@@ -52,6 +52,8 @@ class TestSchemaStructure:
             "memory_read_topic",
             "memory_decay_report",
             "memory_consolidation_log",
+            "memory_policy_list",
+            "memory_policy_grant",
         }
 
     def test_schemas_have_required_fields(self):

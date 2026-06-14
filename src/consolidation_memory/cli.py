@@ -1192,20 +1192,21 @@ def cmd_setup_memory(path: str = "AGENTS.md"):
 
 def cmd_policy_list() -> None:
     """List persisted access policies and ACL bindings."""
-    from consolidation_memory.database import ensure_schema, list_policy_admin_rows
+    from consolidation_memory.policy_admin import list_policy_bindings
 
-    ensure_schema()
-    rows = list_policy_admin_rows()
-    if not rows:
+    result = list_policy_bindings()
+    policies = result.get("policies") or []
+    if not policies:
         print("No persisted access policies.")
         return
 
     print(f"{'policy_id':<38} {'namespace':<12} {'project':<12} {'principal':<28} {'write':<6} {'read':<10}")
     print("-" * 112)
-    for row in rows:
+    for row in policies:
         principal = ""
-        if row.get("principal_type") and row.get("principal_key"):
-            principal = f"{row['principal_type']}:{row['principal_key']}"
+        principal_obj = row.get("principal")
+        if isinstance(principal_obj, dict) and principal_obj.get("type") and principal_obj.get("key"):
+            principal = f"{principal_obj['type']}:{principal_obj['key']}"
         print(
             f"{str(row.get('policy_id', '')):<38} "
             f"{str(row.get('namespace_slug') or '*'):<12} "
@@ -1226,43 +1227,22 @@ def cmd_policy_grant(
     read_visibility: str | None,
 ) -> None:
     """Create or update a persisted policy ACL binding."""
-    from consolidation_memory.database import (
-        ensure_schema,
-        upsert_access_policy,
-        upsert_policy_acl_entry,
-        upsert_policy_principal,
-    )
+    from consolidation_memory.policy_admin import grant_policy_binding
 
-    if write_mode is None and read_visibility is None:
-        print("Provide at least one of --write-mode or --read-visibility.", file=sys.stderr)
+    try:
+        payload = grant_policy_binding(
+            namespace=namespace,
+            project=project,
+            principal_type=principal_type,
+            principal_key=principal_key,
+            write_mode=write_mode,
+            read_visibility=read_visibility,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         sys.exit(1)
 
-    ensure_schema()
-    principal_id = upsert_policy_principal(principal_type, principal_key)
-    policy_id = upsert_access_policy(namespace_slug=namespace, project_slug=project)
-    acl_id = upsert_policy_acl_entry(
-        policy_id=policy_id,
-        principal_id=principal_id,
-        write_mode=write_mode,
-        read_visibility=read_visibility,
-    )
-    print(
-        json.dumps(
-            {
-                "status": "granted",
-                "policy_id": policy_id,
-                "principal_id": principal_id,
-                "acl_entry_id": acl_id,
-                "namespace": namespace,
-                "project": project,
-                "principal_type": principal_type,
-                "principal_key": principal_key,
-                "write_mode": write_mode,
-                "read_visibility": read_visibility,
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps(payload, indent=2))
 
 
 def cmd_dashboard():

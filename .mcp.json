@@ -1,0 +1,17 @@
+{
+  "consolidation_memory": {
+    "command": "python",
+    "args": [
+      "-m",
+      "consolidation_memory",
+      "--project",
+      "universal",
+      "serve"
+    ],
+    "env": {
+      "PYTHONUNBUFFERED": "1",
+      "CONSOLIDATION_MEMORY_IDLE_TIMEOUT_SECONDS": "0",
+      "CONSOLIDATION_MEMORY_PRELOAD_NUMERIC_BACKENDS_ON_START": "1"
+    }
+  }
+}

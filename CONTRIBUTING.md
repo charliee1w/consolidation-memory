@@ -37,7 +37,21 @@ Some tools are **scope-aware** by default; others are **global by design**.
 - `memory_consolidate` / `consolidate()` — processes unconsolidated episodes across the DB
 - `memory_compact` / FAISS compaction — rebuilds the shared vector index
 - `memory_detect_drift` — git diff against a base ref (namespace/project scope only narrows challenged-claim attribution)
+- `memory_policy_list` / `memory_policy_grant` — persisted ACL administration across the DB (CLI: `consolidation-memory policy list|grant`)
 - Audit reads with `global_scope=true` — corpus-wide ops dashboard view; `memory_status` caches per scope key (including global)
+
+### Policy administration
+
+Self-hosted deployments can manage namespace/project ACL bindings through any surface:
+
+| Surface | List | Grant |
+| --- | --- | --- |
+| CLI | `consolidation-memory policy list` | `consolidation-memory policy grant --principal-type ...` |
+| MCP / OpenAI tools | `memory_policy_list` | `memory_policy_grant` |
+| REST | `GET /memory/policy` | `POST /memory/policy/grant` |
+
+Omitted `namespace` or `project` selectors act as wildcards. Grant requires at least one of
+`write_mode` (`allow`/`deny`) or `read_visibility` (`private`/`project`/`namespace`).
 
 When adding new tools, document whether they are scope-aware or global. Do not widen scope silently on read paths.
 

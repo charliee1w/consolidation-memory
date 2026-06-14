@@ -7,6 +7,18 @@ alwaysApply: true
 
 You are working on **consolidation-memory**: a local-first, trust-calibrated belief layer for coding agents.
 
+## Memory first (mandatory)
+
+`consolidation_memory` MCP is configured. On **every user turn**, call `memory_recall`
+as your **first** tool — before shell, reads, edits, searches, or subagents.
+
+1. `memory_recall` with a query from the user's goal (`include_knowledge=true`).
+2. Then proceed with other work.
+3. `memory_store` after meaningful progress; `memory_detect_drift` after substantial edits.
+4. Final `memory_recall` before closing the turn.
+
+If memory tools are unavailable, say so once and continue without fabricating results.
+
 ## Before coding
 
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md) — trust invariants and verification commands.

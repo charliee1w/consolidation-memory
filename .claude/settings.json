@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"D:\\consolidation-memory\\.claude\\hooks\\ruff-check.ps1\"",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \".claude/hooks/ruff-check.ps1\"",
             "timeout": 15
           }
         ]
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"D:\\consolidation-memory\\.claude\\hooks\\post-push-check.ps1\"",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \".claude/hooks/post-push-check.ps1\"",
             "timeout": 10
           }
         ]

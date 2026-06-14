@@ -6,7 +6,6 @@
 
 - Maintenance release.
 
-
 ## 0.18.0 - 2026-06-14
 
 ### Features

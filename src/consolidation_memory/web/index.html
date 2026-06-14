@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>consolidation-memory</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a222d;
+      --surface-2: #232d3b;
+      --border: #2f3d4f;
+      --text: #e8eef5;
+      --muted: #8fa3b8;
+      --accent: #3d9cf5;
+      --accent-dim: #2a6fad;
+      --ok: #3ecf8e;
+      --warn: #f5b83d;
+      --danger: #f07178;
+      --radius: 10px;
+      --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+      --mono: "Cascadia Code", "Consolas", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      background: radial-gradient(1200px 600px at 10% -10%, #1a2a3d 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    .shell {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.45rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+      max-width: 34rem;
+      line-height: 1.45;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      font-size: 0.82rem;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+    }
+
+    .dot.warn { background: var(--warn); }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+
+    .stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+    }
+
+    .stat-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .stat-value { font-size: 1.35rem; font-weight: 650; margin-top: 4px; }
+
+    nav.tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    nav.tabs button {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      padding: 10px 16px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.92rem;
+    }
+
+    nav.tabs button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .panel {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+    }
+
+    .panel.active { display: block; }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    input[type="text"], textarea, select {
+      width: 100%;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 0.95rem;
+    }
+
+    textarea { min-height: 120px; resize: vertical; line-height: 1.45; }
+
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+    .row > * { flex: 1; min-width: 160px; }
+
+    button.primary {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.primary:hover { background: var(--accent-dim); }
+    button.primary:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    button.ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
+    button.ghost.danger { color: var(--danger); border-color: #5a3035; }
+
+    .results { margin-top: 18px; display: grid; gap: 10px; }
+
+    .card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+
+    .card-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .pill {
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #2a3545;
+      border: 1px solid var(--border);
+    }
+
+    .card-body {
+      white-space: pre-wrap;
+      line-height: 1.45;
+      font-size: 0.92rem;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: 0.9rem;
+      padding: 12px 0;
+    }
+
+    .toast {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: 0.2s ease;
+      pointer-events: none;
+      max-width: 320px;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    footer {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+
+    footer a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <h1>consolidation-memory</h1>
+        <p class="subtitle">Remember fixes and notes from your coding sessions. Search them later with plain language — no MCP setup required.</p>
+      </div>
+      <div class="badge" id="health-badge">
+        <span class="dot" id="health-dot"></span>
+        <span id="health-text">Loading…</span>
+      </div>
+    </header>
+
+    <section class="stats" id="stats-row" aria-label="Memory statistics"></section>
+
+    <nav class="tabs" role="tablist">
+      <button type="button" class="active" data-tab="ask" role="tab">Ask</button>
+      <button type="button" data-tab="remember" role="tab">Remember</button>
+      <button type="button" data-tab="browse" role="tab">Browse</button>
+    </nav>
+
+    <section class="panel active" id="panel-ask" role="tabpanel">
+      <label for="ask-query">What do you want to recall?</label>
+      <div class="row">
+        <input type="text" id="ask-query" placeholder="e.g. how did we fix the USB reset script?" />
+        <button type="button" class="primary" id="ask-btn">Search memory</button>
+      </div>
+      <div class="results" id="ask-results"></div>
+    </section>
+
+    <section class="panel" id="panel-remember" role="tabpanel">
+      <div class="row" style="margin-bottom: 12px;">
+        <div>
+          <label for="remember-kind">Type</label>
+          <select id="remember-kind">
+            <option value="note">Note (general)</option>
+            <option value="fix">Fix / solution</option>
+            <option value="fact">Fact</option>
+            <option value="preference">Preference</option>
+          </select>
+        </div>
+        <div>
+          <label for="remember-tags">Tags (optional, comma-separated)</label>
+          <input type="text" id="remember-tags" placeholder="debugging, windows" />
+        </div>
+      </div>
+      <label for="remember-content">What should we remember?</label>
+      <textarea id="remember-content" placeholder="Describe the problem and what worked…"></textarea>
+      <div style="margin-top: 12px;">
+        <button type="button" class="primary" id="remember-btn">Save to memory</button>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-browse" role="tabpanel">
+      <div class="row" style="margin-bottom: 12px; align-items: center;">
+        <p class="subtitle" style="margin: 0; flex: 2;">Recent episodes stored on this machine.</p>
+        <button type="button" class="primary" id="consolidate-btn" style="flex: 0;">Run consolidation</button>
+      </div>
+      <div class="results" id="browse-results"></div>
+    </section>
+
+    <footer>
+      Project: <span id="project-name">—</span> · v<span id="version-label">—</span><br />
+      Agents still use MCP tools; this UI is the human-friendly layer.
+      <a href="/docs" target="_blank" rel="noopener">REST API docs</a>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+
+    function toast(msg) {
+      const el = $("#toast");
+      el.textContent = msg;
+      el.classList.add("show");
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => el.classList.remove("show"), 2600);
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options,
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = body.detail || body.message || res.statusText;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+      return body;
+    }
+
+    function renderStats(overview) {
+      const stats = overview.stats || {};
+      const faiss = overview.faiss || {};
+      const items = [
+        ["Memories", stats.total_episodes ?? 0],
+        ["Topics", stats.knowledge_topic_count ?? 0],
+        ["Indexed vectors", faiss.index_size ?? 0],
+        ["DB size (MB)", stats.db_size_mb ?? 0],
+      ];
+      $("#stats-row").innerHTML = items.map(([label, value]) => `
+        <div class="stat">
+          <div class="stat-label">${label}</div>
+          <div class="stat-value">${value}</div>
+        </div>
+      `).join("");
+
+      const health = overview.health || "ok";
+      $("#health-dot").classList.toggle("warn", health !== "ok");
+      $("#health-text").textContent = overview.health_note || "Ready";
+      $("#project-name").textContent = overview.project || "default";
+      $("#version-label").textContent = overview.version || "—";
+    }
+
+    function cardHtml({ title, meta = [], body }) {
+      const metaHtml = meta.map((m) => `<span class="pill">${m}</span>`).join("");
+      return `<article class="card">
+        ${title ? `<strong>${title}</strong>` : ""}
+        <div class="card-meta">${metaHtml}</div>
+        <div class="card-body">${body}</div>
+      </article>`;
+    }
+
+    function renderAskResults(data) {
+      const root = $("#ask-results");
+      const parts = [];
+      (data.episodes || []).forEach((ep) => {
+        parts.push(cardHtml({
+          meta: [ep.kind || "episode", ep.score ? `score ${Number(ep.score).toFixed(2)}` : "", ...(ep.tags || []).slice(0, 3)],
+          body: ep.preview || "",
+        }));
+      });
+      (data.records || []).slice(0, 6).forEach((rec) => {
+        parts.push(cardHtml({
+          title: "Consolidated record",
+          meta: [rec.type || "record", rec.topic || ""],
+          body: rec.text || "",
+        }));
+      });
+      (data.claims || []).slice(0, 4).forEach((cl) => {
+        parts.push(cardHtml({
+          title: "Trusted claim",
+          meta: [cl.type || "claim", cl.trust || cl.status || ""],
+          body: cl.text || "",
+        }));
+      });
+      (data.knowledge || []).slice(0, 4).forEach((k) => {
+        parts.push(cardHtml({
+          title: k.title || "Topic",
+          meta: [`confidence ${k.confidence ?? "—"}`],
+          body: k.summary || "",
+        }));
+      });
+      root.innerHTML = parts.length ? parts.join("") : '<p class="empty">No matches yet. Try saving a memory first.</p>';
+    }
+
+    function renderBrowse(episodes) {
+      const root = $("#browse-results");
+      if (!episodes.length) {
+        root.innerHTML = '<p class="empty">No memories stored yet. Use the Remember tab.</p>';
+        return;
+      }
+      root.innerHTML = episodes.map((ep) => {
+        const status = ep.consolidated === 1 ? "consolidated" : ep.consolidated === 2 ? "pruned" : "pending";
+        return `<article class="card" data-id="${ep.id}">
+          <div class="card-meta">
+            <span class="pill">${ep.content_type}</span>
+            <span class="pill">${status}</span>
+            <span class="pill">${(ep.created_at || "").replace("T", " ").slice(0, 19)}</span>
+            <button type="button" class="ghost danger forget-btn" data-id="${ep.id}">Delete</button>
+          </div>
+          <div class="card-body">${ep.content_preview || ""}</div>
+        </article>`;
+      }).join("");
+
+      root.querySelectorAll(".forget-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.dataset.id;
+          if (!id || !confirm("Delete this memory?")) return;
+          try {
+            await api(`/ui/api/episodes/${id}`, { method: "DELETE" });
+            toast("Memory deleted");
+            loadBrowse();
+            loadOverview();
+          } catch (err) {
+            toast(err.message);
+          }
+        });
+      });
+    }
+
+    async function loadOverview() {
+      try {
+        const overview = await api("/ui/api/overview");
+        renderStats(overview);
+      } catch (err) {
+        $("#health-text").textContent = "Offline";
+        toast(err.message);
+      }
+    }
+
+    async function loadBrowse() {
+      try {
+        const data = await api("/ui/api/recent");
+        renderBrowse(data.episodes || []);
+      } catch (err) {
+        toast(err.message);
+      }
+    }
+
+    document.querySelectorAll("nav.tabs button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        $("#panel-" + btn.dataset.tab).classList.add("active");
+        if (btn.dataset.tab === "browse") loadBrowse();
+      });
+    });
+
+    $("#ask-btn").addEventListener("click", async () => {
+      const query = $("#ask-query").value.trim();
+      if (!query) return;
+      const btn = $("#ask-btn");
+      btn.disabled = true;
+      try {
+        const data = await api("/ui/api/ask", {
+          method: "POST",
+          body: JSON.stringify({ query, n_results: 8 }),
+        });
+        renderAskResults(data);
+      } catch (err) {
+        toast(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    $("#ask-query").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") $("#ask-btn").click();
+    });
+
+    $("#remember-btn").addEventListener("click", async () => {
+      const content = $("#remember-content").value.trim();
+      if (!content) return;
+      const kind = $("#remember-kind").value;
+      const tagsRaw = $("#remember-tags").value.trim();
+      const tags = tagsRaw ? tagsRaw.split(",").map((t) => t.trim()).filter(Boolean) : null;
+      const btn = $("#remember-btn");
+      btn.disabled = true;
+      try {
+        await api("/ui/api/remember", {
+          method: "POST",
+          body: JSON.stringify({ content, kind, tags }),
+        });
+        $("#remember-content").value = "";
+        toast("Saved to memory");
+        loadOverview();
+      } catch (err) {
+        toast(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    $("#consolidate-btn").addEventListener("click", async () => {
+      const btn = $("#consolidate-btn");
+      btn.disabled = true;
+      try {
+        await api("/ui/api/consolidate", { method: "POST", body: "{}" });
+        toast("Consolidation started");
+        loadOverview();
+        loadBrowse();
+      } catch (err) {
+        toast(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    loadOverview();
+  </script>
+</body>
+</html>

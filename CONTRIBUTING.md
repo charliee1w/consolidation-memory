@@ -55,6 +55,20 @@ Omitted `namespace` or `project` selectors act as wildcards. Grant requires at l
 
 When adding new tools, document whether they are scope-aware or global. Do not widen scope silently on read paths.
 
+### Simple agent surface
+
+For newcomers, prefer the plain-language aliases over raw store/recall parameters:
+
+| Surface | Remember | Ask |
+| --- | --- | --- |
+| MCP / OpenAI tools | `memory_remember` (`kind`: note, fact, fix, preference) | `memory_ask` (compact recall envelope) |
+| REST | `POST /memory/remember` | `POST /memory/ask` |
+| Browser UI | `POST /ui/api/remember` | `POST /ui/api/ask` |
+
+`memory_remember` maps `kind` → episode `content_type` (`fix` → `solution`, `note` → `exchange`). `memory_ask`
+delegates to `memory_recall` and returns a trimmed preview-oriented payload. Agent hooks that require
+`memory_recall` on the first turn are unchanged — use `memory_ask` for ergonomic search afterward.
+
 ## Episode `content_type` vs record `type`
 
 Episodes accept ingest types: `exchange`, `fact`, `solution`, `preference`, `procedure`.

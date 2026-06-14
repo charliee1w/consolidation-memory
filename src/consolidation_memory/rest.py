@@ -199,6 +199,19 @@ def _extract_bearer_token(auth_header: str) -> str | None:
 # ── Pydantic request models ─────────────────────────────────────────────────
 
 
+class SimpleRememberRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=50_000)
+    kind: Literal["note", "fact", "fix", "preference"] = "note"
+    tags: list[str] | None = None
+    scope: _ScopeInput | None = None
+
+
+class SimpleAskRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=_MAX_QUERY_LENGTH)
+    n_results: int = Field(default=8, ge=1, le=20)
+    scope: _ScopeInput | None = None
+
+
 class StoreRequest(BaseModel):
     content: str = Field(max_length=50_000)
     content_type: _ContentTypeLiteral = "exchange"
@@ -391,53 +404,16 @@ def create_app(*, bind_host: str | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     _install_auth_middleware(app)
-    _register_memory_routes(app, runtime)
+    execute = _build_execute(runtime)
+    _register_memory_routes(app, execute)
+    from consolidation_memory.web_ui import register_web_ui_routes
+
+    register_web_ui_routes(app, execute=execute)
     return app
 
-def _install_auth_middleware(app: FastAPI) -> None:
-    @app.middleware("http")
-    async def _rest_auth_middleware(request: Request, call_next):  # pragma: no cover - exercised in REST tests
-        token = get_rest_auth_token()
-        allow_public_bind = _truthy_env(_REST_ALLOW_PUBLIC_BIND_ENV)
-        if (
-            token is None
-            and not allow_public_bind
-            and request.method != "OPTIONS"
-            and request.url.path not in _AUTH_EXEMPT_PATHS
-            and not _request_bind_is_safe(_request_bind_host(request))
-        ):
-            return JSONResponse(
-                status_code=503,
-                content={"detail": _public_bind_detail()},
-            )
 
-        if token is None or request.method == "OPTIONS" or request.url.path in _AUTH_EXEMPT_PATHS:
-            return await call_next(request)
-
-        auth_header = request.headers.get("Authorization", "")
-        provided = _extract_bearer_token(auth_header)
-        if provided is None:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Missing or invalid Authorization header"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        if not secrets.compare_digest(provided, token):
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid bearer token"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return await call_next(request)
-
-def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
-    # ── Endpoints ────────────────────────────────────────────────────────
-    @app.get("/health")
-    async def health():
-        """Health check."""
-        from consolidation_memory.config import get_active_project
-
-        return {"status": "ok", "version": __version__, "project": get_active_project()}
+def _build_execute(runtime: MemoryRuntime) -> object:
+    """Return the shared execute helper used by memory and UI routes."""
 
     async def _execute(
         name: str,
@@ -479,15 +455,81 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    return _execute
+
+def _install_auth_middleware(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def _rest_auth_middleware(request: Request, call_next):  # pragma: no cover - exercised in REST tests
+        token = get_rest_auth_token()
+        allow_public_bind = _truthy_env(_REST_ALLOW_PUBLIC_BIND_ENV)
+        if (
+            token is None
+            and not allow_public_bind
+            and request.method != "OPTIONS"
+            and request.url.path not in _AUTH_EXEMPT_PATHS
+            and not _request_bind_is_safe(_request_bind_host(request))
+        ):
+            return JSONResponse(
+                status_code=503,
+                content={"detail": _public_bind_detail()},
+            )
+
+        if token is None or request.method == "OPTIONS" or request.url.path in _AUTH_EXEMPT_PATHS:
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization", "")
+        provided = _extract_bearer_token(auth_header)
+        if provided is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing or invalid Authorization header"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if not secrets.compare_digest(provided, token):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid bearer token"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return await call_next(request)
+
+def _register_memory_routes(app: FastAPI, execute: object) -> None:
+    # ── Endpoints ────────────────────────────────────────────────────────
+    @app.get("/health")
+    async def health():
+        """Health check."""
+        from consolidation_memory.config import get_active_project
+
+        return {"status": "ok", "version": __version__, "project": get_active_project()}
+
+    @app.post("/memory/remember")
+    async def remember(req: SimpleRememberRequest):
+        """Save memory with a simplified kind vocabulary (note, fix, fact, preference)."""
+        return await execute("memory_remember", req.model_dump(exclude_none=True))
+
+    @app.post("/memory/ask")
+    async def ask(req: SimpleAskRequest):
+        """Search memory with a plain-language question; returns compact results."""
+        from consolidation_memory.simple_api import build_ask_recall_arguments
+
+        tool_args = req.model_dump(exclude_none=True)
+        recall_args = build_ask_recall_arguments(tool_args)
+        timeout_seconds = _recall_timeout_seconds()
+        inject_recall_deadline(recall_args, timeout_seconds=timeout_seconds)
+        deadline = recall_args.get("_recall_deadline_monotonic")
+        if deadline is not None:
+            tool_args["_recall_deadline_monotonic"] = deadline
+        return await execute("memory_ask", tool_args, timeout=timeout_seconds)
+
     @app.post("/memory/store")
     async def store(req: StoreRequest):
         """Store a memory episode."""
-        return await _execute("memory_store", req.model_dump())
+        return await execute("memory_store", req.model_dump())
 
     @app.post("/memory/store/batch")
     async def store_batch(req: BatchStoreRequest):
         """Store multiple memory episodes in a single operation."""
-        return await _execute(
+        return await execute(
             "memory_store_batch",
             {"episodes": [ep.model_dump() for ep in req.episodes], "scope": req.scope},
         )
@@ -501,13 +543,13 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         fallback_timeout = _recall_fallback_timeout_seconds()
         inject_recall_deadline(payload, timeout_seconds=timeout_seconds)
         try:
-            return await _execute("memory_recall", payload, timeout=timeout_seconds)
+            return await execute("memory_recall", payload, timeout=timeout_seconds)
         except HTTPException as exc:
             if exc.status_code != 408:
                 raise
 
         try:
-            keyword_result = await _execute(
+            keyword_result = await execute(
                 "memory_search",
                 build_recall_search_arguments(payload),
                 timeout=fallback_timeout,
@@ -542,19 +584,19 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         """Keyword/metadata search over episodes (no embedding needed)."""
         payload = req.model_dump()
         payload["content_types"] = cast(list[str] | None, req.content_types)
-        return await _execute("memory_search", payload)
+        return await execute("memory_search", payload)
 
     @app.post("/memory/claims/browse")
     async def browse_claims(req: ClaimBrowseRequest):
         """Browse claims with optional type and temporal filtering."""
-        return await _execute("memory_claim_browse", req.model_dump())
+        return await execute("memory_claim_browse", req.model_dump())
 
     @app.post("/memory/claims/search")
     async def search_claims(req: ClaimSearchRequest):
         """Search claims by text with optional type and temporal filtering."""
         payload = req.model_dump()
         inject_recall_deadline(payload, timeout_seconds=_recall_timeout_seconds())
-        return await _execute("memory_claim_search", payload)
+        return await execute("memory_claim_search", payload)
 
     @app.post("/memory/outcomes/record")
     async def record_outcome(req: OutcomeRecordRequest):
@@ -563,14 +605,14 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
         if req.code_anchors is not None:
             payload["code_anchors"] = [anchor.model_dump() for anchor in req.code_anchors]
         inject_recall_deadline(payload, timeout_seconds=_recall_timeout_seconds())
-        return await _execute("memory_outcome_record", payload)
+        return await execute("memory_outcome_record", payload)
 
     @app.post("/memory/outcomes/browse")
     async def browse_outcomes(req: OutcomeBrowseRequest):
         """Browse recorded action outcomes."""
         payload = req.model_dump()
         inject_recall_deadline(payload, timeout_seconds=_recall_timeout_seconds())
-        return await _execute("memory_outcome_browse", payload)
+        return await execute("memory_outcome_browse", payload)
 
     @app.post("/memory/detect-drift")
     async def detect_drift(req: DetectDriftRequest):
@@ -613,18 +655,18 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     @app.get("/memory/status")
     async def status():
         """Get memory system statistics, including fast-path consolidation metrics."""
-        return await _execute("memory_status", {})
+        return await execute("memory_status", {})
 
     @app.post("/memory/status")
     async def status_with_scope(req: StatusRequest | None = None):
         """Get memory statistics with optional explicit scope."""
         payload = {} if req is None else req.model_dump(exclude_none=True)
-        return await _execute("memory_status", payload)
+        return await execute("memory_status", payload)
 
     @app.delete("/memory/episodes/{episode_id}")
     async def forget(episode_id: str):
         """Soft-delete an episode."""
-        result = await _execute("memory_forget", {"episode_id": episode_id})
+        result = await execute("memory_forget", {"episode_id": episode_id})
         if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Episode not found")
         return result
@@ -632,7 +674,7 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     @app.post("/memory/forget")
     async def forget_with_scope(req: ForgetRequest):
         """Soft-delete an episode with optional explicit scope."""
-        result = await _execute("memory_forget", req.model_dump())
+        result = await execute("memory_forget", req.model_dump())
         if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Episode not found")
         return result
@@ -640,7 +682,7 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     @app.post("/memory/consolidate")
     async def consolidate():
         """Run consolidation manually."""
-        result = await _execute("memory_consolidate", {})
+        result = await execute("memory_consolidate", {})
         if isinstance(result, dict) and result.get("status") == "already_running":
             raise HTTPException(status_code=409, detail="Consolidation already running")
         return result
@@ -648,7 +690,7 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     @app.post("/memory/correct")
     async def correct(req: CorrectRequest):
         """Correct a knowledge document."""
-        result = await _execute("memory_correct", req.model_dump())
+        result = await execute("memory_correct", req.model_dump())
         if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Knowledge topic not found")
         if result.get("status") == "error":
@@ -659,23 +701,23 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     async def export(req: ExportRequest | None = None):
         """Export all episodes and knowledge to a JSON snapshot."""
         payload = {} if req is None else req.model_dump()
-        return await _execute("memory_export", payload)
+        return await execute("memory_export", payload)
 
     @app.post("/memory/compact")
     async def compact():
         """Compact the FAISS index by removing tombstoned vectors."""
-        return await _execute("memory_compact", {})
+        return await execute("memory_compact", {})
 
     @app.get("/memory/browse")
     async def browse():
         """Browse all knowledge topics with summaries and metadata."""
-        return await _execute("memory_browse", {})
+        return await execute("memory_browse", {})
 
     @app.post("/memory/browse")
     async def browse_with_scope(req: BrowseRequest | None = None):
         """Browse knowledge topics with optional explicit scope."""
         payload = {} if req is None else req.model_dump()
-        return await _execute("memory_browse", payload)
+        return await execute("memory_browse", payload)
 
     @app.get("/memory/topics/{filename}")
     async def read_topic(filename: str):
@@ -685,7 +727,7 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
                 status_code=400,
                 detail="Invalid filename: must not contain '/', '\\', or '..'",
             )
-        result = await _execute("memory_read_topic", {"filename": filename})
+        result = await execute("memory_read_topic", {"filename": filename})
         if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Knowledge topic not found")
         if result.get("status") == "error":
@@ -700,7 +742,7 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
                 status_code=400,
                 detail="Invalid filename: must not contain '/', '\\', or '..'",
             )
-        result = await _execute("memory_read_topic", req.model_dump())
+        result = await execute("memory_read_topic", req.model_dump())
         if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Knowledge topic not found")
         if result.get("status") == "error":
@@ -710,17 +752,17 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     @app.post("/memory/timeline")
     async def timeline(req: TimelineRequest):
         """Show how understanding of a topic has changed over time."""
-        return await _execute("memory_timeline", req.model_dump())
+        return await execute("memory_timeline", req.model_dump())
 
     @app.post("/memory/contradictions")
     async def contradictions(req: ContradictionsRequest):
         """List detected contradictions from the audit log."""
-        return await _execute("memory_contradictions", req.model_dump())
+        return await execute("memory_contradictions", req.model_dump())
 
     @app.post("/memory/protect")
     async def protect(req: ProtectRequest):
         """Mark episodes as immune to pruning."""
-        result = await _execute("memory_protect", req.model_dump())
+        result = await execute("memory_protect", req.model_dump())
         if result.get("status") == "not_found":
             raise HTTPException(status_code=404, detail=str(result.get("message", "Not found")))
         if result.get("status") == "error":
@@ -730,28 +772,28 @@ def _register_memory_routes(app: FastAPI, runtime: MemoryRuntime) -> None:
     @app.post("/memory/consolidation-log")
     async def consolidation_log(req: ConsolidationLogRequest):
         """Show recent consolidation activity as a human-readable changelog."""
-        return await _execute("memory_consolidation_log", req.model_dump())
+        return await execute("memory_consolidation_log", req.model_dump())
 
     @app.get("/memory/decay-report")
     async def decay_report():
         """Show what would be forgotten if pruning ran right now."""
-        return await _execute("memory_decay_report", {})
+        return await execute("memory_decay_report", {})
 
     @app.post("/memory/decay-report")
     async def decay_report_with_scope(req: DecayReportRequest | None = None):
         """Show decay candidates with optional explicit scope."""
         payload = {} if req is None else req.model_dump(exclude_none=True)
-        return await _execute("memory_decay_report", payload)
+        return await execute("memory_decay_report", payload)
 
     @app.get("/memory/policy")
     async def policy_list():
         """List persisted access policies and ACL bindings."""
-        return await _execute("memory_policy_list", {})
+        return await execute("memory_policy_list", {})
 
     @app.post("/memory/policy/grant")
     async def policy_grant(req: PolicyGrantRequest):
         """Create or update a persisted policy ACL binding."""
-        result = await _execute("memory_policy_grant", req.model_dump(exclude_none=True))
+        result = await execute("memory_policy_grant", req.model_dump(exclude_none=True))
         if isinstance(result, dict) and result.get("error"):
             raise HTTPException(status_code=400, detail=str(result["error"]))
         return result

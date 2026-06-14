@@ -400,6 +400,27 @@ def execute_tool_call(
     client: MemoryClient | None = None,
 ) -> dict[str, Any]:
     """Execute a canonical tool call and return a JSON-serializable dict."""
+    if name == "memory_remember":
+        from consolidation_memory.simple_api import build_remember_store_arguments
+
+        return execute_tool_call(
+            "memory_store",
+            build_remember_store_arguments(arguments),
+            client=client,
+        )
+
+    if name == "memory_ask":
+        from consolidation_memory.simple_api import (
+            build_ask_recall_arguments,
+            simplify_recall_result,
+        )
+
+        recall_args = build_ask_recall_arguments(arguments)
+        raw = execute_tool_call("memory_recall", recall_args, client=client)
+        simplified = simplify_recall_result(raw)
+        simplified["query"] = recall_args["query"]
+        return simplified
+
     if name == "memory_store":
         client = _require_client(client, name)
         content = _validate_content(arguments["content"])

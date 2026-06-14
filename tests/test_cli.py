@@ -204,6 +204,117 @@ class TestCmdTest:
         assert "ok" in output
 
 
+class TestCmdWarmup:
+    def test_warmup_prints_human_summary(self, capsys):
+        from consolidation_memory.cli import cmd_warmup
+
+        with (
+            patch("consolidation_memory.client.MemoryClient") as mock_client_cls,
+            patch(
+                "consolidation_memory.tool_adapter.warm_recall_caches",
+                return_value={
+                    "topics": 12,
+                    "records": 737,
+                    "claims": 0,
+                    "knowledge_cache_ready": True,
+                },
+            ) as mock_warm,
+            patch(
+                "consolidation_memory.config.get_active_project",
+                return_value="default",
+            ),
+        ):
+            cmd_warmup()
+
+        mock_client_cls.assert_called_once_with()
+        mock_warm.assert_called_once_with(mock_client_cls.return_value)
+        captured = capsys.readouterr()
+        assert "Warmup complete" in captured.out
+        assert "topics=12" in captured.out
+        assert "records=737" in captured.out
+        assert "knowledge_ready=yes" in captured.out
+
+    def test_warmup_json_output(self, capsys):
+        from consolidation_memory.cli import cmd_warmup
+
+        with (
+            patch("consolidation_memory.client.MemoryClient"),
+            patch(
+                "consolidation_memory.tool_adapter.warm_recall_caches",
+                return_value={
+                    "topics": 3,
+                    "records": 10,
+                    "claims": 5,
+                    "knowledge_cache_ready": False,
+                },
+            ),
+            patch(
+                "consolidation_memory.config.get_active_project",
+                return_value="universal",
+            ),
+        ):
+            cmd_warmup(claims=False, as_json=True)
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "ok"
+        assert payload["project"] == "universal"
+        assert payload["topics"] == 3
+        assert payload["records"] == 10
+        assert payload["claims"] == 5
+        assert payload["knowledge_cache_ready"] is False
+        assert "elapsed_seconds" in payload
+
+    def test_warmup_claims_enables_claim_cache(self):
+        from consolidation_memory.cli import cmd_warmup
+
+        override_ctx = MagicMock()
+        override_ctx.__enter__.return_value = None
+        override_ctx.__exit__.return_value = False
+
+        with (
+            patch("consolidation_memory.client.MemoryClient"),
+            patch(
+                "consolidation_memory.config.override_config",
+                return_value=override_ctx,
+            ) as mock_override,
+            patch(
+                "consolidation_memory.tool_adapter.warm_recall_caches",
+                return_value={
+                    "topics": 0,
+                    "records": 0,
+                    "claims": 42,
+                    "knowledge_cache_ready": True,
+                },
+            ) as mock_warm,
+            patch(
+                "consolidation_memory.config.get_active_project",
+                return_value="default",
+            ),
+        ):
+            cmd_warmup(claims=True, as_json=True)
+
+        mock_override.assert_called_once_with(WARMUP_PRIME_CLAIM_CACHE=True)
+        override_ctx.__enter__.assert_called_once()
+        mock_warm.assert_called_once()
+
+    def test_warmup_exits_on_failure(self, capsys):
+        from consolidation_memory.cli import cmd_warmup
+
+        with (
+            patch("consolidation_memory.client.MemoryClient"),
+            patch(
+                "consolidation_memory.tool_adapter.warm_recall_caches",
+                side_effect=RuntimeError("embed backend unavailable"),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_warmup()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "embed backend unavailable" in captured.err
+
+
 class TestMainDispatch:
     """Test that 'test' subcommand is wired up in main()."""
 
@@ -260,6 +371,16 @@ class TestMainDispatch:
         ):
             main()
             mock_cmd.assert_called_once_with(min_cluster_size=1, singleton=False)
+
+    def test_warmup_subcommand_registered(self):
+        from consolidation_memory.cli import main
+
+        with (
+            patch("sys.argv", ["consolidation-memory", "warmup", "--claims", "--json"]),
+            patch("consolidation_memory.cli.cmd_warmup") as mock_cmd,
+        ):
+            main()
+            mock_cmd.assert_called_once_with(claims=True, as_json=True)
 
 
 class TestCmdConsolidate:

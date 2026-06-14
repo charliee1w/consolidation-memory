@@ -164,6 +164,77 @@ GLOBAL_SCOPE_PROPERTY: dict[str, Any] = {
     },
 }
 
+MEMORY_REMEMBER_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_remember",
+        "description": (
+            "Save something to memory using plain language. "
+            "Prefer this over memory_store when you do not need advanced content_type control. "
+            "Use kind=fix for debugging solutions (problem + what worked)."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "maxLength": _MAX_CONTENT_LENGTH,
+                    "description": "What to remember — include problem and fix for kind=fix.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["note", "fact", "fix", "preference"],
+                    "description": (
+                        "note=general, fix=solution, fact=fact, preference=user preference."
+                    ),
+                    "default": "note",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional topic tags.",
+                },
+                "scope": SCOPE_INPUT_SCHEMA,
+            },
+            "required": ["content"],
+        },
+    },
+}
+
+MEMORY_ASK_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_ask",
+        "description": (
+            "Search memory with a plain-language question. "
+            "Returns a compact summary of matching episodes, records, claims, and topics. "
+            "Call at conversation start (or use memory_recall when hooks require it). "
+            "Prefer this over memory_recall for everyday retrieval."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "maxLength": _MAX_QUERY_LENGTH,
+                    "description": "Natural-language question about prior work or fixes.",
+                },
+                "n_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "description": "Maximum matches per section (default 8).",
+                    "default": 8,
+                },
+                "scope": SCOPE_INPUT_SCHEMA,
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 MEMORY_STORE_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -1070,7 +1141,15 @@ MEMORY_CONSOLIDATION_LOG_SCHEMA: dict[str, Any] = {
 }
 
 # Convenience list of all tool schemas
+openai_simple_tools: list[dict[str, Any]] = [
+    MEMORY_REMEMBER_SCHEMA,
+    MEMORY_ASK_SCHEMA,
+    MEMORY_RECALL_SCHEMA,
+]
+
 openai_tools: list[dict[str, Any]] = [
+    MEMORY_REMEMBER_SCHEMA,
+    MEMORY_ASK_SCHEMA,
     MEMORY_STORE_SCHEMA,
     MEMORY_STORE_BATCH_SCHEMA,
     MEMORY_RECALL_SCHEMA,

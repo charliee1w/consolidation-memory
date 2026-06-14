@@ -75,7 +75,7 @@ Releases = "https://github.com/charliee1w/consolidation-memory/releases"
 Security = "https://github.com/charliee1w/consolidation-memory/security/policy"
 
 [tool.setuptools.package-data]
-consolidation_memory = ["py.typed"]
+consolidation_memory = ["py.typed", "web/index.html"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

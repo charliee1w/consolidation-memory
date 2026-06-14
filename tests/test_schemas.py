@@ -30,6 +30,8 @@ class TestSchemaStructure:
     def test_all_tools_present(self):
         names = {t["function"]["name"] for t in openai_tools}
         assert names == {
+            "memory_remember",
+            "memory_ask",
             "memory_store",
             "memory_store_batch",
             "memory_recall",

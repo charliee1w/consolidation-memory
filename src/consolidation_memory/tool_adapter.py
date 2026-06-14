@@ -201,7 +201,7 @@ def maybe_complete_deferred_recall(
     return completed
 
 
-def warm_recall_caches(client: object | None = None) -> None:
+def warm_recall_caches(client: object | None = None) -> dict[str, int | bool]:
     """Prime recall caches without blocking interactive tool calls."""
     from consolidation_memory import claim_cache, record_cache, topic_cache
     from consolidation_memory.backends import get_embedding_backend
@@ -239,9 +239,17 @@ def warm_recall_caches(client: object | None = None) -> None:
             limit=max(1, int(cfg.WARMUP_CLAIM_LIMIT)),
         )
 
+    stats: dict[str, int | bool] = {
+        "topics": warmed_topics,
+        "records": warmed_records,
+        "claims": warmed_claims,
+        "knowledge_cache_ready": recall_knowledge_cache_ready(),
+    }
     logger.info(
-        "Warmup complete (topics=%d, records=%d, claims=%d)",
+        "Warmup complete (topics=%d, records=%d, claims=%d, ready=%s)",
         warmed_topics,
         warmed_records,
         warmed_claims,
+        stats["knowledge_cache_ready"],
     )
+    return stats

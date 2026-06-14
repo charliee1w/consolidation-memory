@@ -911,6 +911,52 @@ async def memory_recall(
 
 
 @_tracked_tool()
+async def memory_remember(
+    content: str,
+    kind: str = "note",
+    tags: list[str] | None = None,
+    scope: ScopeInput = None,
+) -> str:
+    """Save memory using plain language (note, fix, fact, preference)."""
+    return await _call_tool_json(
+        "memory_remember",
+        {
+            "content": content,
+            "kind": kind,
+            "tags": tags,
+            "scope": scope,
+        },
+    )
+
+
+@_tracked_tool()
+async def memory_ask(
+    query: str,
+    n_results: int = 8,
+    scope: ScopeInput = None,
+) -> str:
+    """Search memory with a plain-language question; returns compact results."""
+    try:
+        await _await_warmup_ready()
+        recall_timeout = _recall_timeout_seconds()
+        bounded_n_results = max(1, min(n_results, 20))
+        arguments: dict[str, object] = {
+            "query": query,
+            "n_results": bounded_n_results,
+            "scope": scope,
+        }
+        inject_recall_deadline(arguments, timeout_seconds=recall_timeout)
+        return await _call_tool_json(
+            "memory_ask",
+            arguments,
+            timeout=recall_timeout,
+        )
+    except Exception as exc:
+        logger.exception("memory_ask failed")
+        return json.dumps({"error": str(exc)})
+
+
+@_tracked_tool()
 async def memory_store_batch(
     episodes: list[dict],
     scope: ScopeInput = None,

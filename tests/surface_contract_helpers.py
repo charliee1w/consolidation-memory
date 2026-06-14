@@ -42,7 +42,39 @@ def invoke_surfaces_with_execute_tool_call(
 
     mock_client = MagicMock()
     mock_execute = MagicMock(return_value=expected_result)
+    recorded_tool_calls: list[tuple[str, dict[str, Any]]] = []
     rest_body = rest_json if rest_json is not None else tool_args
+
+    def _chain_alias_tools(
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        client: Any = None,
+    ) -> dict[str, Any]:
+        recorded_tool_calls.append((name, dict(arguments)))
+        if name == "memory_remember":
+            from consolidation_memory.simple_api import build_remember_store_arguments
+
+            return _chain_alias_tools(
+                "memory_store",
+                build_remember_store_arguments(arguments),
+                client=client,
+            )
+        if name == "memory_ask":
+            from consolidation_memory.simple_api import (
+                build_ask_recall_arguments,
+                simplify_recall_result,
+            )
+
+            recall_args = build_ask_recall_arguments(arguments)
+            raw = _chain_alias_tools("memory_recall", recall_args, client=client)
+            simplified = simplify_recall_result(raw)
+            simplified["query"] = recall_args["query"]
+            return simplified
+        return expected_result
+
+    mock_execute.side_effect = _chain_alias_tools
+    mock_execute.recorded_tool_calls = recorded_tool_calls
 
     with (
         patch("consolidation_memory.tool_dispatch.execute_tool_call", mock_execute),

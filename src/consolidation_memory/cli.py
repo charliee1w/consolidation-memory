@@ -93,8 +93,10 @@ def _recommended_mcp_server_config(project: str) -> dict[str, object]:
 
 def _recommended_mcp_simple_server_config(project: str) -> dict[str, object]:
     """MCP config exposing only recall + remember + ask (newcomer-friendly)."""
+    from typing import cast
+
     config = _recommended_mcp_server_config(project)
-    env = dict(config["env"])
+    env = dict(cast(dict[str, str], config["env"]))
     env["CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE"] = "simple"
     return {**config, "env": env}
 
@@ -179,7 +181,7 @@ similarity_threshold = 0.95
         }
     }, indent=2))
     print(f"\nMCP project namespace: {active_project}")
-    print("\nSetup complete. Run 'consolidation-memory ui' to open the browser UI.")
+    print("\nSetup complete. Run 'consolidation-memory app' for the native desktop UI.")
 
 
 def cmd_init(quick: bool = False):
@@ -1358,6 +1360,16 @@ def cmd_dashboard():
     app.run()
 
 
+def cmd_app(*, tray: bool = True) -> None:
+    """Launch the native desktop UI with system tray icon."""
+    try:
+        from consolidation_memory.desktop_app import run_desktop_app
+    except ImportError:
+        print("Desktop app requires PySide6. Install with: pip install consolidation-memory[desktop]")
+        sys.exit(1)
+    run_desktop_app(tray=tray)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="consolidation-memory",
@@ -1387,6 +1399,12 @@ def main():
         "--quick",
         action="store_true",
         help="Non-interactive setup: fastembed + LLM disabled",
+    )
+    p_app = sub.add_parser("app", help="Open native desktop UI (system tray icon)")
+    p_app.add_argument(
+        "--no-tray",
+        action="store_true",
+        help="Close the app when the window closes (no system tray icon)",
     )
     p_ui = sub.add_parser("ui", help="Open browser UI (REST + web app)")
     p_ui.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
@@ -1491,6 +1509,8 @@ def main():
         cmd_serve(args)
     elif args.command == "init":
         cmd_init(quick=getattr(args, "quick", False))
+    elif args.command == "app":
+        cmd_app(tray=not args.no_tray)
     elif args.command == "ui":
         cmd_ui(
             host=args.host,

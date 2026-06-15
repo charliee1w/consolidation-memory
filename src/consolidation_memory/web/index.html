@@ -52,6 +52,12 @@
       letter-spacing: -0.02em;
     }
 
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
     .subtitle {
       margin: 6px 0 0;
       color: var(--muted);
@@ -70,6 +76,7 @@
       border: 1px solid var(--border);
       font-size: 0.82rem;
       white-space: nowrap;
+      cursor: pointer;
     }
 
     .dot {
@@ -80,6 +87,7 @@
     }
 
     .dot.warn { background: var(--warn); }
+    .dot.danger { background: var(--danger); }
 
     .stats {
       display: grid;
@@ -197,6 +205,7 @@
       margin-bottom: 8px;
       font-size: 0.75rem;
       color: var(--muted);
+      align-items: center;
     }
 
     .pill {
@@ -205,6 +214,10 @@
       background: #2a3545;
       border: 1px solid var(--border);
     }
+
+    .pill.ok { color: var(--ok); border-color: #2a5a45; }
+    .pill.warn { color: var(--warn); border-color: #5a4a2a; }
+    .pill.danger { color: var(--danger); border-color: #5a3035; }
 
     .card-body {
       white-space: pre-wrap;
@@ -232,6 +245,7 @@
       transition: 0.2s ease;
       pointer-events: none;
       max-width: 320px;
+      z-index: 200;
     }
 
     .toast.show { opacity: 1; transform: translateY(0); }
@@ -244,6 +258,183 @@
     }
 
     footer a { color: var(--accent); }
+
+    /* Setup wizard */
+    .wizard-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(8, 12, 18, 0.82);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 100;
+    }
+
+    .wizard-backdrop.open { display: flex; }
+
+    .wizard {
+      width: min(560px, 100%);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    }
+
+    .wizard-steps {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .wizard-step-dot {
+      flex: 1;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+    }
+
+    .wizard-step-dot.done { background: var(--accent); }
+    .wizard-step-dot.active { background: var(--accent-dim); }
+
+    .wizard-pane { display: none; }
+    .wizard-pane.active { display: block; }
+
+    .wizard-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+      justify-content: flex-end;
+    }
+
+    pre.mcp-snippet {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      overflow-x: auto;
+      max-height: 220px;
+      white-space: pre;
+      margin: 10px 0 0;
+    }
+
+    .snippet-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 14px;
+    }
+
+    /* Health warnings */
+    .warning-card {
+      border-left: 3px solid var(--border);
+      padding-left: 12px;
+    }
+
+    .warning-card.severity-warning { border-left-color: var(--warn); }
+    .warning-card.severity-error { border-left-color: var(--danger); }
+    .warning-card.severity-info { border-left-color: var(--accent); }
+
+    .fix-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    /* Hygiene wizard */
+    .hygiene-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .hygiene-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .hygiene-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 12px 0;
+      font-size: 0.92rem;
+    }
+
+    /* Metrics dashboard */
+    .metrics-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+
+    .metric-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px 16px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .metric-row:last-child { border-bottom: none; }
+
+    .metric-title {
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    .metric-meta {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .metric-bar-wrap {
+      grid-column: 1 / -1;
+      height: 8px;
+      background: var(--surface-2);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .metric-bar {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 4px;
+      transition: width 0.4s ease;
+    }
+
+    .metric-bar.pass { background: var(--ok); }
+    .metric-bar.fail { background: var(--danger); }
+
+    .metric-value {
+      font-size: 0.95rem;
+      font-weight: 600;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .overall-badge {
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+
+    .overall-badge.pass { background: #1a3d2e; color: var(--ok); border: 1px solid #2a5a45; }
+    .overall-badge.fail { background: #3d1a1e; color: var(--danger); border: 1px solid #5a3035; }
+    .overall-badge.unknown { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
   </style>
 </head>
 <body>
@@ -253,7 +444,7 @@
         <h1>consolidation-memory</h1>
         <p class="subtitle">Remember fixes and notes from your coding sessions. Search them later with plain language — no MCP setup required.</p>
       </div>
-      <div class="badge" id="health-badge">
+      <div class="badge" id="health-badge" title="Open Health tab">
         <span class="dot" id="health-dot"></span>
         <span id="health-text">Loading…</span>
       </div>
@@ -265,6 +456,9 @@
       <button type="button" class="active" data-tab="ask" role="tab">Ask</button>
       <button type="button" data-tab="remember" role="tab">Remember</button>
       <button type="button" data-tab="browse" role="tab">Browse</button>
+      <button type="button" data-tab="health" role="tab">Health</button>
+      <button type="button" data-tab="hygiene" role="tab">Hygiene</button>
+      <button type="button" data-tab="metrics" role="tab">Metrics</button>
     </nav>
 
     <section class="panel active" id="panel-ask" role="tabpanel">
@@ -307,6 +501,41 @@
       <div class="results" id="browse-results"></div>
     </section>
 
+    <section class="panel" id="panel-health" role="tabpanel">
+      <h2>System health</h2>
+      <p class="subtitle" style="margin-bottom: 16px;">Actionable warnings from your live memory stack. One-click fixes run locally on this machine.</p>
+      <div class="fix-actions" id="fix-actions"></div>
+      <div class="results" id="health-warnings"></div>
+    </section>
+
+    <section class="panel" id="panel-hygiene" role="tabpanel">
+      <h2>Corpus hygiene</h2>
+      <p class="subtitle" style="margin-bottom: 16px;">Find noisy episodes (test artifacts, exchanges, session journals) and orphaned claims left after forgotten episodes. Forgetting episodes also expires claims that lose all provenance.</p>
+      <div class="hygiene-actions">
+        <button type="button" class="primary" id="hygiene-scan-btn">Scan corpus</button>
+        <button type="button" class="ghost" id="hygiene-preview-btn" disabled>Preview cleanup</button>
+        <button type="button" class="primary" id="hygiene-apply-btn" disabled>Apply cleanup</button>
+      </div>
+      <label class="hygiene-check">
+        <input type="checkbox" id="hygiene-expire-orphans" />
+        Also expire orphaned active claims (historical debt)
+      </label>
+      <div class="hygiene-summary" id="hygiene-summary"></div>
+      <div class="results" id="hygiene-results"></div>
+    </section>
+
+    <section class="panel" id="panel-metrics" role="tabpanel">
+      <div class="metrics-header">
+        <div>
+          <h2>Real-world metrics</h2>
+          <p class="subtitle" style="margin-top: 6px;">Live corpus benchmark from <code>real_world_eval</code>. See <a href="https://github.com/charliee1w/consolidation-memory/blob/main/docs/REAL_WORLD_METRICS.md" target="_blank" rel="noopener">REAL_WORLD_METRICS.md</a>.</p>
+        </div>
+        <span class="overall-badge unknown" id="metrics-overall">Loading…</span>
+      </div>
+      <p class="subtitle" id="metrics-meta" style="margin-bottom: 12px;"></p>
+      <div id="metrics-chart"></div>
+    </section>
+
     <footer>
       Project: <span id="project-name">—</span> · v<span id="version-label">—</span><br />
       Agents still use MCP tools; this UI is the human-friendly layer.
@@ -314,10 +543,61 @@
     </footer>
   </div>
 
+  <div class="wizard-backdrop" id="wizard-backdrop" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
+    <div class="wizard">
+      <div class="wizard-steps" id="wizard-steps">
+        <div class="wizard-step-dot active" data-step="0"></div>
+        <div class="wizard-step-dot" data-step="1"></div>
+        <div class="wizard-step-dot" data-step="2"></div>
+      </div>
+
+      <div class="wizard-pane active" data-pane="0">
+        <h2 id="wizard-title">Welcome — quick setup</h2>
+        <p class="subtitle">No config file was found. This one-time wizard runs the same steps as <code>consolidation-memory init --quick</code>: fastembed embeddings, LLM disabled, auto-consolidation every 6 hours.</p>
+        <p class="subtitle" style="margin-top: 12px;">You can use this browser UI immediately. To connect Claude, Cursor, or Codex, you'll paste an MCP snippet in the next steps.</p>
+        <div id="wizard-dep-warning" class="card" style="display: none; margin-top: 14px; border-color: #5a3035;">
+          <div class="card-body" style="color: var(--danger);">fastembed is not installed. Run: <code>pip install consolidation-memory[fastembed]</code></div>
+        </div>
+      </div>
+
+      <div class="wizard-pane" data-pane="1">
+        <h2>Initialize storage</h2>
+        <p class="subtitle">Creates <code>config.toml</code>, data directories, and the SQLite schema on this machine.</p>
+        <p class="subtitle" id="wizard-setup-status" style="margin-top: 12px;"></p>
+      </div>
+
+      <div class="wizard-pane" data-pane="2">
+        <h2>Connect your agent (MCP)</h2>
+        <p class="subtitle">Paste one of these into your MCP client config. Use <strong>simple</strong> for recall + remember only; <strong>full</strong> exposes all tools.</p>
+        <div class="snippet-header">
+          <label>Simple profile</label>
+          <button type="button" class="ghost" id="copy-mcp-simple">Copy</button>
+        </div>
+        <pre class="mcp-snippet" id="mcp-simple"></pre>
+        <div class="snippet-header">
+          <label>Full profile</label>
+          <button type="button" class="ghost" id="copy-mcp-full">Copy</button>
+        </div>
+        <pre class="mcp-snippet" id="mcp-full"></pre>
+      </div>
+
+      <div class="wizard-actions">
+        <button type="button" class="ghost" id="wizard-skip">Skip for now</button>
+        <button type="button" class="primary" id="wizard-next">Get started</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast" role="status"></div>
 
   <script>
     const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => document.querySelectorAll(sel);
+
+    let wizardStep = 0;
+    let wizardMcp = null;
+    let metricsLoaded = false;
+    let hygieneScan = null;
 
     function toast(msg) {
       const el = $("#toast");
@@ -340,6 +620,24 @@
       return body;
     }
 
+    const FIX_ENDPOINTS = {
+      consolidate: { path: "/ui/api/consolidate", method: "POST", label: "Consolidation started" },
+      warmup: { path: "/ui/api/warmup", method: "POST", label: "Caches warmed" },
+      reindex: { path: "/ui/api/reindex", method: "POST", label: "Reindex complete" },
+    };
+
+    async function runFixAction(action) {
+      const spec = FIX_ENDPOINTS[action];
+      if (!spec) return;
+      try {
+        await api(spec.path, { method: spec.method, body: "{}" });
+        toast(spec.label);
+        loadOverview();
+      } catch (err) {
+        toast(err.message);
+      }
+    }
+
     function renderStats(overview) {
       const stats = overview.stats || {};
       const faiss = overview.faiss || {};
@@ -357,10 +655,229 @@
       `).join("");
 
       const health = overview.health || "ok";
-      $("#health-dot").classList.toggle("warn", health !== "ok");
+      const dot = $("#health-dot");
+      dot.classList.remove("warn", "danger");
+      if (health === "error") dot.classList.add("danger");
+      else if (health !== "ok") dot.classList.add("warn");
       $("#health-text").textContent = overview.health_note || "Ready";
       $("#project-name").textContent = overview.project || "default";
       $("#version-label").textContent = overview.version || "—";
+
+      renderHealthPanel(overview);
+    }
+
+    function renderHealthPanel(overview) {
+      const warnings = overview.warnings || [];
+      const fixActions = overview.fix_actions || [];
+
+      const actionsRoot = $("#fix-actions");
+      if (!fixActions.length) {
+        actionsRoot.innerHTML = "";
+      } else {
+        actionsRoot.innerHTML = fixActions.map((fa) => `
+          <button type="button" class="primary fix-btn" data-action="${fa.action}">${fa.label}</button>
+        `).join("");
+        actionsRoot.querySelectorAll(".fix-btn").forEach((btn) => {
+          btn.addEventListener("click", () => runFixAction(btn.dataset.action));
+        });
+      }
+
+      const root = $("#health-warnings");
+      if (!warnings.length) {
+        root.innerHTML = '<p class="empty">All clear — no actionable warnings.</p>';
+        return;
+      }
+
+      root.innerHTML = warnings.map((w) => {
+        const severity = w.severity || "info";
+        const fixBtn = w.fix_action && w.fix_label
+          ? `<button type="button" class="ghost fix-inline" data-action="${w.fix_action}">${w.fix_label}</button>`
+          : "";
+        return `<article class="card warning-card severity-${severity}">
+          <div class="card-meta">
+            <span class="pill ${severity === "error" ? "danger" : severity === "warning" ? "warn" : ""}">${severity}</span>
+            ${fixBtn}
+          </div>
+          <div class="card-body">${w.message || ""}</div>
+        </article>`;
+      }).join("");
+
+      root.querySelectorAll(".fix-inline").forEach((btn) => {
+        btn.addEventListener("click", () => runFixAction(btn.dataset.action));
+      });
+    }
+
+    function renderMetrics(data) {
+      const overall = $("#metrics-overall");
+      if (data.overall_pass === true) {
+        overall.textContent = "Overall: pass";
+        overall.className = "overall-badge pass";
+      } else if (data.overall_pass === false) {
+        overall.textContent = "Overall: fail";
+        overall.className = "overall-badge fail";
+      } else {
+        overall.textContent = "No data";
+        overall.className = "overall-badge unknown";
+      }
+
+      const metaParts = [];
+      if (data.generated_at) metaParts.push(`Generated ${data.generated_at.replace("T", " ").slice(0, 19)} UTC`);
+      if (data.mode) metaParts.push(`mode: ${data.mode}`);
+      if (data.source) metaParts.push(`source: ${data.source}`);
+      $("#metrics-meta").textContent = metaParts.join(" · ") || (data.message || "");
+
+      const sections = data.sections || [];
+      const chart = $("#metrics-chart");
+      if (!sections.length) {
+        chart.innerHTML = `<p class="empty">${data.message || "No metrics available. Run: python -m benchmarks.real_world_eval --mode full"}</p>`;
+        return;
+      }
+
+      chart.innerHTML = sections.map((s) => {
+        const pct = s.value_pct != null ? Math.min(100, Math.max(0, s.value_pct)) : null;
+        const barWidth = pct != null ? pct : (s.pass ? 100 : 30);
+        const barClass = s.pass === false ? "fail" : s.pass === true ? "pass" : "";
+        const passPill = s.pass === true
+          ? '<span class="pill ok">pass</span>'
+          : s.pass === false
+            ? '<span class="pill danger">fail</span>'
+            : "";
+        const detail = [s.detail, s.threshold_label].filter(Boolean).join(" · ");
+        return `<div class="metric-row">
+          <div>
+            <div class="metric-title">${s.title || s.key}</div>
+            ${detail ? `<div class="metric-meta">${detail}</div>` : ""}
+          </div>
+          <div class="metric-value">${s.value_label || "—"} ${passPill}</div>
+          <div class="metric-bar-wrap">
+            <div class="metric-bar ${barClass}" style="width: ${barWidth}%"></div>
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    async function loadMetrics() {
+      if (metricsLoaded) return;
+      try {
+        const data = await api("/ui/api/metrics");
+        renderMetrics(data);
+        metricsLoaded = true;
+      } catch (err) {
+        $("#metrics-chart").innerHTML = `<p class="empty">${err.message}</p>`;
+      }
+    }
+
+    function renderHygieneSummary(scan) {
+      const episodes = scan.episodes || {};
+      const orphans = scan.orphaned_claims || {};
+      const stale = scan.stale_episode_sources || {};
+      const items = [
+        ["Active episodes", episodes.total_active ?? 0],
+        ["Cleanup candidates", (episodes.recommended_cleanup_ids || []).length],
+        ["Would remain", episodes.would_remain ?? 0],
+        ["Orphaned claims", orphans.count ?? 0],
+        ["Stale episode sources", stale.count ?? 0],
+      ];
+      $("#hygiene-summary").innerHTML = items.map(([label, value]) => `
+        <div class="stat">
+          <div class="stat-label">${label}</div>
+          <div class="stat-value">${value}</div>
+        </div>
+      `).join("");
+
+      const recommended = (episodes.recommended_cleanup_ids || []).length;
+      const orphanCount = orphans.count ?? 0;
+      const hasWork = recommended > 0 || orphanCount > 0 || (stale.count ?? 0) > 0;
+      $("#hygiene-preview-btn").disabled = !hasWork;
+      $("#hygiene-apply-btn").disabled = !hasWork;
+    }
+
+    function renderHygieneResults(scan) {
+      const root = $("#hygiene-results");
+      const episodes = scan.episodes || {};
+      const parts = [];
+
+      function bucketCards(label, bucket) {
+        if (!bucket || !bucket.count) return;
+        const samples = (bucket.samples || []).map((s) => cardHtml({
+          meta: [label, s.content_type || "", s.reason || ""],
+          body: s.preview || "",
+        })).join("");
+        parts.push(`<h3 style="margin: 16px 0 8px; font-size: 1rem;">${label} (${bucket.count})</h3>${samples}`);
+      }
+
+      bucketCards("Temp / test episodes", episodes.temp);
+      bucketCards("Exchange episodes", episodes.exchange);
+      bucketCards("Noise journal solutions", episodes.noise_journal);
+
+      const orphans = scan.orphaned_claims || {};
+      if (orphans.count) {
+        const orphanCards = (orphans.samples || []).map((c) => cardHtml({
+          meta: ["orphaned claim", c.claim_type || "", c.reason || ""],
+          body: c.preview || "",
+        })).join("");
+        parts.push(`<h3 style="margin: 16px 0 8px; font-size: 1rem;">Orphaned claims (${orphans.count})</h3>${orphanCards}`);
+      }
+
+      root.innerHTML = parts.length
+        ? parts.join("")
+        : '<p class="empty">No cleanup candidates — corpus looks healthy.</p>';
+    }
+
+    async function loadHygieneScan() {
+      try {
+        const scan = await api("/ui/api/hygiene/scan");
+        hygieneScan = scan;
+        renderHygieneSummary(scan);
+        renderHygieneResults(scan);
+      } catch (err) {
+        $("#hygiene-results").innerHTML = `<p class="empty">${err.message}</p>`;
+        toast(err.message);
+      }
+    }
+
+    async function runHygieneApply(dryRun) {
+      const expireOrphans = $("#hygiene-expire-orphans").checked;
+      const recommended = hygieneScan?.episodes?.recommended_cleanup_ids?.length || 0;
+      if (!dryRun) {
+        const parts = [];
+        if (recommended) parts.push(`forget ${recommended} episode(s)`);
+        if (expireOrphans) parts.push("expire orphaned claims");
+        if (!parts.length) {
+          toast("Nothing to clean up");
+          return;
+        }
+        if (!confirm(`Apply corpus hygiene?\n\n${parts.join("\n")}\n\nThis cannot be undone.`)) return;
+      }
+      const btn = dryRun ? $("#hygiene-preview-btn") : $("#hygiene-apply-btn");
+      btn.disabled = true;
+      try {
+        const result = await api("/ui/api/hygiene/apply", {
+          method: "POST",
+          body: JSON.stringify({
+            use_recommended: recommended > 0,
+            expire_orphans: expireOrphans,
+            dry_run: dryRun,
+          }),
+        });
+        if (dryRun) {
+          const targets = result.episode_targets ?? 0;
+          const orphanInfo = result.orphan_repair;
+          const orphanCount = orphanInfo?.orphaned_claims_before ?? 0;
+          toast(`Preview: ${targets} episode(s), ${orphanCount} orphan claim(s)`);
+        } else {
+          const forgotten = result.forgotten ?? 0;
+          const expired = result.orphan_repair?.expired_claims ?? 0;
+          toast(`Cleaned: ${forgotten} episode(s), ${expired} claim(s) expired`);
+          loadOverview();
+          metricsLoaded = false;
+        }
+        await loadHygieneScan();
+      } catch (err) {
+        toast(err.message);
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     function cardHtml({ title, meta = [], body }) {
@@ -459,6 +976,104 @@
       }
     }
 
+    /* Setup wizard */
+    function setWizardStep(step) {
+      wizardStep = step;
+      $$(".wizard-pane").forEach((p) => p.classList.toggle("active", Number(p.dataset.pane) === step));
+      $$(".wizard-step-dot").forEach((d) => {
+        const n = Number(d.dataset.step);
+        d.classList.toggle("done", n < step);
+        d.classList.toggle("active", n === step);
+      });
+      const nextBtn = $("#wizard-next");
+      if (step === 0) nextBtn.textContent = "Get started";
+      else if (step === 1) nextBtn.textContent = "Run quick setup";
+      else nextBtn.textContent = "Finish";
+    }
+
+    function showWizard() {
+      $("#wizard-backdrop").classList.add("open");
+      setWizardStep(0);
+    }
+
+    function hideWizard() {
+      $("#wizard-backdrop").classList.remove("open");
+      sessionStorage.setItem("cm_wizard_dismissed", "1");
+    }
+
+    function renderMcpSnippets(mcp) {
+      if (!mcp) return;
+      wizardMcp = mcp;
+      $("#mcp-simple").textContent = JSON.stringify(mcp.simple, null, 2);
+      $("#mcp-full").textContent = JSON.stringify(mcp.full, null, 2);
+    }
+
+    async function checkSetup() {
+      try {
+        const status = await api("/ui/api/setup/status");
+        if (!status.fastembed_installed) {
+          $("#wizard-dep-warning").style.display = "block";
+        }
+        if (status.needs_setup && !sessionStorage.getItem("cm_wizard_dismissed")) {
+          showWizard();
+        }
+      } catch (err) {
+        console.warn("setup status:", err.message);
+      }
+    }
+
+    async function runWizardSetup() {
+      const statusEl = $("#wizard-setup-status");
+      statusEl.textContent = "Running init --quick…";
+      try {
+        const result = await api("/ui/api/setup/quick", { method: "POST", body: "{}" });
+        statusEl.textContent = result.message || "Setup complete.";
+        renderMcpSnippets(result.mcp);
+        loadOverview();
+        metricsLoaded = false;
+        return true;
+      } catch (err) {
+        statusEl.textContent = err.message;
+        return false;
+      }
+    }
+
+    $("#wizard-next").addEventListener("click", async () => {
+      const btn = $("#wizard-next");
+      btn.disabled = true;
+      try {
+        if (wizardStep === 0) {
+          setWizardStep(1);
+        } else if (wizardStep === 1) {
+          const ok = await runWizardSetup();
+          if (ok) setWizardStep(2);
+        } else {
+          hideWizard();
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    $("#wizard-skip").addEventListener("click", hideWizard);
+
+    $("#copy-mcp-simple").addEventListener("click", async () => {
+      if (!wizardMcp) return;
+      await navigator.clipboard.writeText(JSON.stringify(wizardMcp.simple, null, 2));
+      toast("Simple MCP config copied");
+    });
+
+    $("#copy-mcp-full").addEventListener("click", async () => {
+      if (!wizardMcp) return;
+      await navigator.clipboard.writeText(JSON.stringify(wizardMcp.full, null, 2));
+      toast("Full MCP config copied");
+    });
+
+    $("#health-badge").addEventListener("click", () => {
+      const healthTab = document.querySelector('nav.tabs button[data-tab="health"]');
+      if (healthTab) healthTab.click();
+    });
+
     document.querySelectorAll("nav.tabs button").forEach((btn) => {
       btn.addEventListener("click", () => {
         document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.remove("active"));
@@ -466,8 +1081,15 @@
         btn.classList.add("active");
         $("#panel-" + btn.dataset.tab).classList.add("active");
         if (btn.dataset.tab === "browse") loadBrowse();
+        if (btn.dataset.tab === "metrics") loadMetrics();
+        if (btn.dataset.tab === "health") loadOverview();
+        if (btn.dataset.tab === "hygiene") loadHygieneScan();
       });
     });
+
+    $("#hygiene-scan-btn").addEventListener("click", loadHygieneScan);
+    $("#hygiene-preview-btn").addEventListener("click", () => runHygieneApply(true));
+    $("#hygiene-apply-btn").addEventListener("click", () => runHygieneApply(false));
 
     $("#ask-btn").addEventListener("click", async () => {
       const query = $("#ask-query").value.trim();
@@ -515,20 +1137,11 @@
     });
 
     $("#consolidate-btn").addEventListener("click", async () => {
-      const btn = $("#consolidate-btn");
-      btn.disabled = true;
-      try {
-        await api("/ui/api/consolidate", { method: "POST", body: "{}" });
-        toast("Consolidation started");
-        loadOverview();
-        loadBrowse();
-      } catch (err) {
-        toast(err.message);
-      } finally {
-        btn.disabled = false;
-      }
+      await runFixAction("consolidate");
+      loadBrowse();
     });
 
+    checkSetup();
     loadOverview();
   </script>
 </body>

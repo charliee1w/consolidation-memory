@@ -1,0 +1,63 @@
+{
+  "benchmark": "real_world_eval",
+  "mode": "full",
+  "generated_at": "2026-06-14T23:32:31.688629+00:00",
+  "data_source": "live_active_project",
+  "overall_pass": true,
+  "sections": [
+    {
+      "key": "live_solution_recall_at_5",
+      "title": "1) Live Solution Recall@5",
+      "value_label": "81.7%",
+      "value_pct": 81.6667,
+      "detail": "98/120",
+      "threshold_label": "\u2265 35%",
+      "pass": true
+    },
+    {
+      "key": "live_claim_recall_at_5",
+      "title": "2) Live Claim Recall@5",
+      "value_label": "77.5%",
+      "value_pct": 77.5,
+      "detail": "62/80",
+      "threshold_label": "\u2265 40%",
+      "pass": true
+    },
+    {
+      "key": "challenged_claim_suppression",
+      "title": "3) Challenged Claim Suppression",
+      "value_label": "100.0%",
+      "value_pct": 100.0,
+      "detail": "60/60",
+      "threshold_label": "\u2265 90%",
+      "pass": true
+    },
+    {
+      "key": "live_provenance_coverage_on_recall",
+      "title": "4) Live Provenance Coverage On Recall",
+      "value_label": "100.0%",
+      "value_pct": 100.0,
+      "detail": "300/300",
+      "threshold_label": "\u2265 85%",
+      "pass": true
+    },
+    {
+      "key": "live_drift_response",
+      "title": "5) Live Drift Response On Changed Repo Paths",
+      "value_label": "100.0%",
+      "value_pct": 100.0,
+      "detail": "42/42 challenged",
+      "threshold_label": "\u2265 80%",
+      "pass": true
+    },
+    {
+      "key": "memory_health_snapshot",
+      "title": "6) Live Memory Health Snapshot",
+      "value_label": "degraded",
+      "value_pct": 10.3943,
+      "detail": "backlog 10.4%",
+      "threshold_label": "{'degraded', 'healthy'}",
+      "pass": true
+    }
+  ]
+}

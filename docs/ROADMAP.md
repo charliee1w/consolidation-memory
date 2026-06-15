@@ -19,7 +19,9 @@ Make local-first agent memory dependable for coding workflows: useful recall, ex
 - Hypothesis competition — config `hypothesis_competition_enabled` keeps contradicted records during consolidation with lowered precision; optional `hypothesis_competition` on `memory_recall` surfaces competing claims
 - MCP, REST, Python, and OpenAI tool parity through `MemoryClient`
 - ~~**Policy ergonomics**~~ — `memory_policy_list` / `memory_policy_grant` on MCP, REST, and OpenAI dispatch; CLI `policy list|grant`
-- **Browser UI** — `consolidation-memory ui` serves `/ui/` (Ask · Remember · Browse); `init --quick` for zero-prompt setup
+- **Browser UI** — `consolidation-memory ui` serves `/ui/` (Ask · Remember · Browse · Health · Hygiene · Metrics); `init --quick` for zero-prompt setup; in-browser setup wizard when config is missing
+- **Corpus hygiene** — `forget()` expires claims that lose all provenance; Hygiene tab + `corpus_hygiene` scan/apply for noisy episodes and orphaned claims
+- **Native desktop UI** — `consolidation-memory app` (PySide6) with Ask · Remember · Browse and system tray icon
 - ~~**MCP simple tools**~~ — `memory_remember` / `memory_ask` on MCP, REST (`POST /memory/remember`, `POST /memory/ask`), and OpenAI dispatch; browser UI uses the same aliases
 
 ## Adoption blockers (tracked)
@@ -30,9 +32,9 @@ Prioritized gaps between engineering maturity and broad adoption. Each item has 
 | --- | --- | --- |
 | P0 | **No simple agent surface** — 24 MCP tools overwhelm newcomers | ~~`memory_remember` / `memory_ask` + `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`~~ (shipped) |
 | P0 | **Live recall proof gap** — synthetic CI passes; messy corpora underperform | ~~Trending `real_world_eval --mode full` on live `universal` corpus~~ (2026-06-14, see [REAL_WORLD_METRICS.md](REAL_WORLD_METRICS.md)); CI fixture stays regression-only |
-| P1 | **Setup friction** — Python path, embeddings, hooks, scope concepts | One-command `init --quick` + `ui`; in-browser setup wizard when config missing |
-| P1 | **Ops opacity** — stale consolidation / embedding health unclear to casual users | Actionable health in UI + `memory_ask` warnings; “fix it” flows (consolidate, reindex) |
-| P1 | **Corpus hygiene** — forget episodes does not retract claims | Claim retraction/expiry on forget; cleanup wizard for noisy corpora |
+| P1 | **Setup friction** — Python path, embeddings, hooks, scope concepts | ~~One-command `init --quick` + `ui`; in-browser setup wizard when config missing~~ (shipped) |
+| P1 | **Ops opacity** — stale consolidation / embedding health unclear to casual users | ~~Actionable health in UI + warnings; fix-it flows (consolidate, reindex, warmup)~~ (shipped) |
+| P1 | **Corpus hygiene** — forget episodes does not retract claims | ~~Claim retraction/expiry on forget; cleanup wizard for noisy corpora~~ (shipped) |
 | P2 | **Positioning vs simple RAG** — narrow wedge hard to explain in 30s | One example repo + doc: “same bug twice → recall + drift challenge” |
 | P2 | **Benchmark narrative** — LoCoMo / head-to-head not published | Run and document at least one external comparison |
 | P2 | **Ecosystem packaging** — adapter docs, plugin author guide, community templates | Reference adapter + plugin dev doc linked from README |
@@ -40,13 +42,13 @@ Prioritized gaps between engineering maturity and broad adoption. Each item has 
 ## Near term (adoption slice)
 
 1. ~~**Agent simple profile**~~ — `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`; documented in README and CONTRIBUTING
-2. **UI setup wizard** — detect missing config from `/ui/`, guide `init --quick`
-3. **Live metrics dashboard** — chart `real_world_eval` sections in UI or release notes
+2. ~~**UI setup wizard**~~ — detect missing config from `/ui/`, guide `init --quick`, show MCP snippets
+3. ~~**Live metrics dashboard**~~ — Metrics tab charts bundled/live `real_world_eval` sections
 4. **Adapter maturity** — keep transport parity as new retrieval and trust features land
 
 ## Mid term
 
-- Claim-level retraction when episodes are forgotten
+- ~~Claim-level retraction when episodes are forgotten~~ (shipped via `forget()` + hygiene orphan repair)
 - Broader agent-ecosystem adapters with trust invariants preserved
 - Stronger operational tooling for migrations, consolidation observability, and drift audits
 - Continued evaluation depth for release-quality evidence

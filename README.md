@@ -153,6 +153,7 @@ During `init`, choose **`disabled`** for the LLM backend unless you already run 
 | `[openai]` | Hosted OpenAI embeddings / LLM |
 | `[rest]` | FastAPI HTTP server |
 | `[dashboard]` | Textual TUI inspector |
+| `[desktop]` | Native desktop UI with system tray icon (`consolidation-memory app`) |
 | `[all,dev]` | Full stack + test/lint tooling |
 
 Backend matrix: [Model support](docs/MODEL_SUPPORT.md) · Runnable wiring: [examples/](examples/README.md)

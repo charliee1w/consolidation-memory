@@ -59,10 +59,14 @@ def build_ask_recall_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def simplify_recall_result(payload: dict[str, object]) -> dict[str, object]:
     """Trim a memory_recall envelope for simple consumers."""
-    episodes = payload.get("episodes") or []
-    knowledge = payload.get("knowledge") or []
-    records = payload.get("records") or []
-    claims = payload.get("claims") or []
+    raw_episodes = payload.get("episodes")
+    episodes = raw_episodes if isinstance(raw_episodes, list) else []
+    raw_knowledge = payload.get("knowledge")
+    knowledge = raw_knowledge if isinstance(raw_knowledge, list) else []
+    raw_records = payload.get("records")
+    records = raw_records if isinstance(raw_records, list) else []
+    raw_claims = payload.get("claims")
+    claims = raw_claims if isinstance(raw_claims, list) else []
 
     def _episode_row(item: object) -> dict[str, object]:
         if not isinstance(item, dict):

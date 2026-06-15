@@ -50,7 +50,8 @@ openai = ["openai>=1.0.0"]
 benchmark = ["openai>=1.0.0"]
 rest = ["fastapi>=0.115.0", "uvicorn[standard]>=0.34.0"]
 dashboard = ["textual>=1.0.0"]
-all = ["consolidation-memory[fastembed,openai,rest,dashboard,benchmark]"]
+desktop = ["PySide6>=6.6.0"]
+all = ["consolidation-memory[fastembed,openai,rest,dashboard,desktop,benchmark]"]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
@@ -75,7 +76,7 @@ Releases = "https://github.com/charliee1w/consolidation-memory/releases"
 Security = "https://github.com/charliee1w/consolidation-memory/security/policy"
 
 [tool.setuptools.package-data]
-consolidation_memory = ["py.typed", "web/index.html"]
+consolidation_memory = ["py.typed", "web/index.html", "web/published_metrics.json"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -97,6 +98,7 @@ module = [
     "fastembed.*",
     "openai.*",
     "textual.*",
+    "PySide6.*",
     "mcp.*",
     "platformdirs.*",
     "tomli",

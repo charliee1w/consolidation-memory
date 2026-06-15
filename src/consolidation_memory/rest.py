@@ -23,6 +23,7 @@ import math
 import os
 import re
 import secrets
+from collections.abc import Awaitable, Callable
 from typing import Literal, TypeAlias, cast
 
 try:
@@ -37,6 +38,8 @@ except ImportError:
 from contextlib import asynccontextmanager
 
 from consolidation_memory import __version__
+
+ExecuteFn: TypeAlias = Callable[..., Awaitable[dict[str, object]]]
 from consolidation_memory.drift_subprocess import run_detect_drift_subprocess
 from consolidation_memory.runtime import MemoryRuntime
 from consolidation_memory.tool_adapter import (
@@ -412,7 +415,7 @@ def create_app(*, bind_host: str | None = None) -> FastAPI:
     return app
 
 
-def _build_execute(runtime: MemoryRuntime) -> object:
+def _build_execute(runtime: MemoryRuntime) -> ExecuteFn:
     """Return the shared execute helper used by memory and UI routes."""
 
     async def _execute(
@@ -493,7 +496,7 @@ def _install_auth_middleware(app: FastAPI) -> None:
             )
         return await call_next(request)
 
-def _register_memory_routes(app: FastAPI, execute: object) -> None:
+def _register_memory_routes(app: FastAPI, execute: ExecuteFn) -> None:
     # ── Endpoints ────────────────────────────────────────────────────────
     @app.get("/health")
     async def health():

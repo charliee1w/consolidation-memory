@@ -84,6 +84,10 @@ class TestWebUiRoutes:
         html = load_index_html()
         assert "<!DOCTYPE html>" in html
         assert 'id="ask-query"' in html
+        assert 'data-tab="health"' in html
+        assert 'data-tab="hygiene"' in html
+        assert 'data-tab="metrics"' in html
+        assert 'id="wizard-backdrop"' in html
 
     def test_overview_endpoint(self, ui_client):
         resp = ui_client.get("/ui/api/overview")
@@ -92,6 +96,107 @@ class TestWebUiRoutes:
         assert "stats" in data
         assert "health" in data
         assert "version" in data
+        assert "warnings" in data
+        assert "fix_actions" in data
+        assert isinstance(data["warnings"], list)
+
+    def test_setup_status_endpoint(self, ui_client):
+        resp = ui_client.get("/ui/api/setup/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "needs_setup" in data
+        assert "project" in data
+        assert "version" in data
+
+    def test_metrics_endpoint(self, ui_client):
+        resp = ui_client.get("/ui/api/metrics")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "benchmark" in data
+        assert "sections" in data
+        assert isinstance(data["sections"], list)
+
+    @patch("consolidation_memory.web_ui.run_quick_setup")
+    def test_setup_quick_endpoint(self, mock_setup, ui_client):
+        mock_setup.return_value = {
+            "status": "configured",
+            "config_path": "/tmp/config.toml",
+            "project": "test",
+            "mcp": {"full": {}, "simple": {}},
+            "message": "done",
+        }
+        resp = ui_client.post("/ui/api/setup/quick")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "configured"
+
+    @patch("consolidation_memory.web_ui.run_quick_setup")
+    def test_setup_quick_missing_dependency(self, mock_setup, ui_client):
+        mock_setup.return_value = {
+            "status": "missing_dependency",
+            "message": "Install fastembed first",
+        }
+        resp = ui_client.post("/ui/api/setup/quick")
+        assert resp.status_code == 400
+
+    @patch("consolidation_memory.web_ui.warmup_recall_caches")
+    def test_warmup_endpoint(self, mock_warmup, ui_client):
+        mock_warmup.return_value = {"status": "ok", "elapsed_seconds": 0.1}
+        resp = ui_client.post("/ui/api/warmup")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    @patch("consolidation_memory.web_ui.reindex_all_episodes")
+    def test_reindex_endpoint(self, mock_reindex, ui_client):
+        mock_reindex.return_value = {"status": "ok", "episodes_reindexed": 0}
+        resp = ui_client.post("/ui/api/reindex")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    @patch("consolidation_memory.web_ui.scan_corpus_hygiene")
+    def test_hygiene_scan_endpoint(self, mock_scan, ui_client):
+        mock_scan.return_value = {
+            "status": "ok",
+            "episodes": {
+                "total_active": 10,
+                "temp": {"count": 1, "ids": ["a"], "samples": []},
+                "exchange": {"count": 2, "ids": ["b"], "samples": []},
+                "noise_journal": {"count": 0, "ids": [], "samples": []},
+                "recommended_cleanup_ids": ["a", "b"],
+                "would_remain": 8,
+            },
+            "orphaned_claims": {"count": 0, "ids": [], "samples": []},
+            "stale_episode_sources": {"count": 0, "episode_ids": []},
+        }
+        resp = ui_client.get("/ui/api/hygiene/scan")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["episodes"]["total_active"] == 10
+        assert len(data["episodes"]["recommended_cleanup_ids"]) == 2
+
+    @patch("consolidation_memory.web_ui.apply_corpus_hygiene")
+    def test_hygiene_apply_endpoint(self, mock_apply, ui_client):
+        mock_apply.return_value = {
+            "status": "ok",
+            "forgotten": 2,
+            "not_found": 0,
+            "episode_targets": 2,
+            "expire_orphans": True,
+            "orphan_repair": {"expired_claims": 1},
+        }
+        resp = ui_client.post(
+            "/ui/api/hygiene/apply",
+            json={"use_recommended": True, "expire_orphans": True, "dry_run": False},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["forgotten"] == 2
+        mock_apply.assert_called_once()
+
+    def test_hygiene_apply_requires_targets(self, ui_client):
+        resp = ui_client.post(
+            "/ui/api/hygiene/apply",
+            json={"dry_run": False},
+        )
+        assert resp.status_code == 400
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_remember_and_ask_flow(self, mock_embed, ui_client):

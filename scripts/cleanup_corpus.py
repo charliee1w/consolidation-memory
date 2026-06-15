@@ -5,17 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
 from consolidation_memory.config import get_config
-from consolidation_memory.database import (
-    detach_claim_sources_for_episode,
-    ensure_schema,
-    expire_claims_without_sources,
-    soft_delete_episode,
-)
-from consolidation_memory.vector_store import VectorStore
+from consolidation_memory.corpus_hygiene import apply_corpus_hygiene
 
 logger = logging.getLogger("cleanup_corpus")
 
@@ -29,51 +22,45 @@ def main() -> None:
         help="JSON file with recommended_cleanup_ids",
     )
     parser.add_argument("--dry-run", action="store_true", help="List IDs only, do not delete")
+    parser.add_argument(
+        "--expire-orphans",
+        action="store_true",
+        help="Also detach stale episode provenance and expire orphaned claims",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     payload = json.loads(args.candidates.read_text(encoding="utf-8"))
     ids: list[str] = sorted(set(payload.get("recommended_cleanup_ids", [])))
-    if not ids:
+    if not ids and not args.expire_orphans:
         print("No cleanup candidates.")
         return
 
     print(f"Cleanup targets: {len(ids)} episodes")
     if args.dry_run:
-        for eid in ids:
-            print(eid)
+        result = apply_corpus_hygiene(
+            ids,
+            expire_orphans=args.expire_orphans,
+            dry_run=True,
+        )
+        for episode_id in result.get("episode_ids", []):
+            print(episode_id)
+        if args.expire_orphans and result.get("orphan_repair"):
+            repair = result["orphan_repair"]
+            print(f"Would expire {len(repair.get('would_expire_claims', []))} orphaned claims")
         return
 
-    ensure_schema()
-    cfg = get_config()
-    vector_store = VectorStore()
-
-    forgotten = 0
-    not_found = 0
-    forgotten_at = datetime.now(timezone.utc).isoformat()
-
-    for eid in ids:
-        # Maintainer cleanup: no scope filter (cross-scope test artifacts + exchanges).
-        deleted = soft_delete_episode(eid, scope=None)
-        if not deleted:
-            not_found += 1
-            logger.warning("Not found: %s", eid)
-            continue
-
-        vector_store.remove(eid)
-        impacted_claim_ids = detach_claim_sources_for_episode(eid)
-        expire_claims_without_sources(
-            impacted_claim_ids,
-            valid_until=forgotten_at,
-            reason="episode_forgotten",
-            details={"episode_id": eid, "source": "cleanup_corpus"},
-        )
-        forgotten += 1
-
-    VectorStore.signal_reload()
-    print(f"Forgotten: {forgotten}, not_found: {not_found}")
-    print(f"DB: {cfg.DB_PATH}")
+    result = apply_corpus_hygiene(
+        ids,
+        expire_orphans=args.expire_orphans,
+        dry_run=False,
+    )
+    print(f"Forgotten: {result.get('forgotten', 0)}, not_found: {result.get('not_found', 0)}")
+    if args.expire_orphans and result.get("orphan_repair"):
+        repair = result["orphan_repair"]
+        print(f"Expired claims: {repair.get('expired_claims', 0)}")
+    print(f"DB: {get_config().DB_PATH}")
     print("Run: python -m consolidation_memory reindex")
 
 

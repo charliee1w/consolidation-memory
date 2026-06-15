@@ -2,11 +2,26 @@
 
 ## Unreleased
 
+## 0.19.0 - 2026-06-15
+
 ### Features
 
-- feat: P0 adoption — simple MCP profile and live eval metrics
-- feat: adoption slice — simple tools, browser UI, warmup CLI
-- feat: policy admin surface parity and agent MCP config
+- feat: browser UI — Setup wizard, Health, Hygiene, and Metrics tabs with fix-it flows (consolidate, warmup, reindex)
+- feat: native desktop UI — `consolidation-memory app` (PySide6) with Ask · Remember · Browse and system tray icon
+- feat: corpus hygiene — `corpus_hygiene` scan/apply for noisy episodes; claim expiry when provenance is lost on forget
+- feat: `memory_remember` / `memory_ask` on MCP, REST, and OpenAI dispatch; `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`
+- feat: P0 adoption — simple MCP profile and live eval metrics dashboard
+- feat: adoption slice — `init --quick`, browser UI, warmup CLI, bundled `published_metrics.json`
+- feat: policy admin — `memory_policy_list` / `memory_policy_grant` and CLI `policy list|grant`
+- feat: maintenance helpers — `setup_service`, `ui_ops`, `maintenance` shared by CLI and browser UI
+
+### Documentation
+
+- docs: ROADMAP.md marks P0/P1 adoption blockers shipped; desktop optional extra in pyproject
+
+### Other
+
+- 1229 tests passing (ruff + mypy clean)
 
 ## 0.18.0 - 2026-06-14
 

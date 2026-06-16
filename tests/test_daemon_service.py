@@ -68,6 +68,41 @@ class TestDaemonStatus:
 
 
 class TestDaemonInstall:
+    def test_install_windows_falls_back_to_startup_on_access_denied(self, tmp_path, monkeypatch):
+        from consolidation_memory.config import reset_config
+        from consolidation_memory.daemon_service import install_daemon
+
+        reset_config(_base_data_dir=tmp_path / "data")
+        monkeypatch.setattr(
+            "consolidation_memory.daemon_service._platform_key",
+            lambda: "windows",
+        )
+        startup_dir = tmp_path / "Startup"
+        startup_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            "consolidation_memory.daemon_service._windows_startup_folder",
+            lambda: startup_dir,
+        )
+
+        def fake_run(cmd, **kwargs):
+            result = MagicMock()
+            if cmd[:2] == ["schtasks", "/Create"]:
+                result.returncode = 1
+                result.stdout = ""
+                result.stderr = "ERROR: Access is denied.\r\n"
+            else:
+                result.returncode = 0
+                result.stdout = ""
+                result.stderr = ""
+            return result
+
+        with patch("consolidation_memory.daemon_service.subprocess.run", side_effect=fake_run):
+            result = install_daemon(project="default")
+
+        assert result["status"] == "installed"
+        assert result["install_method"] == "startup_folder"
+        assert (startup_dir / "consolidation-memory-maintenance-default.cmd").is_file()
+
     def test_install_windows_success(self, tmp_path, monkeypatch):
         from consolidation_memory.config import reset_config
         from consolidation_memory.daemon_service import install_daemon

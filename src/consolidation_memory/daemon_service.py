@@ -19,19 +19,77 @@ _LAUNCH_AGENT_LABEL_PREFIX = "com.consolidation-memory.maintenance"
 _SYSTEMD_UNIT_PREFIX = "consolidation-memory-maintenance"
 
 
+def _project_slug(project: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in project)
+
+
 def daemon_task_name(project: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in project)
-    return f"{_TASK_NAME_PREFIX}-{safe}"
+    return f"{_TASK_NAME_PREFIX}-{_project_slug(project)}"
+
+
+def daemon_startup_script_name(project: str) -> str:
+    return f"{_TASK_NAME_PREFIX}-{_project_slug(project)}.cmd"
 
 
 def daemon_launch_agent_label(project: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in project)
-    return f"{_LAUNCH_AGENT_LABEL_PREFIX}.{safe}"
+    return f"{_LAUNCH_AGENT_LABEL_PREFIX}.{_project_slug(project)}"
 
 
 def daemon_systemd_unit(project: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in project)
-    return f"{_SYSTEMD_UNIT_PREFIX}-{safe}.service"
+    return f"{_SYSTEMD_UNIT_PREFIX}-{_project_slug(project)}.service"
+
+
+def _windows_startup_folder() -> Path:
+    return (
+        Path.home()
+        / "AppData"
+        / "Roaming"
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs"
+        / "Startup"
+    )
+
+
+def _windows_startup_script_path(project: str) -> Path:
+    return _windows_startup_folder() / daemon_startup_script_name(project)
+
+
+def _schtasks_access_denied(result: subprocess.CompletedProcess[str]) -> bool:
+    text = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return "access is denied" in text
+
+
+def _install_windows_startup(*, project: str, wrapper_path: Path) -> dict[str, Any]:
+    startup_path = _windows_startup_script_path(project)
+    startup_path.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "@echo off\r\n"
+        f'call "{wrapper_path}"\r\n'
+    )
+    startup_path.write_text(content, encoding="utf-8")
+    return {
+        "status": "installed",
+        "platform": "windows",
+        "project": project,
+        "install_method": "startup_folder",
+        "startup_path": str(startup_path),
+        "wrapper_path": str(wrapper_path),
+        "log_path": str(daemon_log_path(project)),
+        "started_now": False,
+        "message": (
+            f"Registered maintenance daemon in Startup folder ({startup_path.name}). "
+            "It will start at next logon. "
+            f"Run now: {subprocess.list2cmdline(daemon_launch_command(project=project))}"
+        ),
+    }
+
+
+def _uninstall_windows_startup(*, project: str) -> None:
+    startup_path = _windows_startup_script_path(project)
+    if startup_path.is_file():
+        startup_path.unlink()
 
 
 def daemon_lock_path() -> Path:
@@ -183,6 +241,8 @@ def install_daemon(*, project: str | None = None) -> dict[str, Any]:
         )
         if result.returncode != 0:
             message = (result.stderr or result.stdout or "schtasks failed").strip()
+            if _schtasks_access_denied(result):
+                return _install_windows_startup(project=active, wrapper_path=wrapper_path)
             return {
                 "status": "error",
                 "platform": platform_key,
@@ -206,6 +266,7 @@ def install_daemon(*, project: str | None = None) -> dict[str, Any]:
             "status": "installed",
             "platform": platform_key,
             "project": active,
+            "install_method": "schtasks",
             "task_name": task_name,
             "wrapper_path": str(wrapper_path),
             "log_path": str(daemon_log_path(active)),
@@ -338,12 +399,15 @@ def uninstall_daemon(*, project: str | None = None) -> dict[str, Any]:
         if result.returncode != 0 and "cannot find" not in (result.stderr or "").lower():
             message = (result.stderr or result.stdout or "schtasks delete failed").strip()
             return {"status": "error", "platform": platform_key, "project": active, "message": message}
+        _uninstall_windows_startup(project=active)
         return {
             "status": "uninstalled",
             "platform": platform_key,
             "project": active,
             "task_name": task_name,
-            "message": f"Removed scheduled task '{task_name}' (if present).",
+            "message": (
+                f"Removed scheduled task '{task_name}' and Startup folder entry (if present)."
+            ),
         }
 
     if platform_key == "macos":
@@ -400,7 +464,9 @@ def _is_daemon_installed(*, project: str) -> bool:
             text=True,
             check=False,
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            return True
+        return _windows_startup_script_path(project).is_file()
     if platform_key == "macos":
         label = daemon_launch_agent_label(project)
         plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"

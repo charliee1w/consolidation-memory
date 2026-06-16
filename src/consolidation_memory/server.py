@@ -1315,6 +1315,30 @@ async def memory_read_topic(
 
 
 @_tracked_tool()
+async def memory_hygiene_scan() -> str:
+    """Scan the corpus for noisy episodes and orphaned active claims."""
+    return await _call_tool_json("memory_hygiene_scan", {})
+
+
+@_tracked_tool()
+async def memory_hygiene_apply(
+    episode_ids: list[str] | None = None,
+    use_recommended: bool = False,
+    expire_orphans: bool = False,
+    dry_run: bool = False,
+) -> str:
+    """Apply corpus hygiene cleanup (forget episodes, optionally expire orphans)."""
+    payload: dict[str, object] = {
+        "use_recommended": use_recommended,
+        "expire_orphans": expire_orphans,
+        "dry_run": dry_run,
+    }
+    if episode_ids is not None:
+        payload["episode_ids"] = episode_ids
+    return await _call_tool_json("memory_hygiene_apply", payload)
+
+
+@_tracked_tool()
 async def memory_policy_list() -> str:
     """List persisted access policies and ACL bindings."""
     return await _call_tool_json("memory_policy_list", {})

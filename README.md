@@ -198,6 +198,7 @@ prints both full and simple JSON snippets.
 | `memory_status` | Health, scheduler, trust_profile, fast-path metrics |
 | `memory_timeline` / `memory_contradictions` | Audit lifecycle and conflicts |
 | `memory_export` / `memory_correct` | Backup and human corrections |
+| `memory_hygiene_scan` / `memory_hygiene_apply` | Noisy-episode scan and orphan-claim cleanup |
 | `memory_outcome_record` / `memory_outcome_browse` | Link actions to outcomes |
 
 Full schemas: [`src/consolidation_memory/schemas.py`](src/consolidation_memory/schemas.py)
@@ -278,6 +279,9 @@ Set `llm.backend = "disabled"` and store episodes in [fast-path shapes](docs/FAS
 | [Fast-path episodes](docs/FAST_PATH_EPISODES.md) | LLM-free consolidation shapes |
 | [Model support](docs/MODEL_SUPPORT.md) | Embedding and LLM backends |
 | [Examples](examples/README.md) | Cursor, REST, LangGraph, plugins |
+| [Trust vs RAG](examples/trust-vs-rag/README.md) | Same bug twice — recall + drift challenge demo |
+| [Plugin development](docs/PLUGIN_DEVELOPMENT.md) | Hook surface and author guide |
+| [LoCoMo benchmark](docs/LOCOMO_BENCHMARK.md) | External memory comparison harness |
 
 Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
 

@@ -68,6 +68,21 @@ def collect_ops_warnings() -> list[dict[str, object]]:
     finally:
         client.close()
 
+    from consolidation_memory.daemon_service import daemon_status
+
+    daemon = daemon_status()
+    if not daemon.get("running"):
+        warnings.append({
+            "id": "maintenance_daemon_stopped",
+            "severity": "warning",
+            "message": (
+                "Background maintenance daemon is not running; "
+                "episodes may not consolidate until you start it or run consolidation manually."
+            ),
+            "fix_action": "daemon_install",
+            "fix_label": "Enable background maintenance",
+        })
+
     health = cast(HealthStatus, status.health or {})
     for issue in health.get("issues", []):
         if not isinstance(issue, str) or not issue.strip():
@@ -82,6 +97,7 @@ def collect_ops_warnings() -> list[dict[str, object]]:
                 "consolidate": "Run consolidation",
                 "reindex": "Reindex episodes",
                 "warmup": "Warm caches",
+                "daemon_install": "Enable background maintenance",
             }.get(fix_action or "", None),
         })
 
@@ -130,6 +146,10 @@ def build_ops_overview(data: DashboardData | None = None) -> dict[str, object]:
         if warnings:
             health_note = str(warnings[0].get("message") or health_note)
 
+    from consolidation_memory.daemon_service import daemon_status
+
+    daemon_state = daemon_status()
+
     return {
         "version": __version__,
         "project": get_active_project(),
@@ -140,6 +160,7 @@ def build_ops_overview(data: DashboardData | None = None) -> dict[str, object]:
         "faiss": faiss,
         "warnings": warnings,
         "fix_actions": _unique_fix_actions(warnings),
+        "maintenance_daemon": daemon_state,
     }
 
 

@@ -40,18 +40,20 @@ benchmark measures real, noisy memory — not controlled fixtures.
 
 ## Live corpus trend (project `universal`)
 
-Published from `benchmarks/results/real_world_eval_full.json` (2026-06-14, `fastembed` embeddings).
+Published from `benchmarks/results/real_world_eval_full.json` (2026-06-16, `fastembed` embeddings; run `real_world_eval_full_16e26d13611a`).
 
 | Section | Measured | Threshold | Pass |
 | --- | --- | --- | --- |
-| Live Solution Recall@5 | **81.7%** (98/120) | ≥ 35% | yes |
-| Live Claim Recall@5 | **77.5%** (62/80) | ≥ 40% | yes |
+| Live Solution Recall@5 | **84.2%** (101/120) | ≥ 35% | yes |
+| Live Claim Recall@5 | **81.25%** (65/80) | ≥ 40% | yes |
 | Challenged Claim Suppression | **100%** (60/60) | ≥ 90% | yes |
 | Live Provenance Coverage | **100%** (300/300) | ≥ 85% | yes |
-| Live Drift Response | **100%** (42/42 impacted) | ≥ 80% when paths change | yes |
-| Memory Health Snapshot | degraded (consolidation 45h stale); backlog 10.4% | backlog ≤ 20% | yes |
+| Live Drift Response | **100%** (20/20 impacted) | ≥ 80% when paths change | yes |
+| Memory Health Snapshot | healthy; backlog 5.1% (15 pending / 292 episodes) | backlog ≤ 20% | yes |
 
 **Overall:** `overall_pass: true`
+
+Prior baseline (2026-06-14): solution recall 81.7%, claim recall 77.5%, health degraded (45h stale consolidation).
 
 Re-run after corpus or embedding backend changes:
 

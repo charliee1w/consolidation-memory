@@ -64,6 +64,32 @@ def build_mcp_snippets(project: str) -> dict[str, object]:
     }
 
 
+def build_daemon_snippet(project: str) -> dict[str, object]:
+    """Foreground and install commands for the maintenance daemon."""
+    from consolidation_memory.daemon_service import daemon_launch_command
+
+    return {
+        "foreground": daemon_launch_command(project=project),
+        "install": ["consolidation-memory", "--project", project, "daemon", "install"],
+        "status": ["consolidation-memory", "--project", project, "daemon", "status"],
+    }
+
+
+def print_adoption_hints(project: str) -> None:
+    """Print MCP + maintenance daemon guidance after init."""
+    import json
+
+    from consolidation_memory.daemon_service import format_daemon_install_hint
+
+    print("\n--- Add to your MCP client config (fast recall; full tools) ---")
+    print(json.dumps(build_mcp_snippets(project)["full"], indent=2))
+    print("\n--- Simple profile (recall + remember + ask only) ---")
+    print(json.dumps(build_mcp_snippets(project)["simple"], indent=2))
+    print("\n--- Background maintenance (consolidation scheduler) ---")
+    print(format_daemon_install_hint(project=project))
+    print(f"\nMCP project namespace: {project}")
+
+
 def fastembed_available() -> bool:
     try:
         import fastembed  # noqa: F401
@@ -141,6 +167,7 @@ def run_quick_setup() -> dict[str, Any]:
             "config_path": str(existing),
             "project": project,
             "mcp": build_mcp_snippets(project),
+            "daemon": build_daemon_snippet(project),
             "message": "Config already exists; kept existing settings.",
         }
 
@@ -161,5 +188,6 @@ def run_quick_setup() -> dict[str, Any]:
         "data_dir": os.fspath(get_config().DATA_DIR),
         "project": project,
         "mcp": build_mcp_snippets(project),
+        "daemon": build_daemon_snippet(project),
         "message": "Quick setup complete: fastembed embeddings, LLM disabled.",
     }

@@ -64,6 +64,31 @@ class TestDesktopBackend:
             {"content": "saved note", "kind": "fact", "tags": ["desktop"]},
         )
 
+    def test_hygiene_scan_delegates_to_tool_dispatch(self):
+        backend = DesktopBackend(data=MagicMock())
+        with patch(
+            "consolidation_memory.desktop_backend.execute_tool_call",
+            return_value={"status": "ok"},
+        ) as execute:
+            backend.hygiene_scan()
+        execute.assert_called_once_with("memory_hygiene_scan", {})
+
+    def test_hygiene_apply_passes_flags(self):
+        backend = DesktopBackend(data=MagicMock())
+        with patch(
+            "consolidation_memory.desktop_backend.execute_tool_call",
+            return_value={"status": "dry_run"},
+        ) as execute:
+            backend.hygiene_apply(use_recommended=True, expire_orphans=True, dry_run=True)
+        execute.assert_called_once_with(
+            "memory_hygiene_apply",
+            {
+                "use_recommended": True,
+                "expire_orphans": True,
+                "dry_run": True,
+            },
+        )
+
 
 class TestDesktopImportGuards:
     def test_run_desktop_app_raises_without_pyside6(self):

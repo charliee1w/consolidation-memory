@@ -19,6 +19,7 @@ memory gate auto-unblocks after a recall attempt so the turn is not frozen.
 - `memory_store` after meaningful progress (`content_type` + `tags` required).
 - `memory_consolidate` when recall is noisy or contradictory.
 - `memory_detect_drift` after substantial code edits.
+- `memory_hygiene_scan` when the corpus feels noisy; treat consolidated knowledge as potentially stale vs current code.
 - Final `memory_recall` before closing the turn.
 
 ## If tools are unavailable

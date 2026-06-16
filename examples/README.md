@@ -29,6 +29,8 @@ Examples in this directory:
   - LangGraph node example that reads from `MemoryClient`.
 - `plugins/`
   - Minimal plugin that logs recall activity.
+- `trust-vs-rag/`
+  - Same bug twice: store a path-anchored solution, consolidate to claims, drift-challenge on refactor (`demo_flow.py`).
 
 Notes:
 

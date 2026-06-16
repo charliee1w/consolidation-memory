@@ -142,6 +142,15 @@ def register_web_ui_routes(app: FastAPI, *, execute: ExecuteFn) -> None:
             raise HTTPException(status_code=500, detail=str(result.get("message")))
         return result
 
+    @app.post("/ui/api/daemon-install")
+    async def ui_daemon_install() -> dict[str, object]:
+        from consolidation_memory.daemon_service import install_daemon
+
+        result = install_daemon()
+        if result.get("status") == "error":
+            raise HTTPException(status_code=500, detail=str(result.get("message")))
+        return result
+
     @app.delete("/ui/api/episodes/{episode_id}")
     async def ui_forget_episode(episode_id: str) -> dict[str, object]:
         result = await execute("memory_forget", {"episode_id": episode_id})

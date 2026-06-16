@@ -30,14 +30,14 @@ Prioritized gaps between engineering maturity and broad adoption. Each item has 
 
 | Priority | Blocker | Done-when |
 | --- | --- | --- |
-| P0 | **No simple agent surface** — 24 MCP tools overwhelm newcomers | ~~`memory_remember` / `memory_ask` + `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`~~ (shipped) |
+| P0 | **No simple agent surface** — full MCP profile (30 tools) overwhelms newcomers | ~~`memory_remember` / `memory_ask` + `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`~~ (shipped) |
 | P0 | **Live recall proof gap** — synthetic CI passes; messy corpora underperform | ~~Trending `real_world_eval --mode full` on live `universal` corpus~~ (2026-06-14, see [REAL_WORLD_METRICS.md](REAL_WORLD_METRICS.md)); CI fixture stays regression-only |
 | P1 | **Setup friction** — Python path, embeddings, hooks, scope concepts | ~~One-command `init --quick` + `ui`; in-browser setup wizard when config missing~~ (shipped) |
 | P1 | **Ops opacity** — stale consolidation / embedding health unclear to casual users | ~~Actionable health in UI + warnings; fix-it flows (consolidate, reindex, warmup)~~ (shipped) |
 | P1 | **Corpus hygiene** — forget episodes does not retract claims | ~~Claim retraction/expiry on forget; cleanup wizard for noisy corpora~~ (shipped) |
-| P2 | **Positioning vs simple RAG** — narrow wedge hard to explain in 30s | One example repo + doc: “same bug twice → recall + drift challenge” |
-| P2 | **Benchmark narrative** — LoCoMo / head-to-head not published | Run and document at least one external comparison |
-| P2 | **Ecosystem packaging** — adapter docs, plugin author guide, community templates | Reference adapter + plugin dev doc linked from README |
+| P2 | **Positioning vs simple RAG** — narrow wedge hard to explain in 30s | ~~[examples/trust-vs-rag/](../examples/trust-vs-rag/) + `demo_flow.py`~~ (shipped) |
+| P2 | **Benchmark narrative** — LoCoMo / head-to-head not published | ~~[LOCOMO_BENCHMARK.md](LOCOMO_BENCHMARK.md) harness + dry-run docs~~ (shipped; full run needs `OPENAI_API_KEY`) |
+| P2 | **Ecosystem packaging** — adapter docs, plugin author guide, community templates | ~~[PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md) + [examples/](examples/) adapters~~ (shipped) |
 
 ## Near term (adoption slice)
 

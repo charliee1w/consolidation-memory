@@ -68,3 +68,29 @@ class DesktopBackend:
     def recent_episodes(self, *, limit: int = 40) -> list[dict]:
         bounded = max(1, min(limit, 200))
         return self._data.get_episodes(limit=bounded)
+
+    def status(self, *, lightweight: bool = True) -> dict[str, object]:
+        return execute_tool_call(
+            "memory_status",
+            {"lightweight": lightweight},
+        )
+
+    def hygiene_scan(self) -> dict[str, object]:
+        return execute_tool_call("memory_hygiene_scan", {})
+
+    def hygiene_apply(
+        self,
+        *,
+        use_recommended: bool = False,
+        expire_orphans: bool = False,
+        dry_run: bool = False,
+        episode_ids: list[str] | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "use_recommended": use_recommended,
+            "expire_orphans": expire_orphans,
+            "dry_run": dry_run,
+        }
+        if episode_ids is not None:
+            payload["episode_ids"] = episode_ids
+        return execute_tool_call("memory_hygiene_apply", payload)

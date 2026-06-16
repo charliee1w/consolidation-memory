@@ -12,10 +12,14 @@ Usage:
     consolidation-memory import PATH # Import from JSON export
     consolidation-memory reindex     # Re-embed all episodes with current backend
     consolidation-memory warmup      # Pre-build recall embedding caches
+    consolidation-memory daemon      # Background maintenance (utility scheduler)
+    consolidation-memory daemon install  # Register login-time maintenance daemon
     consolidation-memory dashboard   # Launch TUI dashboard
     consolidation-memory policy list # List persisted access policies
     consolidation-memory policy grant --principal-type app_client \
         --principal-key python_sdk:legacy_client --write-mode deny
+    consolidation-memory hygiene scan   # Corpus hygiene report (JSON)
+    consolidation-memory hygiene apply --recommended --expire-orphans
 """
 
 import argparse
@@ -167,20 +171,10 @@ similarity_threshold = 0.95
     ensure_schema()
     print("Database initialized.")
 
+    from consolidation_memory.setup_service import print_adoption_hints
+
     active_project = get_active_project()
-    print("\n--- Add to your MCP client config (full tools) ---")
-    print(json.dumps({
-        "mcpServers": {
-            "consolidation_memory": _recommended_mcp_server_config(active_project)
-        }
-    }, indent=2))
-    print("\n--- Simple profile (recall + remember + ask only) ---")
-    print(json.dumps({
-        "mcpServers": {
-            "consolidation_memory": _recommended_mcp_simple_server_config(active_project)
-        }
-    }, indent=2))
-    print(f"\nMCP project namespace: {active_project}")
+    print_adoption_hints(active_project)
     print("\nSetup complete. Run 'consolidation-memory app' for the native desktop UI.")
 
 
@@ -203,9 +197,13 @@ def cmd_init(quick: bool = False):
             return
 
     if quick:
+        from consolidation_memory.config import get_active_project
+        from consolidation_memory.setup_service import print_adoption_hints
+
         print("Quick setup: fastembed embeddings, LLM disabled, auto-consolidation on.")
         _write_default_config(embed_backend="fastembed", llm_backend="disabled")
         print("Tip: run 'consolidation-memory warmup' after login to speed up first MCP recall.")
+        print_adoption_hints(get_active_project())
         return
 
     # Embedding backend
@@ -1028,6 +1026,65 @@ def cmd_warmup(*, claims: bool = False, as_json: bool = False) -> None:
     )
 
 
+def cmd_daemon_run() -> None:
+    """Run the background maintenance daemon in the foreground."""
+    import logging
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+    from consolidation_memory.daemon_service import run_daemon
+
+    result = run_daemon()
+    if result.get("status") == "already_running":
+        print(str(result.get("message")), file=sys.stderr)
+        sys.exit(1)
+    print(str(result.get("message") or "Maintenance daemon stopped."))
+
+
+def cmd_daemon_install(*, as_json: bool = False) -> None:
+    """Install a login-time maintenance daemon for the active project."""
+    from consolidation_memory.daemon_service import install_daemon
+
+    result = install_daemon()
+    if as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(result.get("message") or json.dumps(result, indent=2))
+    if result.get("status") == "error":
+        sys.exit(1)
+
+
+def cmd_daemon_uninstall(*, as_json: bool = False) -> None:
+    """Remove the login-time maintenance daemon for the active project."""
+    from consolidation_memory.daemon_service import uninstall_daemon
+
+    result = uninstall_daemon()
+    if as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(result.get("message") or json.dumps(result, indent=2))
+    if result.get("status") == "error":
+        sys.exit(1)
+
+
+def cmd_daemon_status(*, as_json: bool = False) -> None:
+    """Report maintenance daemon install/run state."""
+    from consolidation_memory.daemon_service import daemon_status
+
+    result = daemon_status()
+    if as_json:
+        print(json.dumps(result, indent=2))
+        return
+    print(result.get("message") or "Maintenance daemon status unknown.")
+    print(f"  installed: {result.get('installed')}")
+    print(f"  running: {result.get('running')}")
+    print(f"  scheduler_enabled (config): {result.get('scheduler_enabled')}")
+    if result.get("log_path"):
+        print(f"  log: {result.get('log_path')}")
+
+
 def cmd_reindex() -> None:
     """Re-embed all episodes with current backend."""
     import logging
@@ -1208,9 +1265,10 @@ def _memory_instructions_snippet() -> str:
     return """\
 ## Memory
 
-**Recall**: At the start of every new conversation, call `memory_recall`
-with a query matching the user's opening message topic. This is your
-persistent memory - always check it before responding.
+**Recall first**: At the start of every user turn, call `memory_recall`
+with a query matching the user's goal. Use `include_knowledge=true` when
+you need consolidated topics/claims. This is your persistent memory —
+always check it before other tools or responses.
 
 **Store**: Proactively call `memory_store` whenever you:
 - Learn something new about the user's setup, environment, or projects
@@ -1223,6 +1281,13 @@ Write each memory as a self-contained note that future-you can understand
 without context. Use appropriate `content_type` (fact, solution, preference,
 exchange) and add `tags` for organization. Do NOT store trivial exchanges
 like greetings or simple Q&A.
+
+**Drift and hygiene**: After substantial code edits, call `memory_detect_drift`.
+Run `memory_hygiene_scan` on noisy corpora; `forget()` expires claims that lose
+all provenance. Consolidated knowledge can lag code — correct with `memory_correct`
+or superseding episodes plus `memory_consolidate`.
+
+**Finish**: Before closing a turn, call `memory_recall` again for the active scope.
 """
 
 
@@ -1268,6 +1333,50 @@ def cmd_setup_memory(path: str = "AGENTS.md"):
         print(f"Created {target_path}")
 
     print("\nMemory instructions are installed for this agent instruction file.")
+
+
+def cmd_hygiene_scan(*, as_json: bool = True) -> None:
+    """Print a read-only corpus hygiene report."""
+    from consolidation_memory.corpus_hygiene import scan_corpus_hygiene
+
+    report = scan_corpus_hygiene()
+    if as_json:
+        print(json.dumps(report, indent=2, default=str))
+        return
+
+    episodes_raw = report.get("episodes")
+    orphans_raw = report.get("orphaned_claims")
+    episodes = episodes_raw if isinstance(episodes_raw, dict) else {}
+    orphans = orphans_raw if isinstance(orphans_raw, dict) else {}
+    print(f"Active episodes: {episodes.get('total_active', 0)}")
+    print(f"Recommended cleanup: {len(episodes.get('recommended_cleanup_ids') or [])}")
+    print(f"Orphaned active claims: {orphans.get('count', 0)}")
+
+
+def cmd_hygiene_apply(
+    *,
+    episode_ids: list[str] | None,
+    use_recommended: bool,
+    expire_orphans: bool,
+    dry_run: bool,
+) -> None:
+    """Apply corpus hygiene cleanup."""
+    from consolidation_memory.corpus_hygiene import apply_corpus_hygiene
+
+    if not use_recommended and not episode_ids:
+        print(
+            "Provide --recommended or at least one --episode-id.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    result = apply_corpus_hygiene(
+        episode_ids,
+        use_recommended=use_recommended,
+        expire_orphans=expire_orphans,
+        dry_run=dry_run,
+    )
+    print(json.dumps(result, indent=2, default=str))
 
 
 def cmd_policy_list() -> None:
@@ -1470,6 +1579,60 @@ def main():
     )
     sub.add_parser("dashboard", help="Launch TUI dashboard")
 
+    p_daemon = sub.add_parser(
+        "daemon",
+        help="Background maintenance daemon (utility scheduler; separate from fast MCP)",
+    )
+    daemon_sub = p_daemon.add_subparsers(dest="daemon_command")
+    daemon_sub.add_parser(
+        "run",
+        help="Run maintenance daemon in foreground (default when no subcommand)",
+    )
+    p_daemon_install = daemon_sub.add_parser(
+        "install",
+        help="Register maintenance daemon to start at user logon",
+    )
+    p_daemon_install.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p_daemon_uninstall = daemon_sub.add_parser(
+        "uninstall",
+        help="Remove login-time maintenance daemon registration",
+    )
+    p_daemon_uninstall.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p_daemon_status = daemon_sub.add_parser("status", help="Show maintenance daemon state")
+    p_daemon_status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    p_hygiene = sub.add_parser("hygiene", help="Scan and clean noisy episodes and orphaned claims")
+    hygiene_sub = p_hygiene.add_subparsers(dest="hygiene_command", required=True)
+    p_hygiene_scan = hygiene_sub.add_parser("scan", help="Read-only corpus hygiene report")
+    p_hygiene_scan.add_argument(
+        "--plain",
+        action="store_true",
+        help="Print a short human summary instead of JSON",
+    )
+    p_hygiene_apply = hygiene_sub.add_parser("apply", help="Forget noisy episodes and repair orphans")
+    p_hygiene_apply.add_argument(
+        "--recommended",
+        action="store_true",
+        help="Forget all episodes flagged by the hygiene scan",
+    )
+    p_hygiene_apply.add_argument(
+        "--episode-id",
+        action="append",
+        default=None,
+        dest="episode_ids",
+        help="Explicit episode UUID to forget (repeatable)",
+    )
+    p_hygiene_apply.add_argument(
+        "--expire-orphans",
+        action="store_true",
+        help="Expire active claims that lost all provenance",
+    )
+    p_hygiene_apply.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview cleanup without mutating the corpus",
+    )
+
     p_policy = sub.add_parser("policy", help="Manage persisted scope policies and ACL bindings")
     policy_sub = p_policy.add_subparsers(dest="policy_command", required=True)
     policy_sub.add_parser("list", help="List access policies and ACL bindings")
@@ -1542,6 +1705,26 @@ def main():
         cmd_setup_memory(args.path)
     elif args.command == "dashboard":
         cmd_dashboard()
+    elif args.command == "daemon":
+        daemon_command = getattr(args, "daemon_command", None)
+        if daemon_command in (None, "run"):
+            cmd_daemon_run()
+        elif daemon_command == "install":
+            cmd_daemon_install(as_json=args.json)
+        elif daemon_command == "uninstall":
+            cmd_daemon_uninstall(as_json=args.json)
+        elif daemon_command == "status":
+            cmd_daemon_status(as_json=args.json)
+    elif args.command == "hygiene":
+        if args.hygiene_command == "scan":
+            cmd_hygiene_scan(as_json=not args.plain)
+        elif args.hygiene_command == "apply":
+            cmd_hygiene_apply(
+                episode_ids=args.episode_ids,
+                use_recommended=args.recommended,
+                expire_orphans=args.expire_orphans,
+                dry_run=args.dry_run,
+            )
     elif args.command == "policy":
         if args.policy_command == "list":
             cmd_policy_list()

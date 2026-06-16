@@ -38,8 +38,6 @@ except ImportError:
 from contextlib import asynccontextmanager
 
 from consolidation_memory import __version__
-
-ExecuteFn: TypeAlias = Callable[..., Awaitable[dict[str, object]]]
 from consolidation_memory.drift_subprocess import run_detect_drift_subprocess
 from consolidation_memory.runtime import MemoryRuntime
 from consolidation_memory.tool_adapter import (
@@ -48,6 +46,8 @@ from consolidation_memory.tool_adapter import (
     inject_recall_deadline,
 )
 from consolidation_memory.tool_dispatch import execute_tool_call, tool_requires_client
+
+ExecuteFn: TypeAlias = Callable[..., Awaitable[dict[str, object]]]
 
 # Valid content types accepted by the memory system.
 _ContentTypeLiteral = Literal["exchange", "fact", "solution", "preference", "procedure"]
@@ -370,6 +370,13 @@ class ConsolidationLogRequest(BaseModel):
     last_n: int = Field(default=5, ge=1, le=20)
     scope: _ScopeInput | None = None
     global_scope: bool = False
+
+
+class HygieneApplyRequest(BaseModel):
+    episode_ids: list[str] | None = None
+    use_recommended: bool = False
+    expire_orphans: bool = False
+    dry_run: bool = False
 
 
 class PolicyGrantRequest(BaseModel):
@@ -787,6 +794,19 @@ def _register_memory_routes(app: FastAPI, execute: ExecuteFn) -> None:
         """Show decay candidates with optional explicit scope."""
         payload = {} if req is None else req.model_dump(exclude_none=True)
         return await execute("memory_decay_report", payload)
+
+    @app.get("/memory/hygiene/scan")
+    async def hygiene_scan():
+        """Read-only corpus hygiene report."""
+        return await execute("memory_hygiene_scan", {})
+
+    @app.post("/memory/hygiene/apply")
+    async def hygiene_apply(req: HygieneApplyRequest):
+        """Apply corpus hygiene cleanup."""
+        result = await execute("memory_hygiene_apply", req.model_dump(exclude_none=True))
+        if isinstance(result, dict) and result.get("error"):
+            raise HTTPException(status_code=400, detail=str(result["error"]))
+        return result
 
     @app.get("/memory/policy")
     async def policy_list():

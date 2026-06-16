@@ -213,6 +213,8 @@ if _PYSIDE_AVAILABLE:
             self._tabs.addTab(self._build_ask_tab(), "Ask")
             self._tabs.addTab(self._build_remember_tab(), "Remember")
             self._tabs.addTab(self._build_browse_tab(), "Browse")
+            self._tabs.addTab(self._build_health_tab(), "Health")
+            self._tabs.addTab(self._build_hygiene_tab(), "Hygiene")
             root.addWidget(self._tabs, stretch=1)
 
             actions = QHBoxLayout()
@@ -316,6 +318,43 @@ if _PYSIDE_AVAILABLE:
             reload_btn.clicked.connect(self._load_episodes)
             row.addWidget(reload_btn)
             layout.addLayout(row)
+            return page
+
+        def _build_health_tab(self) -> QWidget:
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            row = QHBoxLayout()
+            refresh_btn = QPushButton("Refresh status")
+            refresh_btn.clicked.connect(self._load_health)
+            row.addWidget(refresh_btn)
+            row.addStretch(1)
+            layout.addLayout(row)
+            self._health_details = QTextBrowser()
+            layout.addWidget(self._health_details, stretch=1)
+            return page
+
+        def _build_hygiene_tab(self) -> QWidget:
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            actions = QHBoxLayout()
+            scan_btn = QPushButton("Scan corpus")
+            scan_btn.clicked.connect(self._on_hygiene_scan)
+            preview_btn = QPushButton("Preview cleanup")
+            preview_btn.setObjectName("secondary")
+            preview_btn.clicked.connect(self._on_hygiene_preview)
+            apply_btn = QPushButton("Apply cleanup")
+            apply_btn.clicked.connect(self._on_hygiene_apply)
+            actions.addWidget(scan_btn)
+            actions.addWidget(preview_btn)
+            actions.addWidget(apply_btn)
+            actions.addStretch(1)
+            layout.addLayout(actions)
+            from PySide6.QtWidgets import QCheckBox
+
+            self._hygiene_expire_orphans = QCheckBox("Expire orphaned claims")
+            layout.addWidget(self._hygiene_expire_orphans)
+            self._hygiene_results = QTextBrowser()
+            layout.addWidget(self._hygiene_results, stretch=1)
             return page
 
         def show_and_raise(self) -> None:
@@ -490,6 +529,68 @@ if _PYSIDE_AVAILABLE:
                 self._backend.consolidate,
                 busy_message="Running consolidation…",
                 on_success=_done,
+            )
+
+        def _load_health(self) -> None:
+            def _done(result: object) -> None:
+                if not isinstance(result, dict):
+                    self._health_details.setPlainText("Unexpected status response.")
+                    return
+                import json
+
+                self._health_details.setPlainText(json.dumps(result, indent=2, default=str))
+                self._status.showMessage("Health status refreshed.")
+
+            self._run_async(
+                self._backend.status,
+                busy_message="Loading health status…",
+                on_success=_done,
+            )
+
+        def _format_hygiene_report(self, result: object) -> str:
+            if not isinstance(result, dict):
+                return "Unexpected hygiene response."
+            import json
+
+            return json.dumps(result, indent=2, default=str)
+
+        def _on_hygiene_scan(self) -> None:
+            def _done(result: object) -> None:
+                self._hygiene_results.setPlainText(self._format_hygiene_report(result))
+                self._status.showMessage("Hygiene scan complete.")
+
+            self._run_async(
+                self._backend.hygiene_scan,
+                busy_message="Scanning corpus…",
+                on_success=_done,
+            )
+
+        def _on_hygiene_preview(self) -> None:
+            self._run_hygiene_apply(dry_run=True)
+
+        def _on_hygiene_apply(self) -> None:
+            self._run_hygiene_apply(dry_run=False)
+
+        def _run_hygiene_apply(self, *, dry_run: bool) -> None:
+            expire_orphans = self._hygiene_expire_orphans.isChecked()
+
+            def _done(result: object) -> None:
+                self._hygiene_results.setPlainText(self._format_hygiene_report(result))
+                label = "Preview complete." if dry_run else "Hygiene apply complete."
+                self._status.showMessage(label)
+                if not dry_run:
+                    self.refresh_overview()
+                    self._load_episodes()
+
+            self._run_async(
+                self._backend.hygiene_apply,
+                busy_message="Previewing cleanup…" if dry_run else "Applying cleanup…",
+                on_success=_done,
+                fn_kwargs={
+                    "use_recommended": True,
+                    "expire_orphans": expire_orphans,
+                    "dry_run": dry_run,
+                },
             )
 
         def _on_forget_selected(self) -> None:

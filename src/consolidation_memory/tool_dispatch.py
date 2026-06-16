@@ -45,6 +45,8 @@ _CLIENTLESS_TOOLS = frozenset(
         "memory_detect_drift",
         "memory_policy_list",
         "memory_policy_grant",
+        "memory_hygiene_scan",
+        "memory_hygiene_apply",
     }
 )
 
@@ -821,6 +823,34 @@ def execute_tool_call(
         from consolidation_memory.policy_admin import list_policy_bindings
 
         return list_policy_bindings()
+
+    if name == "memory_hygiene_scan":
+        from consolidation_memory.corpus_hygiene import scan_corpus_hygiene
+
+        return scan_corpus_hygiene()
+
+    if name == "memory_hygiene_apply":
+        from consolidation_memory.corpus_hygiene import apply_corpus_hygiene
+
+        raw_episode_ids = arguments.get("episode_ids")
+        episode_ids: list[str] | None = None
+        if raw_episode_ids is not None:
+            if not isinstance(raw_episode_ids, list):
+                raise TypeError("episode_ids must be a list of episode id strings")
+            episode_ids = [
+                _validate_required_text(
+                    "episode_ids[]",
+                    episode_id,
+                    max_length=64,
+                )
+                for episode_id in raw_episode_ids
+            ]
+        return apply_corpus_hygiene(
+            episode_ids,
+            use_recommended=bool(arguments.get("use_recommended", False)),
+            expire_orphans=bool(arguments.get("expire_orphans", False)),
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
 
     if name == "memory_policy_grant":
         from consolidation_memory.policy_admin import grant_policy_binding

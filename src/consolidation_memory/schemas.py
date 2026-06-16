@@ -1112,6 +1112,65 @@ MEMORY_POLICY_GRANT_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_HYGIENE_SCAN_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_hygiene_scan",
+        "description": (
+            "Read-only corpus hygiene report: noisy episode candidates, orphaned active "
+            "claims, and stale episode sources. Use before batch cleanup."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
+MEMORY_HYGIENE_APPLY_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_hygiene_apply",
+        "description": (
+            "Apply corpus hygiene: forget selected or recommended noisy episodes and "
+            "optionally expire orphaned claims. Irreversible unless dry_run=true."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "episode_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 64},
+                    "maxItems": 500,
+                    "description": "Explicit episode UUIDs to forget.",
+                },
+                "use_recommended": {
+                    "type": "boolean",
+                    "description": (
+                        "Forget all episodes flagged by the latest hygiene scan "
+                        "(temp/test, exchange, noise journal)."
+                    ),
+                    "default": False,
+                },
+                "expire_orphans": {
+                    "type": "boolean",
+                    "description": "Expire active claims that lost all provenance.",
+                    "default": False,
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview actions without mutating the corpus.",
+                    "default": False,
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
 MEMORY_CONSOLIDATION_LOG_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -1174,6 +1233,8 @@ openai_tools: list[dict[str, Any]] = [
     MEMORY_CONSOLIDATION_LOG_SCHEMA,
     MEMORY_POLICY_LIST_SCHEMA,
     MEMORY_POLICY_GRANT_SCHEMA,
+    MEMORY_HYGIENE_SCAN_SCHEMA,
+    MEMORY_HYGIENE_APPLY_SCHEMA,
 ]
 
 

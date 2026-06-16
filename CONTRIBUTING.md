@@ -38,7 +38,10 @@ Some tools are **scope-aware** by default; others are **global by design**.
 - `memory_compact` / FAISS compaction — rebuilds the shared vector index
 - `memory_detect_drift` — git diff against a base ref (namespace/project scope only narrows challenged-claim attribution)
 - `memory_policy_list` / `memory_policy_grant` — persisted ACL administration across the DB (CLI: `consolidation-memory policy list|grant`)
+- `memory_hygiene_scan` / `memory_hygiene_apply` — corpus-wide noisy-episode scan and orphan-claim repair (CLI: `consolidation-memory hygiene scan|apply`; UI Hygiene tab)
 - Audit reads with `global_scope=true` — corpus-wide ops dashboard view; `memory_status` caches per scope key (including global)
+
+`memory_forget` is scope-aware but **also expires claims** that lose all provenance when episodes are forgotten. Use hygiene apply with `expire_orphans=true` for claims detached by batch cleanup.
 
 ### Policy administration
 

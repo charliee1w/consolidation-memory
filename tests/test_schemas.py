@@ -56,6 +56,8 @@ class TestSchemaStructure:
             "memory_consolidation_log",
             "memory_policy_list",
             "memory_policy_grant",
+            "memory_hygiene_scan",
+            "memory_hygiene_apply",
         }
 
     def test_schemas_have_required_fields(self):

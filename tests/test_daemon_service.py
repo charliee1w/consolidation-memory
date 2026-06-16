@@ -66,6 +66,24 @@ class TestDaemonStatus:
         assert status["running"] is False
         assert status["scheduler_enabled"] is True
 
+    def test_is_daemon_running_when_lock_held_but_pid_unreadable(self, tmp_path):
+        from consolidation_memory.config import reset_config
+        from consolidation_memory.daemon_service import daemon_lock_path, is_daemon_running
+
+        reset_config(_base_data_dir=tmp_path / "data")
+        lock_path = daemon_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("pid=99999", encoding="utf-8")
+
+        with patch(
+            "consolidation_memory.daemon_service._read_lock_pid",
+            return_value=None,
+        ), patch(
+            "consolidation_memory.daemon_service._daemon_lock_held",
+            return_value=True,
+        ):
+            assert is_daemon_running() is True
+
 
 class TestDaemonInstall:
     def test_install_windows_falls_back_to_startup_on_access_denied(self, tmp_path, monkeypatch):

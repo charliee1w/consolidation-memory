@@ -158,12 +158,26 @@ def _read_lock_pid(lock_path: Path) -> int | None:
     return None
 
 
+def _daemon_lock_held(lock_path: Path) -> bool:
+    """Return True when another process holds the cross-process daemon lease."""
+    from consolidation_memory.process_write_lock import ProcessWriteLease
+
+    if not lock_path.is_file():
+        return False
+    lease = ProcessWriteLease(lock_path, timeout_seconds=0.15)
+    try:
+        with lease.acquire():
+            return False
+    except TimeoutError:
+        return True
+
+
 def is_daemon_running() -> bool:
     lock_path = daemon_lock_path()
     pid = _read_lock_pid(lock_path)
     if pid is not None and _pid_alive(pid):
         return True
-    return False
+    return _daemon_lock_held(lock_path)
 
 
 def _platform_key() -> str:

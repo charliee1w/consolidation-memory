@@ -7,6 +7,13 @@ tool on every user turn when `consolidation_memory` MCP is available.
 
 Read [CONTRIBUTING.md](../../CONTRIBUTING.md) and [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) before code changes.
 
+## Fresh working copy
+
+After `memory_recall`, run `python scripts/sync_working_copy.py` as the first shell step
+when the tree is clean. This fetches and rebases onto `origin/<branch>`. If the tree is
+dirty, report it and ask whether to commit, stash (`--stash`), or continue on the
+current base. Re-run sync before pushing or after long idle gaps.
+
 ## Workflow
 
 - Preserve trust invariants (temporal correctness, provenance, contradictions, drift auditability, scope isolation, surface parity).

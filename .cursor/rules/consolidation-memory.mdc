@@ -13,7 +13,8 @@ You are working on **consolidation-memory**: a local-first, trust-calibrated bel
 as your **first** tool — before shell, reads, edits, searches, or subagents.
 
 1. `memory_recall` with a query from the user's goal (`include_knowledge=true`).
-2. Then proceed with other work.
+2. `python scripts/sync_working_copy.py` when the git tree is clean (keeps `main` on `origin/main`).
+3. Then proceed with other work.
 3. `memory_store` after meaningful progress; `memory_detect_drift` after substantial edits.
 4. Final `memory_recall` before closing the turn.
 

@@ -52,6 +52,7 @@ def main() -> int:
         return 1
 
     print("agent bootstrap check: OK")
+    print("  next: python scripts/sync_working_copy.py (if tree clean)")
     print("  next: read CONTRIBUTING.md and docs/ARCHITECTURE.md before coding")
     return 0
 

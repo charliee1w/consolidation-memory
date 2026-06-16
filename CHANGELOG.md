@@ -4,6 +4,7 @@
 
 ### Features
 
+- feat: add sync_working_copy script for fresh origin/main
 - feat: add maintenance daemon and complete P2 adoption docs
 
 ## 0.19.0 - 2026-06-15

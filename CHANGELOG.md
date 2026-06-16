@@ -7,6 +7,10 @@
 - feat: add sync_working_copy script for fresh origin/main
 - feat: add maintenance daemon and complete P2 adoption docs
 
+### Bug Fixes
+
+- fix(daemon): fall back to Startup folder when schtasks is denied on Windows
+
 ## 0.19.0 - 2026-06-15
 
 ### Features

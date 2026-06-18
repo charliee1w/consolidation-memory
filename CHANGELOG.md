@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.2 - 2026-06-18
+
+### Bug Fixes
+
+- fix(ci): bandit publish gate fails only on medium+ severity
+
+
 ## 0.20.1 - 2026-06-18
 
 ### Other

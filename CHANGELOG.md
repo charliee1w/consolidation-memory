@@ -2,19 +2,9 @@
 
 ## Unreleased
 
-### Features
+### Internal
 
-- feat: add REST /ops routes and real_world_eval trend script
-- feat: add sync_working_copy script for fresh origin/main
-- feat: add maintenance daemon and complete P2 adoption docs
-
-### Bug Fixes
-
-- fix(release): bandit gate fails only on medium+ severity
-- fix(eval): pass drift section when changed paths have no impacted claims
-- fix(desktop): satisfy mypy for optional tray and QApplication
-- fix(daemon): detect running state when Windows lock blocks pid read
-- fix(daemon): fall back to Startup folder when schtasks is denied on Windows
+- chore(metrics): refresh published_metrics.json from 2026-06-16 full eval
 
 ## 0.20.0 - 2026-06-18
 

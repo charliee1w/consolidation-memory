@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.20.1 - 2026-06-18
 
 ### Other
 
 - Maintenance release.
+
 
 ## 0.20.0 - 2026-06-18
 

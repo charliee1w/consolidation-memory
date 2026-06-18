@@ -10,6 +10,7 @@
 
 ### Bug Fixes
 
+- fix(eval): pass drift section when changed paths have no impacted claims
 - fix(desktop): satisfy mypy for optional tray and QApplication
 - fix(daemon): detect running state when Windows lock blocks pid read
 - fix(daemon): fall back to Startup folder when schtasks is denied on Windows

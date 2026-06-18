@@ -178,6 +178,7 @@ if _PYSIDE_AVAILABLE:
             super().__init__()
             self._backend = backend
             self._tray_enabled = tray_enabled
+            self._tray: QSystemTrayIcon | None = None
             self._worker: _Worker | None = None
             self._icon = build_app_icon()
 
@@ -636,7 +637,9 @@ if _PYSIDE_AVAILABLE:
         def _quit_app(self) -> None:
             if self._tray is not None:
                 self._tray.hide()
-            QApplication.instance().quit()
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
 
 
 def run_desktop_app(*, tray: bool = True) -> None:

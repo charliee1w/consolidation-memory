@@ -10,6 +10,7 @@
 
 ### Bug Fixes
 
+- fix(release): bandit gate fails only on medium+ severity
 - fix(eval): pass drift section when changed paths have no impacted claims
 - fix(desktop): satisfy mypy for optional tray and QApplication
 - fix(daemon): detect running state when Windows lock blocks pid read

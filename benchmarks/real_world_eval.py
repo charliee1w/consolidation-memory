@@ -492,6 +492,9 @@ def evaluate_live_drift_response(repo_path: Path) -> dict[str, Any]:
     if changed_count == 0:
         passed = True
         note = "No changed repo paths detected; drift challenge rate not required."
+    elif impacted_count == 0:
+        passed = True
+        note = "Changed repo paths detected but no anchored claims were impacted."
     else:
         passed = challenge_rate >= thresholds["drift_challenge_rate_gte"]
         note = "Drift challenge evaluated against currently changed repo paths."

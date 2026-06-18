@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from benchmarks.real_world_eval import (
     _claim_query_from_payload,
     _drift_challenge_rate,
@@ -51,6 +53,25 @@ def test_episode_recall_hit_accepts_claim_provenance_link():
         records = []
 
     assert _episode_recall_hit(_Recall(), "ep-1") is True
+
+
+def test_drift_passes_when_paths_change_without_impacted_claims():
+    from benchmarks.real_world_eval import evaluate_live_drift_response
+    from unittest.mock import MagicMock, patch
+
+    drift_payload = {
+        "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/new_file.py"}],
+        "impacted_claim_ids": [],
+        "challenged_claim_ids": [],
+        "impacts": [],
+    }
+    mock_client = MagicMock()
+    mock_client.detect_drift.return_value = drift_payload
+    with patch("consolidation_memory.MemoryClient", return_value=mock_client):
+        section = evaluate_live_drift_response(Path("."))
+
+    assert section["pass"] is True
+    assert section["measured"]["impacted_claim_count"] == 0
 
 
 def test_ci_mode_fixture_eval_passes():

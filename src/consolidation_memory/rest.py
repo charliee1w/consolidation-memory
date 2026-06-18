@@ -416,8 +416,10 @@ def create_app(*, bind_host: str | None = None) -> FastAPI:
     _install_auth_middleware(app)
     execute = _build_execute(runtime)
     _register_memory_routes(app, execute)
+    from consolidation_memory.ops_routes import register_ops_routes
     from consolidation_memory.web_ui import register_web_ui_routes
 
+    register_ops_routes(app, execute=execute)
     register_web_ui_routes(app, execute=execute)
     return app
 

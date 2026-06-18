@@ -106,7 +106,12 @@ class TestDesktopImportGuards:
         not __import__("importlib").util.find_spec("PySide6"),
         reason="PySide6 not installed",
     )
-    def test_build_app_icon_with_pyside6(self):
+    def test_build_app_icon_with_pyside6(self, monkeypatch):
+        monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+
+        if QApplication.instance() is None:
+            QApplication([])
         from consolidation_memory.desktop_app import build_app_icon
 
         icon = build_app_icon()

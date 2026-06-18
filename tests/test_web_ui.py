@@ -233,3 +233,51 @@ class TestWebUiRoutes:
             json={"content": "bad", "kind": "invalid"},
         )
         assert resp.status_code == 422
+
+
+class TestOpsRoutes:
+    @pytest.fixture
+    def ops_client(self):
+        from consolidation_memory.rest import create_app
+
+        app = create_app()
+        with TestClient(app) as client:
+            yield client
+
+    def test_ops_overview_matches_ui_shape(self, ops_client):
+        resp = ops_client.get("/ops/overview")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "stats" in data
+        assert "health" in data
+        assert "maintenance_daemon" in data
+        assert "warnings" in data
+        assert "fix_actions" in data
+
+    def test_ops_metrics_endpoint(self, ops_client):
+        resp = ops_client.get("/ops/metrics")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["benchmark"] == "real_world_eval"
+        assert isinstance(data["sections"], list)
+
+    @patch("consolidation_memory.daemon_service.daemon_status")
+    def test_ops_daemon_status(self, mock_status, ops_client):
+        mock_status.return_value = {"installed": True, "running": False, "message": "stopped"}
+        resp = ops_client.get("/ops/daemon/status")
+        assert resp.status_code == 200
+        assert resp.json()["installed"] is True
+
+    @patch("consolidation_memory.daemon_service.install_daemon")
+    def test_ops_daemon_install(self, mock_install, ops_client):
+        mock_install.return_value = {"status": "ok", "message": "installed"}
+        resp = ops_client.post("/ops/daemon/install")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    @patch("consolidation_memory.ops_routes.warmup_recall_caches")
+    def test_ops_warmup(self, mock_warmup, ops_client):
+        mock_warmup.return_value = {"status": "ok"}
+        resp = ops_client.post("/ops/warmup")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"

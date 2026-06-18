@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-### Internal
+### Other
 
-- chore(metrics): refresh published_metrics.json from 2026-06-16 full eval
+- Maintenance release.
 
 ## 0.20.0 - 2026-06-18
 

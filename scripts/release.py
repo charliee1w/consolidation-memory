@@ -270,6 +270,7 @@ def get_quality_gate_commands(python_executable: str, scratch_dir: Path) -> list
                 "-m",
                 "bandit",
                 "-q",
+                "-ll",
                 "-r",
                 "src",
                 "scripts",

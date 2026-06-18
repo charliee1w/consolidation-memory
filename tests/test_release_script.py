@@ -122,6 +122,7 @@ def test_get_quality_gate_commands_match_publish_contract(tmp_path):
         "-m",
         "bandit",
         "-q",
+        "-ll",
         "-r",
         "src",
         "scripts",

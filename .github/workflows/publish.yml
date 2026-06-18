@@ -20,7 +20,7 @@ jobs:
 
       - name: Require tagged commit to be on origin/main ancestry
         run: |
-          git fetch origin main --depth=1
+          git fetch origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/main"; then
             echo "::error::Tag $GITHUB_REF_NAME points to a commit that is not on origin/main."
             echo "::error::Create release tags from main only."

@@ -4,11 +4,13 @@
 
 ### Features
 
+- feat: add REST /ops routes and real_world_eval trend script
 - feat: add sync_working_copy script for fresh origin/main
 - feat: add maintenance daemon and complete P2 adoption docs
 
 ### Bug Fixes
 
+- fix(desktop): satisfy mypy for optional tray and QApplication
 - fix(daemon): detect running state when Windows lock blocks pid read
 - fix(daemon): fall back to Startup folder when schtasks is denied on Windows
 

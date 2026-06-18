@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+- fix(daemon): detect running state when Windows lock blocks pid read
 - fix(daemon): fall back to Startup folder when schtasks is denied on Windows
 
 ## 0.19.0 - 2026-06-15

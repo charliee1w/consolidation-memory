@@ -4,7 +4,7 @@
 
 ### Bug Fixes
 
-- fix(ci): bandit publish gate fails only on medium+ severity
+- fix(tests): defer web_ui import so CI collects without fastapi
 
 ## 0.20.1 - 2026-06-18
 

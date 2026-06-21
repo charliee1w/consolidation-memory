@@ -7,7 +7,6 @@ from unittest.mock import patch
 import pytest
 
 from consolidation_memory.simple_api import map_simple_kind, simplify_recall_result
-from consolidation_memory.web_ui import load_index_html
 
 try:
     from fastapi.testclient import TestClient
@@ -17,7 +16,7 @@ except ImportError:
     HAS_FASTAPI = False
 
 
-pytestmark = pytest.mark.skipif(not HAS_FASTAPI, reason="fastapi not installed")
+requires_fastapi = pytest.mark.skipif(not HAS_FASTAPI, reason="fastapi not installed")
 
 
 class TestSimplificationHelpers:
@@ -60,6 +59,7 @@ class TestSimplificationHelpers:
         assert simplified["claims"][0]["trust"] == "high"
 
 
+@requires_fastapi
 class TestWebUiRoutes:
     @pytest.fixture
     def ui_client(self):
@@ -81,6 +81,8 @@ class TestWebUiRoutes:
         assert "Search memory" in resp.text
 
     def test_load_index_html_matches_package_asset(self):
+        from consolidation_memory.web_ui import load_index_html
+
         html = load_index_html()
         assert "<!DOCTYPE html>" in html
         assert 'id="ask-query"' in html
@@ -235,6 +237,7 @@ class TestWebUiRoutes:
         assert resp.status_code == 422
 
 
+@requires_fastapi
 class TestOpsRoutes:
     @pytest.fixture
     def ops_client(self):

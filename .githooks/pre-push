@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed by scripts/install_git_hooks.py — do not edit by hand.
+set -eu
+python scripts/pre_push_check.py

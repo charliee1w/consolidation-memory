@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
@@ -52,14 +55,37 @@ def _shell_payload(event: str, session_id: str = "sess-1") -> dict:
 
 
 def _run_hook(stdin: str, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    run_env = dict(env or {})
-    return subprocess.run(
-        [sys.executable, str(HOOK_PATH)],
-        input=stdin,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=run_env,
+    """Exercise the hook entrypoint in-process (avoids flaky Windows subprocess init)."""
+    module = _load_hook_module()
+    merged_env = {**os.environ, **(env or {})}
+    saved: dict[str, str | None] = {}
+    for key, value in merged_env.items():
+        saved[key] = os.environ.get(key)
+        os.environ[key] = value
+
+    stdout_stream = io.StringIO()
+    returncode = 0
+    old_stdin = sys.stdin
+    try:
+        sys.stdin = io.StringIO(stdin)
+        with redirect_stdout(stdout_stream):
+            try:
+                module.main()
+            except SystemExit as exc:
+                returncode = int(exc.code) if exc.code is not None else 0
+    finally:
+        sys.stdin = old_stdin
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+
+    return subprocess.CompletedProcess(
+        args=[sys.executable, str(HOOK_PATH)],
+        returncode=returncode,
+        stdout=stdout_stream.getvalue(),
+        stderr="",
     )
 
 

@@ -87,11 +87,23 @@ Consolidation may emit knowledge records with additional types (`procedure`, `st
 ## Local validation
 
 ```bash
+python scripts/pre_push_check.py
 pytest tests/ -q
 ruff check src tests
 mypy src/consolidation_memory/
-bandit -q -r src scripts -s B608,B110
+bandit -q -ll -r src scripts -s B608,B110
 ```
+
+### Pre-push hook (recommended)
+
+Install once to catch CI-style failures (optional-import test collection, lint,
+bandit) before `git push`:
+
+```bash
+python scripts/install_git_hooks.py
+```
+
+Skip for a single push with `git push --no-verify`.
 
 For consolidation or claim changes, also run:
 

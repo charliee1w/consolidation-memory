@@ -4,6 +4,7 @@
 
 ### Bug Fixes
 
+- fix(recall): avoid blocking warmup and false deferred warnings
 - fix(ci): align bandit gate and add pre-push collection checks
 - fix(tests): defer web_ui import so CI collects without fastapi
 

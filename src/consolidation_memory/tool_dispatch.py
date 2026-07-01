@@ -12,7 +12,6 @@ if TYPE_CHECKING:
 
 from consolidation_memory.tool_adapter import (
     append_deferred_knowledge_warning,
-    deferred_knowledge_requested,
     effective_include_knowledge,
     inject_recall_deadline,
     maybe_complete_deferred_recall,
@@ -365,10 +364,11 @@ def _memory_recall_result(
         arguments.get("include_knowledge", True),
     )
     recall_deadline_monotonic = _extract_recall_deadline_monotonic(arguments)
+    effective_knowledge = effective_include_knowledge(include_knowledge)
     recall_result = client.query_recall(
         query=query,
         n_results=n_results,
-        include_knowledge=effective_include_knowledge(include_knowledge),
+        include_knowledge=effective_knowledge,
         content_types=_validate_content_type_list(
             "content_types",
             arguments.get("content_types"),
@@ -390,7 +390,7 @@ def _memory_recall_result(
         recall_deadline_monotonic=recall_deadline_monotonic,
     )
     result = dataclasses.asdict(recall_result)
-    if deferred_knowledge_requested(include_knowledge):
+    if include_knowledge and not effective_knowledge:
         result = append_deferred_knowledge_warning(result)
     return result, include_knowledge
 

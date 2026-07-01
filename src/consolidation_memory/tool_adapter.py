@@ -168,7 +168,12 @@ def maybe_complete_deferred_recall(
     client: object | None = None,
     retry_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Warm record caches and retry recall once when knowledge was deferred."""
+    """Retry recall once when knowledge was deferred and caches become ready.
+
+    Polls briefly for background warmup (MCP startup / deferred warm tasks) and
+    never blocks on a full ``warm_recall_caches`` pass — that can take tens of
+    seconds on large corpora and exceeds MCP recall deadlines.
+    """
     if not include_knowledge or not result_has_deferred_knowledge_warning(result):
         return result
 
@@ -180,7 +185,6 @@ def maybe_complete_deferred_recall(
     if budget <= 0:
         return result
 
-    warm_recall_caches(client)
     deadline = time.monotonic() + budget
     while time.monotonic() < deadline:
         if recall_knowledge_cache_ready():

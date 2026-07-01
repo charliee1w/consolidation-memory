@@ -114,7 +114,6 @@ class TestDeferredRecallCompletion:
                 "consolidation_memory.tool_adapter.recall_knowledge_cache_ready",
                 side_effect=[False, True, True],
             ),
-            patch("consolidation_memory.tool_adapter.warm_recall_caches"),
             patch("consolidation_memory.tool_adapter.time.sleep"),
         ):
             result = maybe_complete_deferred_recall(
@@ -127,6 +126,29 @@ class TestDeferredRecallCompletion:
         assert calls["count"] == 1
         assert result == completed
 
+    def test_maybe_complete_deferred_recall_does_not_block_on_warm(self):
+        deferred = append_deferred_knowledge_warning({"episodes": [{"id": "ep-1"}]})
+
+        with (
+            patch(
+                "consolidation_memory.tool_adapter.recall_knowledge_cache_ready",
+                return_value=False,
+            ),
+            patch(
+                "consolidation_memory.tool_adapter.warm_recall_caches",
+            ) as warm,
+            patch("consolidation_memory.tool_adapter.time.sleep"),
+        ):
+            result = maybe_complete_deferred_recall(
+                deferred,
+                include_knowledge=True,
+                recall_executor=lambda: {"episodes": [], "knowledge": []},
+                retry_seconds=1.0,
+            )
+
+        warm.assert_not_called()
+        assert result == deferred
+
     def test_maybe_complete_deferred_recall_skips_when_retry_disabled(self):
         deferred = append_deferred_knowledge_warning({"episodes": []})
         calls = {"count": 0}
@@ -135,17 +157,15 @@ class TestDeferredRecallCompletion:
             calls["count"] += 1
             return {"episodes": [], "knowledge": [{"filename": "topic.md"}]}
 
-        with patch("consolidation_memory.tool_adapter.warm_recall_caches") as warm:
-            result = maybe_complete_deferred_recall(
-                deferred,
-                include_knowledge=True,
-                recall_executor=recall_again,
-                retry_seconds=0.0,
-            )
+        result = maybe_complete_deferred_recall(
+            deferred,
+            include_knowledge=True,
+            recall_executor=recall_again,
+            retry_seconds=0.0,
+        )
 
         assert result == deferred
         assert calls["count"] == 0
-        warm.assert_not_called()
 
 class TestDispatchUsesAdapterSemantics:
     def test_execute_tool_call_defers_knowledge_when_cache_cold(self):
@@ -172,6 +192,35 @@ class TestDispatchUsesAdapterSemantics:
         assert client.query_recall.call_args.kwargs["include_knowledge"] is False
         assert result["warnings"][0].startswith("Knowledge/records/claims deferred")
 
+    def test_execute_tool_call_does_not_warn_when_knowledge_was_included(self):
+        """Deferred warning must reflect the start-of-call decision, not post-recall cache state."""
+        client = MagicMock()
+        completed = RecallResult(
+            episodes=[{"id": "ep-1"}],
+            knowledge=[{"filename": "topic.md"}],
+        )
+        client.query_recall.return_value = completed
+
+        with (
+            patch(
+                "consolidation_memory.tool_adapter.recall_knowledge_cache_ready",
+                side_effect=[True, False],
+            ),
+            patch(
+                "consolidation_memory.tool_adapter.deferred_knowledge_retry_seconds",
+                return_value=0.0,
+            ),
+        ):
+            result = execute_tool_call(
+                "memory_recall",
+                {"query": "hello", "include_knowledge": True},
+                client=client,
+            )
+
+        assert result["knowledge"] == [{"filename": "topic.md"}]
+        assert not result_has_deferred_knowledge_warning(result)
+        assert client.query_recall.call_args.kwargs["include_knowledge"] is True
+
     def test_execute_tool_call_completes_deferred_recall_when_cache_warms(self):
         client = MagicMock()
         deferred = RecallResult(episodes=[{"id": "ep-1"}])
@@ -191,7 +240,6 @@ class TestDispatchUsesAdapterSemantics:
                 "consolidation_memory.tool_adapter.recall_knowledge_cache_ready",
                 side_effect=cache_ready,
             ),
-            patch("consolidation_memory.tool_adapter.warm_recall_caches"),
             patch("consolidation_memory.tool_adapter.time.sleep"),
         ):
             result = execute_tool_call(

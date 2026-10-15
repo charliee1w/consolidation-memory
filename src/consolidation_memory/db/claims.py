@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from consolidation_memory.db._helpers import _normalize_utc_timestamp, _now
 from consolidation_memory.db.connection import get_connection
@@ -324,9 +325,8 @@ def _scoped_claim_ids(scope: Mapping[str, Any] | None) -> set[str] | None:
     """Return claim IDs visible within scope, or None when unscoped."""
     if not scope:
         return None
-    from consolidation_memory.query_semantics import filter_claims_for_scope
-
     from consolidation_memory.db.export import get_all_claims
+    from consolidation_memory.query_semantics import filter_claims_for_scope
 
     scoped = filter_claims_for_scope(get_all_claims(), scope)
     return {str(claim["id"]) for claim in scoped if claim.get("id")}

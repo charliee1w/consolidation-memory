@@ -29,11 +29,11 @@ from typing import Literal, TypeAlias, cast
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import JSONResponse
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, ConfigDict, Field
 except ImportError:
     raise ImportError(
         "REST API requires FastAPI. Install with: pip install consolidation-memory[rest]"
-    )
+    ) from None
 
 from contextlib import asynccontextmanager
 
@@ -43,7 +43,7 @@ from consolidation_memory.runtime import MemoryRuntime
 from consolidation_memory.tool_adapter import (
     build_recall_search_arguments,
     build_recall_timeout_fallback_result,
-    inject_recall_deadline,
+    resolve_recall_deadline,
 )
 from consolidation_memory.tool_dispatch import execute_tool_call, tool_requires_client
 
@@ -202,20 +202,42 @@ def _extract_bearer_token(auth_header: str) -> str | None:
 # ── Pydantic request models ─────────────────────────────────────────────────
 
 
-class SimpleRememberRequest(BaseModel):
+class StrictRequestModel(BaseModel):
+    """Base for REST request bodies that mirror a published tool ``inputSchema``.
+
+    Pydantic defaults to ``extra="ignore"``, so an undeclared body key used to be
+    discarded *here* — before ``tool_dispatch.reject_unknown_arguments`` ever saw
+    it. REST then accepted junk that MCP rejects, and the dispatch seam could
+    not enforce the contract on this surface. Every published tool schema
+    declares ``additionalProperties: false``, so these bodies forbid extras too
+    and FastAPI turns a violation into a 422 whose error entry names the
+    offending key.
+
+    Only the top-level bodies are strict. The nested models below
+    (``EpisodeInput``, ``OutcomeAnchorInput``) describe values the published
+    schemas type as plain objects (``episodes``/``code_anchors`` are arrays of
+    objects with no ``additionalProperties``), which MCP and dispatch still
+    accept extras for; forbidding them here would make REST the only surface that
+    rejects them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SimpleRememberRequest(StrictRequestModel):
     content: str = Field(min_length=1, max_length=50_000)
     kind: Literal["note", "fact", "fix", "preference"] = "note"
     tags: list[str] | None = None
     scope: _ScopeInput | None = None
 
 
-class SimpleAskRequest(BaseModel):
+class SimpleAskRequest(StrictRequestModel):
     query: str = Field(min_length=1, max_length=_MAX_QUERY_LENGTH)
     n_results: int = Field(default=8, ge=1, le=20)
     scope: _ScopeInput | None = None
 
 
-class StoreRequest(BaseModel):
+class StoreRequest(StrictRequestModel):
     content: str = Field(max_length=50_000)
     content_type: _ContentTypeLiteral = "exchange"
     tags: list[str] | None = None
@@ -223,7 +245,7 @@ class StoreRequest(BaseModel):
     scope: _ScopeInput | None = None
 
 
-class RecallRequest(BaseModel):
+class RecallRequest(StrictRequestModel):
     query: str = Field(max_length=_MAX_QUERY_LENGTH)
     n_results: int = Field(default=10, ge=1, le=50)
     include_knowledge: bool = True
@@ -245,12 +267,12 @@ class EpisodeInput(BaseModel):
     surprise: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
-class BatchStoreRequest(BaseModel):
+class BatchStoreRequest(StrictRequestModel):
     episodes: list[EpisodeInput] = Field(max_length=_MAX_BATCH_SIZE)
     scope: _ScopeInput | None = None
 
 
-class SearchRequest(BaseModel):
+class SearchRequest(StrictRequestModel):
     query: str | None = Field(default=None, max_length=_MAX_QUERY_LENGTH)
     content_types: list[_ContentTypeLiteral] | None = None
     tags: list[str] | None = None
@@ -260,14 +282,14 @@ class SearchRequest(BaseModel):
     scope: _ScopeInput | None = None
 
 
-class ClaimBrowseRequest(BaseModel):
+class ClaimBrowseRequest(StrictRequestModel):
     claim_type: str | None = Field(default=None, max_length=64)
     as_of: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=50, ge=1, le=200)
     scope: _ScopeInput | None = None
 
 
-class ClaimSearchRequest(BaseModel):
+class ClaimSearchRequest(StrictRequestModel):
     query: str = Field(max_length=_MAX_QUERY_LENGTH)
     claim_type: str | None = Field(default=None, max_length=64)
     as_of: str | None = Field(default=None, max_length=64)
@@ -280,7 +302,7 @@ class OutcomeAnchorInput(BaseModel):
     anchor_value: str = Field(max_length=_MAX_PATH_LENGTH)
 
 
-class OutcomeRecordRequest(BaseModel):
+class OutcomeRecordRequest(StrictRequestModel):
     action_summary: str = Field(max_length=_MAX_QUERY_LENGTH)
     outcome_type: Literal["success", "failure", "partial_success", "reverted", "superseded"]
     source_claim_ids: list[str] | None = None
@@ -298,7 +320,7 @@ class OutcomeRecordRequest(BaseModel):
     scope: _ScopeInput | None = None
 
 
-class OutcomeBrowseRequest(BaseModel):
+class OutcomeBrowseRequest(StrictRequestModel):
     outcome_type: Literal["success", "failure", "partial_success", "reverted", "superseded"] | None = None
     action_key: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
     source_claim_id: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
@@ -309,77 +331,77 @@ class OutcomeBrowseRequest(BaseModel):
     scope: _ScopeInput | None = None
 
 
-class DetectDriftRequest(BaseModel):
+class DetectDriftRequest(StrictRequestModel):
     base_ref: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
     repo_path: str | None = Field(default=None, max_length=_MAX_PATH_LENGTH)
 
 
-class CorrectRequest(BaseModel):
+class CorrectRequest(StrictRequestModel):
     topic_filename: str = Field(max_length=_MAX_FILENAME_LENGTH)
     correction: str = Field(max_length=50_000)
     scope: _ScopeInput | None = None
 
 
-class ExportRequest(BaseModel):
+class ExportRequest(StrictRequestModel):
     scope: _ScopeInput | None = None
 
 
-class ForgetRequest(BaseModel):
+class ForgetRequest(StrictRequestModel):
     episode_id: str = Field(max_length=_MAX_FILENAME_LENGTH)
     scope: _ScopeInput | None = None
 
 
-class ProtectRequest(BaseModel):
+class ProtectRequest(StrictRequestModel):
     episode_id: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
     tag: str | None = Field(default=None, max_length=100)
     scope: _ScopeInput | None = None
 
 
-class TimelineRequest(BaseModel):
+class TimelineRequest(StrictRequestModel):
     topic: str = Field(max_length=_MAX_TOPIC_LENGTH)
     scope: _ScopeInput | None = None
 
 
-class BrowseRequest(BaseModel):
+class BrowseRequest(StrictRequestModel):
     scope: _ScopeInput | None = None
 
 
-class ReadTopicRequest(BaseModel):
+class ReadTopicRequest(StrictRequestModel):
     filename: str = Field(max_length=_MAX_FILENAME_LENGTH)
     scope: _ScopeInput | None = None
 
 
-class ContradictionsRequest(BaseModel):
+class ContradictionsRequest(StrictRequestModel):
     topic: str | None = Field(default=None, max_length=_MAX_FILENAME_LENGTH)
     scope: _ScopeInput | None = None
     global_scope: bool = False
 
 
-class StatusRequest(BaseModel):
+class StatusRequest(StrictRequestModel):
     lightweight: bool | None = None
     scope: _ScopeInput | None = None
     global_scope: bool = False
 
 
-class DecayReportRequest(BaseModel):
+class DecayReportRequest(StrictRequestModel):
     scope: _ScopeInput | None = None
     global_scope: bool = False
 
 
-class ConsolidationLogRequest(BaseModel):
+class ConsolidationLogRequest(StrictRequestModel):
     last_n: int = Field(default=5, ge=1, le=20)
     scope: _ScopeInput | None = None
     global_scope: bool = False
 
 
-class HygieneApplyRequest(BaseModel):
+class HygieneApplyRequest(StrictRequestModel):
     episode_ids: list[str] | None = None
     use_recommended: bool = False
     expire_orphans: bool = False
     dry_run: bool = False
 
 
-class PolicyGrantRequest(BaseModel):
+class PolicyGrantRequest(StrictRequestModel):
     principal_type: str
     principal_key: str
     namespace: str | None = None
@@ -398,8 +420,9 @@ def create_app(*, bind_host: str | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         del app
         runtime.startup()
-        from consolidation_memory.config import get_active_project
         import logging
+
+        from consolidation_memory.config import get_active_project
 
         logging.getLogger("consolidation_memory").info(
             "REST API active project: %s", get_active_project()
@@ -409,7 +432,7 @@ def create_app(*, bind_host: str | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Consolidation Memory",
-        description="Trust-calibrated working memory for coding agents",
+        description="Engineering knowledge layer for agents",
         version=__version__,
         lifespan=lifespan,
     )
@@ -432,6 +455,7 @@ def _build_execute(runtime: MemoryRuntime) -> ExecuteFn:
         arguments: dict[str, object],
         *,
         timeout: float | None = None,
+        recall_deadline_monotonic: float | None = None,
     ) -> dict[str, object]:
         client = None
         if tool_requires_client(name):
@@ -456,6 +480,7 @@ def _build_execute(runtime: MemoryRuntime) -> ExecuteFn:
                 arguments,
                 client=client,
                 timeout=timeout,
+                recall_deadline_monotonic=recall_deadline_monotonic,
             )
         except TimeoutError as exc:
             timeout_detail = (
@@ -522,16 +547,14 @@ def _register_memory_routes(app: FastAPI, execute: ExecuteFn) -> None:
     @app.post("/memory/ask")
     async def ask(req: SimpleAskRequest):
         """Search memory with a plain-language question; returns compact results."""
-        from consolidation_memory.simple_api import build_ask_recall_arguments
-
         tool_args = req.model_dump(exclude_none=True)
-        recall_args = build_ask_recall_arguments(tool_args)
         timeout_seconds = _recall_timeout_seconds()
-        inject_recall_deadline(recall_args, timeout_seconds=timeout_seconds)
-        deadline = recall_args.get("_recall_deadline_monotonic")
-        if deadline is not None:
-            tool_args["_recall_deadline_monotonic"] = deadline
-        return await execute("memory_ask", tool_args, timeout=timeout_seconds)
+        return await execute(
+            "memory_ask",
+            tool_args,
+            timeout=timeout_seconds,
+            recall_deadline_monotonic=resolve_recall_deadline(timeout_seconds),
+        )
 
     @app.post("/memory/store")
     async def store(req: StoreRequest):
@@ -553,9 +576,13 @@ def _register_memory_routes(app: FastAPI, execute: ExecuteFn) -> None:
         payload["content_types"] = cast(list[str] | None, req.content_types)
         timeout_seconds = _recall_timeout_seconds()
         fallback_timeout = _recall_fallback_timeout_seconds()
-        inject_recall_deadline(payload, timeout_seconds=timeout_seconds)
         try:
-            return await execute("memory_recall", payload, timeout=timeout_seconds)
+            return await execute(
+                "memory_recall",
+                payload,
+                timeout=timeout_seconds,
+                recall_deadline_monotonic=resolve_recall_deadline(timeout_seconds),
+            )
         except HTTPException as exc:
             if exc.status_code != 408:
                 raise
@@ -607,8 +634,11 @@ def _register_memory_routes(app: FastAPI, execute: ExecuteFn) -> None:
     async def search_claims(req: ClaimSearchRequest):
         """Search claims by text with optional type and temporal filtering."""
         payload = req.model_dump()
-        inject_recall_deadline(payload, timeout_seconds=_recall_timeout_seconds())
-        return await execute("memory_claim_search", payload)
+        return await execute(
+            "memory_claim_search",
+            payload,
+            recall_deadline_monotonic=resolve_recall_deadline(_recall_timeout_seconds()),
+        )
 
     @app.post("/memory/outcomes/record")
     async def record_outcome(req: OutcomeRecordRequest):
@@ -616,15 +646,21 @@ def _register_memory_routes(app: FastAPI, execute: ExecuteFn) -> None:
         payload = req.model_dump()
         if req.code_anchors is not None:
             payload["code_anchors"] = [anchor.model_dump() for anchor in req.code_anchors]
-        inject_recall_deadline(payload, timeout_seconds=_recall_timeout_seconds())
-        return await execute("memory_outcome_record", payload)
+        return await execute(
+            "memory_outcome_record",
+            payload,
+            recall_deadline_monotonic=resolve_recall_deadline(_recall_timeout_seconds()),
+        )
 
     @app.post("/memory/outcomes/browse")
     async def browse_outcomes(req: OutcomeBrowseRequest):
         """Browse recorded action outcomes."""
         payload = req.model_dump()
-        inject_recall_deadline(payload, timeout_seconds=_recall_timeout_seconds())
-        return await execute("memory_outcome_browse", payload)
+        return await execute(
+            "memory_outcome_browse",
+            payload,
+            recall_deadline_monotonic=resolve_recall_deadline(_recall_timeout_seconds()),
+        )
 
     @app.post("/memory/detect-drift")
     async def detect_drift(req: DetectDriftRequest):
@@ -822,3 +858,8 @@ def _register_memory_routes(app: FastAPI, execute: ExecuteFn) -> None:
         if isinstance(result, dict) and result.get("error"):
             raise HTTPException(status_code=400, detail=str(result["error"]))
         return result
+
+    @app.get("/memory/scopes")
+    async def scope_list(limit: int = 100, offset: int = 0):
+        """Discover existing scopes with usage counts and pageable windows."""
+        return await execute("memory_scope_list", {"limit": limit, "offset": offset})

@@ -48,7 +48,7 @@ def tmp_data_dir(tmp_path):
     )
 
     # Close all thread-local DB connections from previous tests
-    import consolidation_memory.database as database
+    from consolidation_memory import database
     database.close_all_connections()
 
     # Reset backends and circuit breakers so state doesn't leak between tests
@@ -56,7 +56,7 @@ def tmp_data_dir(tmp_path):
     reset_backends()
 
     # Reset module-level caches so state doesn't leak between tests
-    from consolidation_memory import claim_cache, topic_cache, record_cache
+    from consolidation_memory import claim_cache, record_cache, topic_cache
     from consolidation_memory.embedding_disk_cache import clear_all
     topic_cache.invalidate()
     record_cache.invalidate()

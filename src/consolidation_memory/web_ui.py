@@ -14,11 +14,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from consolidation_memory.corpus_hygiene import apply_corpus_hygiene, scan_corpus_hygiene
+from consolidation_memory.corpus_hygiene import (
+    apply_corpus_hygiene,
+    scan_corpus_hygiene,
+)
 from consolidation_memory.dashboard_data import DashboardData
 from consolidation_memory.maintenance import reindex_all_episodes, warmup_recall_caches
 from consolidation_memory.setup_service import assess_setup_status, run_quick_setup
-from consolidation_memory.simple_api import build_ask_recall_arguments
 from consolidation_memory.ui_ops import build_ops_overview, load_metrics_for_ui
 
 ExecuteFn = Callable[..., Awaitable[dict[str, object]]]
@@ -119,10 +121,9 @@ def register_web_ui_routes(app: FastAPI, *, execute: ExecuteFn) -> None:
 
     @app.post("/ui/api/ask")
     async def ui_ask(req: AskRequest) -> dict[str, object]:
-        return await execute(
-            "memory_ask",
-            build_ask_recall_arguments(req.model_dump()),
-        )
+        # Pass the simple-surface arguments as published; memory_ask owns the
+        # translation to its recall arguments.
+        return await execute("memory_ask", req.model_dump())
 
     @app.post("/ui/api/consolidate")
     async def ui_consolidate() -> dict[str, object]:

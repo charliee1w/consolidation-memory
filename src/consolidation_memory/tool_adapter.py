@@ -57,8 +57,16 @@ def recall_deadline_monotonic(timeout_seconds: float) -> float:
     return time.monotonic() + budget
 
 
-def inject_recall_deadline(arguments: dict[str, Any], *, timeout_seconds: float) -> None:
-    arguments["_recall_deadline_monotonic"] = recall_deadline_monotonic(timeout_seconds)
+def resolve_recall_deadline(timeout_seconds: float) -> float:
+    """Absolute ``time.monotonic()`` deadline for a recall budget.
+
+    Returns the value instead of writing it into an argument payload: the
+    deadline is transport state, not a tool argument, and no published
+    ``inputSchema`` declares it. Callers pass it to ``execute_tool_call`` as its
+    own keyword, so the published argument set stays exactly what the schemas
+    say and an unknown key is rejected like any other.
+    """
+    return recall_deadline_monotonic(timeout_seconds)
 
 
 def recall_knowledge_cache_ready() -> bool:

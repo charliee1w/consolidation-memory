@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from consolidation_memory.config import get_config as _get_config
 from consolidation_memory.db._helpers import _now
@@ -135,7 +136,7 @@ def _apply_scope_filters(
 
 def _normalize_principal_token(value: object) -> str:
     if not isinstance(value, str):
-        raise ValueError("principal value must be a string")
+        raise TypeError("principal value must be a string")
     cleaned = value.strip()
     if not cleaned:
         raise ValueError("principal value must be non-empty")
@@ -398,3 +399,192 @@ def get_matching_policy_acl_entries(
         ).fetchall()
     return [dict(row) for row in rows]
 
+
+# Scope usage aggregation: canonical identity is the exact-scope key set, so a
+# discovered scope matches exactly one filter combination of every other tool.
+_SCOPE_USAGE_IDENTITY: tuple[str, ...] = _EXACT_SCOPE_MATCH_KEYS
+
+# Display-only columns: not part of scope identity, so rows of one scope may
+# disagree about them (a project renamed after the fact, a row written before
+# the column was populated). Every one of them is aggregated with MAX() so the
+# reported value is a deterministic function of the group's rows — SQLite's MAX
+# on TEXT is a total order that skips NULLs — instead of whatever row the bare
+# column happened to come from. The same rule is applied when the per-table
+# groups are merged, so the result equals MAX() over all rows of the scope.
+_SCOPE_USAGE_METADATA: tuple[str, ...] = (
+    "project_display_name",
+    "project_root_uri",
+    "project_repo_remote",
+    "project_default_branch",
+)
+
+_SCOPE_USAGE_TABLES: tuple[tuple[str, str], ...] = (
+    ("episodes", "episodes"),
+    ("knowledge_records", "records"),
+    ("knowledge_topics", "topics"),
+)
+
+# Tables with the forget() tombstone flag. knowledge_topics has no `deleted`
+# column (its v15 rebuild never added one), so its rows are counted as stored.
+# No tombstone counter: the published contract reports live data only.
+_SCOPE_USAGE_SOFT_DELETE_TABLES: frozenset[str] = frozenset(
+    {"episodes", "knowledge_records"}
+)
+
+
+def _schema_initialized() -> bool:
+    """Report whether the schema marker table exists, without running DDL."""
+    with get_connection() as conn:
+        marker = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+        ).fetchone()
+    return marker is not None
+
+
+def _ensure_schema_for_discovery() -> None:
+    """Guarantee the schema exists without running DDL on every read.
+
+    Process startup owns schema creation: ``runtime.startup()`` (MCP + REST),
+    ``MemoryClient.__init__`` (Python SDK) and the CLI commands all call
+    ``ensure_schema()``. Clientless entry points can reach discovery before any
+    of them runs, so probe the marker table first and only build the schema when
+    the database is genuinely uninitialized.
+    """
+    if _schema_initialized():
+        return
+
+    from consolidation_memory.database import ensure_schema
+
+    ensure_schema()
+
+
+def _scope_usage_rows(conn: sqlite3.Connection, table_name: str) -> list[dict[str, Any]]:
+    identity = ", ".join(_SCOPE_USAGE_IDENTITY)
+    metadata = ", ".join(f"MAX({column}) AS {column}" for column in _SCOPE_USAGE_METADATA)
+    live_filter = (
+        "WHERE deleted = 0" if table_name in _SCOPE_USAGE_SOFT_DELETE_TABLES else ""
+    )
+    query = f"""SELECT
+            {identity},
+            {metadata},
+            COUNT(*) AS row_count,
+            MAX(created_at) AS last_used_at
+        FROM {table_name}
+        {live_filter}
+        GROUP BY {identity}"""
+    return [dict(row) for row in conn.execute(query).fetchall()]
+
+
+def _scope_identity_key(scope_values: Mapping[str, Any]) -> tuple[str, ...]:
+    """Key of one canonical scope, shared by the dict and both sort passes."""
+    return tuple(str(scope_values[column] or "") for column in _SCOPE_USAGE_IDENTITY)
+
+
+def _merge_display_value(current: str | None, candidate: object) -> str | None:
+    """Apply the MAX() display-metadata rule to two per-table group values."""
+    if candidate is None:
+        return current
+    text = str(candidate)
+    return text if current is None or text > current else current
+
+
+def list_scope_usage(*, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """Discover every scope that has stored rows, with per-table usage counts.
+
+    Scopes have no dedicated table: each row carries its scope as flattened
+    identity columns. This aggregates the distinct column combinations across
+    episodes, knowledge_records and knowledge_topics so callers can learn
+    which scopes exist without keeping an external registry. Two rows belong to
+    the same scope exactly when they agree on the canonical scope keys that
+    ``_apply_exact_scope_filters`` matches on, so a discovered envelope is as
+    narrow as the filters of every other tool. Counts and ``last_used_at`` cover
+    live rows only (``forget()`` tombstones are excluded). ``offset`` and
+    ``limit`` window the deterministic ordering (most recently used first) so
+    callers can iterate pages.
+
+    The schema is created at process startup; this function only reads.
+    """
+    _ensure_schema_for_discovery()
+    entries: dict[tuple[str, ...], dict[str, Any]] = {}
+    with get_connection() as conn:
+        for table_name, counter_key in _SCOPE_USAGE_TABLES:
+            for row in _scope_usage_rows(conn, table_name):
+                key = _scope_identity_key(row)
+                entry = entries.get(key)
+                if entry is None:
+                    entry = {
+                        "identity": {column: row[column] for column in _SCOPE_USAGE_IDENTITY},
+                        "display": {},
+                        "counts": {"episodes": 0, "records": 0, "topics": 0},
+                        "last_used_at": None,
+                    }
+                    entries[key] = entry
+                entry["counts"][counter_key] += int(row["row_count"])
+                for column in _SCOPE_USAGE_METADATA:
+                    entry["display"][column] = _merge_display_value(
+                        entry["display"].get(column), row[column]
+                    )
+                last_used = row["last_used_at"]
+                if last_used is not None and (
+                    entry["last_used_at"] is None or last_used > entry["last_used_at"]
+                ):
+                    entry["last_used_at"] = last_used
+
+    # Two-pass ordering: most recently used first, canonical identity as the
+    # stable tie-break so equal timestamps never reorder between calls.
+    ordered = sorted(entries.values(), key=lambda entry: _scope_identity_key(entry["identity"]))
+    ordered.sort(key=lambda entry: entry["last_used_at"] or "", reverse=True)
+
+    total = len(ordered)
+    offset = max(0, offset)
+    window = ordered[offset : offset + max(1, limit)]
+    scopes = []
+    for entry in window:
+        identity = entry["identity"]
+        display = entry["display"]
+        agent_name = identity.get("agent_name")
+        agent_key = identity.get("agent_external_key")
+        session_key = identity.get("session_external_key")
+        session_kind = identity.get("session_kind")
+        scopes.append(
+            {
+                "scope": {
+                    "namespace": {
+                        "slug": identity.get("namespace_slug"),
+                        "sharing_mode": identity.get("namespace_sharing_mode"),
+                    },
+                    "app_client": {
+                        "name": identity.get("app_client_name"),
+                        "app_type": identity.get("app_client_type"),
+                        "provider": identity.get("app_client_provider"),
+                        "external_key": identity.get("app_client_external_key"),
+                    },
+                    "agent": (
+                        {"name": agent_name, "external_key": agent_key}
+                        if agent_name is not None or agent_key is not None
+                        else None
+                    ),
+                    "session": (
+                        {"external_key": session_key, "session_kind": session_kind}
+                        if session_key is not None or session_kind is not None
+                        else None
+                    ),
+                    "project": {
+                        "slug": identity.get("project_slug"),
+                        "display_name": display.get("project_display_name"),
+                        "root_uri": display.get("project_root_uri"),
+                        "repo_remote": display.get("project_repo_remote"),
+                        "default_branch": display.get("project_default_branch"),
+                    },
+                },
+                "counts": entry["counts"],
+                "last_used_at": entry["last_used_at"],
+            }
+        )
+    message = None
+    if total > 0 and (offset > 0 or offset + len(scopes) < total):
+        message = (
+            f"Showing {len(scopes)} of {total} scopes at offset {offset}; "
+            "raise limit or pass offset to iterate pages."
+        )
+    return {"scopes": scopes, "total": total, "offset": offset, "message": message}

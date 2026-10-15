@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 WORKFLOWS = {
     ".github/workflows/test.yml": {
         "expected_checkout_count": 4,

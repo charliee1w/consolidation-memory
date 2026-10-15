@@ -185,7 +185,7 @@ class LMStudioLLMBackend:
                         f"(HTTP {e.response.status_code}). "
                         "This backend requires structured output for extraction. "
                         f"Response body: {body_snippet}"
-                    )
+                    ) from e
                 raise
 
         result: str = retry_with_backoff(

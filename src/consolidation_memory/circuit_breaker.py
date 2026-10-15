@@ -47,12 +47,14 @@ class CircuitBreaker:
     def state(self) -> CircuitState:
         """Current state, transitioning OPEN → HALF_OPEN if cooldown elapsed."""
         with self._lock:
-            if self._state == CircuitState.OPEN:
-                if time.time() - self._last_failure_time >= self._cooldown:
-                    self._state = CircuitState.HALF_OPEN
-                    logger.info(
-                        "Circuit breaker [%s]: OPEN -> HALF_OPEN (cooldown elapsed)", self._name
-                    )
+            if (
+                self._state == CircuitState.OPEN
+                and time.time() - self._last_failure_time >= self._cooldown
+            ):
+                self._state = CircuitState.HALF_OPEN
+                logger.info(
+                    "Circuit breaker [%s]: OPEN -> HALF_OPEN (cooldown elapsed)", self._name
+                )
             return self._state
 
     @property

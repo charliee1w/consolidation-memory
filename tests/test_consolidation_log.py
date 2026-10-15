@@ -21,8 +21,8 @@ class TestConsolidationLogClient:
     """Test the client.consolidation_log() method."""
 
     def test_no_runs_returns_message(self, tmp_data_dir):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient()
@@ -31,12 +31,12 @@ class TestConsolidationLogClient:
         assert "No consolidation runs" in result.message
 
     def test_returns_runs(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
+            complete_consolidation_run,
             ensure_schema,
             start_consolidation_run,
-            complete_consolidation_run,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
 
@@ -91,8 +91,8 @@ class TestConsolidationLogClient:
         assert "timeout" in result.entries[0]["summary"].lower()
 
     def test_last_n_clamped(self, tmp_data_dir):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient()
@@ -106,12 +106,12 @@ class TestConsolidationLogClient:
         assert result.total == 0
 
     def test_run_with_no_changes(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
+            complete_consolidation_run,
             ensure_schema,
             start_consolidation_run,
-            complete_consolidation_run,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
 
@@ -139,14 +139,15 @@ class TestConsolidationLogContradictions:
     def test_contradictions_counted_within_run_window(self, tmp_data_dir):
         """Contradictions detected during a run's time window should be counted."""
         import time
+
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
-            ensure_schema,
-            start_consolidation_run,
-            insert_contradiction,
             complete_consolidation_run,
+            ensure_schema,
+            insert_contradiction,
+            start_consolidation_run,
             upsert_knowledge_topic,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         topic_id = upsert_knowledge_topic(
@@ -187,13 +188,14 @@ class TestConsolidationLogContradictions:
         """Contradictions outside a run's time window should not be counted."""
         import time
         import uuid
-        from consolidation_memory.database import (
-            ensure_schema,
-            start_consolidation_run,
-            insert_contradiction,
-            complete_consolidation_run,
-        )
+
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import (
+            complete_consolidation_run,
+            ensure_schema,
+            insert_contradiction,
+            start_consolidation_run,
+        )
 
         ensure_schema()
 
@@ -226,8 +228,8 @@ class TestConsolidationLogContradictions:
 
     def test_running_status_summary(self, tmp_data_dir):
         """A run with status 'running' should say 'In progress'."""
-        from consolidation_memory.database import ensure_schema, start_consolidation_run
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, start_consolidation_run
 
         ensure_schema()
 
@@ -244,12 +246,13 @@ class TestConsolidationLogContradictions:
     def test_stale_running_status_is_recovered_to_failed(self, tmp_data_dir):
         """A stale running run should be auto-recovered and no longer show in-progress."""
         from datetime import datetime, timedelta, timezone
+
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
             ensure_schema,
             get_connection,
             start_consolidation_run,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         run_id = start_consolidation_run()
@@ -280,8 +283,8 @@ class TestConsolidationLogSchema:
         assert "memory_consolidation_log" in names
 
     def test_dispatch(self, tmp_data_dir):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
         from consolidation_memory.schemas import dispatch_tool_call
 
         ensure_schema()

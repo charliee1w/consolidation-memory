@@ -2,9 +2,69 @@
 
 ## Unreleased
 
-### Other
+### Features
 
-- Maintenance release.
+- feat(scripts): generate the MCP tool reference
+- feat: add scope discovery across MCP, OpenAI and REST
+- feat(mcp): publish typed output contracts for all tools
+- feat(mcp): report tool execution errors as isError results
+- feat(mcp): document tool inputs and reject unknown arguments
+
+### Bug Fixes
+
+- fix(mcp): publish one tool description on every surface
+- fix(mcp): state that scope discovery is unfiltered in the published description
+- fix(mcp): enforce the input contract on REST and pin it to the SDK
+- fix(release): stop changelog truncation from hiding user-visible changes
+- fix(mcp): enforce the published input contract on the dispatch path
+- fix(mcp): isolate private SDK surfaces and make outputSchema publication self-healing
+- fix(db): correct scope discovery identity, liveness and metadata
+- fix(drift): keep the drift worker on the server's own interpreter
+- fix(mcp): repair memory_hygiene_apply applied payload and its contract
+- fix(cli): correct the policy grant principal-type help
+- fix(ci): clear ruff and mypy gates for release
+- fix(tests): parse object tool results in surface contracts
+- fix(mcp): return tool results as structured objects
+
+### Dependencies
+
+- chore(deps): migrate to mcp 2.3 and MCPServer API
+
+### Documentation
+
+- docs(changelog): regenerate Unreleased and keep the upgrade-critical prose
+- docs: record the description single-source and close its debt item
+- docs: correct four stale claims and document the package root
+- docs: reconcile the reader docs with the code as it stands
+- docs: point the agent-facing files at the documentation that exists
+- docs: state the wire contract and the ACL rules in the present tense
+- docs: make the reader docs standing documentation of the current code
+- docs: state the four guides as standing documentation
+- docs: align reader docs with the code at HEAD
+- docs(mcp): make the wire contract match the code at HEAD
+- docs: bring the security, roadmap, release and maintainer guides to the current code
+- docs(changelog): spell out what an upgrade must adapt to
+- docs: sync desktop and web copy with the positioning
+- docs: extend the architecture doc with surfaces, contracts and modules
+- docs: fix post-rebuild inconsistencies in guides and meta
+- docs: align the tagline across metadata and runtime surfaces
+- docs: rebuild the README around the knowledge-layer story
+- docs: document the browser UI, TUI dashboard and desktop app
+- docs: document scope policies and ACL end to end
+- docs: brief CLAUDE.md on the typed MCP surface
+- docs: record the MCP surface wave in the roadmap
+- docs: describe the MCP result contract and add the MCP guide
+
+### Internal
+
+- chore(tooling): make the lint configuration honest, explicit and reproducible
+- test(ci): gate the MCP stdio wire contract in CI
+- chore(changelog): refresh Unreleased section
+- test: guard tracked markdown links and anchors
+- ci: regenerate docs/TOOLS.md with the docs bot
+- chore: drop stray my_script.js
+- ci: run desktop app tests in the optional surfaces job
+- test: keep strategy reuse evidence fresh
 
 ## 0.20.3 - 2026-07-10
 

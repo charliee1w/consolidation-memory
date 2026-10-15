@@ -7,18 +7,16 @@ from unittest.mock import patch
 
 import pytest
 
+from consolidation_memory import config, database
 from consolidation_memory.config import (
-    validate_project_name,
     get_active_project,
-    set_active_project,
     get_config,
-    override_config,
     maybe_migrate_to_projects,
+    override_config,
+    set_active_project,
+    validate_project_name,
 )
-from consolidation_memory import config
-import consolidation_memory.database as database
 from tests.helpers import make_normalized_vec as _make_normalized_vec
-
 
 # ── Project name validation ──────────────────────────────────────────────────
 

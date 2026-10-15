@@ -8,10 +8,12 @@
 Commands run locally:
 
 ```bash
-pytest -q
-ruff check src tests
-mypy src
-bandit -q -r src scripts -s B608,B110
+python scripts/pre_push_check.py
+python scripts/smoke_mcp_stdio.py
+pytest tests/ -q
+ruff check src tests/ scripts/
+mypy src/consolidation_memory/
+bandit -q -ll -r src scripts -s B608,B110
 ```
 
 If not all commands were run, explain what was skipped and why.
@@ -30,10 +32,11 @@ If not all commands were run, explain what was skipped and why.
 - [ ] Storage/export/import behavior changed
 - [ ] No special risk areas
 
-## Agent / vibecoding
+## Project Rules
 
-- [ ] Change follows `docs/VIBECODING.md` (trust invariants, task sizing)
-- [ ] `docs/AGENT_GOAL.md` updated if a milestone task was completed
+- [ ] Change preserves the trust invariants in `CONTRIBUTING.md` (temporal correctness, provenance traceability, contradiction visibility, drift challenge auditability, scope isolation, surface parity)
+- [ ] New or changed tools keep Python / MCP / REST / OpenAI dispatch semantics aligned
+- [ ] `CHANGELOG.md` and `docs/ROADMAP.md` updated when shipped behavior or a known blocker changed
 
 ## Checklist
 

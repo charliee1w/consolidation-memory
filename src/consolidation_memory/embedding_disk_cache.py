@@ -14,8 +14,8 @@ import os
 import shutil
 import tempfile
 import threading
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
@@ -157,7 +157,7 @@ def _save_disk_store(namespace: str, store: dict[str, tuple[str, np.ndarray]]) -
         hashes = np.array([store[item_id][0] for item_id in ids], dtype=str)
         vecs = np.stack([store[item_id][1] for item_id in ids]).astype(np.float32, copy=False)
 
-        meta = {"fingerprint": _fingerprint(), "count": int(len(ids))}
+        meta = {"fingerprint": _fingerprint(), "count": len(ids)}
         _atomic_write_bytes(
             base / "meta.json",
             json.dumps(meta, indent=2, sort_keys=True).encode("utf-8"),
@@ -200,7 +200,11 @@ def embed_items_incremental(
     if missing:
         from consolidation_memory.backends import encode_documents
         from consolidation_memory.config import get_config
-        from consolidation_memory.recall_budget import RecallBudgetExceeded, deadline_exceeded, is_active
+        from consolidation_memory.recall_budget import (
+            RecallBudgetExceeded,
+            deadline_exceeded,
+            is_active,
+        )
 
         batch_size = max(1, int(get_config().EMBEDDING_ENCODE_BATCH_SIZE))
         changed = False

@@ -68,7 +68,11 @@ def check_ruff() -> int:
     except ImportError:
         print("pre_push_check: skip ruff (not installed)")
         return 0
-    return _run([sys.executable, "-m", "ruff", "check", "src/", "tests/"], label="ruff")
+    # scripts/ is included on purpose: the release and smoke tooling ships with
+    # the package, so it gets the same enforced rule set as src/ and tests/.
+    return _run(
+        [sys.executable, "-m", "ruff", "check", "src/", "tests/", "scripts/"], label="ruff"
+    )
 
 
 def check_bandit() -> int:

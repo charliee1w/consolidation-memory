@@ -11,7 +11,8 @@ Backend is lazily instantiated on first use based on config.EMBEDDING_BACKEND.
 import logging
 import threading
 import time
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 import httpx
 import numpy as np
@@ -89,10 +90,12 @@ def _create_embedding_backend() -> EmbeddingBackend:
     logger.info("Initializing embedding backend: %s", backend)
 
     if backend == "fastembed":
-        from consolidation_memory.backends.fastembed_backend import FastEmbedEmbeddingBackend
+        from consolidation_memory.backends.fastembed_backend import (
+            FastEmbedEmbeddingBackend,
+        )
         return FastEmbedEmbeddingBackend(model_name=config.EMBEDDING_MODEL_NAME)
 
-    elif backend == "lmstudio":
+    if backend == "lmstudio":
         from consolidation_memory.backends.lmstudio import LMStudioEmbeddingBackend
         return LMStudioEmbeddingBackend(
             api_base=config.EMBEDDING_API_BASE,
@@ -100,7 +103,7 @@ def _create_embedding_backend() -> EmbeddingBackend:
             dimension=config.EMBEDDING_DIMENSION,
         )
 
-    elif backend == "openai":
+    if backend == "openai":
         from consolidation_memory.backends.openai_backend import OpenAIEmbeddingBackend
         return OpenAIEmbeddingBackend(
             model_name=config.EMBEDDING_MODEL_NAME,
@@ -109,7 +112,7 @@ def _create_embedding_backend() -> EmbeddingBackend:
             api_base=config.EMBEDDING_API_BASE if "localhost" not in config.EMBEDDING_API_BASE else None,
         )
 
-    elif backend == "ollama":
+    if backend == "ollama":
         from consolidation_memory.backends.ollama import OllamaEmbeddingBackend
         return OllamaEmbeddingBackend(
             api_base=config.EMBEDDING_API_BASE,
@@ -117,9 +120,8 @@ def _create_embedding_backend() -> EmbeddingBackend:
             dimension=config.EMBEDDING_DIMENSION,
         )
 
-    else:
-        raise ValueError(f"Unknown embedding backend: {backend!r}. "
-                         f"Choose from: fastembed, lmstudio, openai, ollama")
+    raise ValueError(f"Unknown embedding backend: {backend!r}. "
+                     f"Choose from: fastembed, lmstudio, openai, ollama")
 
 
 def _create_llm_backend() -> LLMBackend | None:
@@ -143,7 +145,7 @@ def _create_llm_backend() -> LLMBackend | None:
             min_p=config.LLM_MIN_P,
         )
 
-    elif backend == "openai":
+    if backend == "openai":
         from consolidation_memory.backends.openai_backend import OpenAILLMBackend
         return OpenAILLMBackend(
             model=config.LLM_MODEL,
@@ -153,7 +155,7 @@ def _create_llm_backend() -> LLMBackend | None:
             temperature=config.LLM_TEMPERATURE,
         )
 
-    elif backend == "ollama":
+    if backend == "ollama":
         from consolidation_memory.backends.ollama import OllamaLLMBackend
         return OllamaLLMBackend(
             api_base=config.LLM_API_BASE,
@@ -162,9 +164,8 @@ def _create_llm_backend() -> LLMBackend | None:
             temperature=config.LLM_TEMPERATURE,
         )
 
-    else:
-        raise ValueError(f"Unknown LLM backend: {backend!r}. "
-                         f"Choose from: lmstudio, openai, ollama, disabled")
+    raise ValueError(f"Unknown LLM backend: {backend!r}. "
+                     f"Choose from: lmstudio, openai, ollama, disabled")
 
 
 def get_embedding_backend() -> EmbeddingBackend:
@@ -194,8 +195,12 @@ def reset_backends() -> None:
             if backend is not None and hasattr(backend, "close"):
                 try:
                     backend.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # A failed close leaks the backend's handle; never fatal here,
+                    # but it must not vanish either.
+                    logger.warning(
+                        "Ignoring error closing %s backend: %s", type(backend).__name__, exc
+                    )
         _embedding_backend = None
         _llm_backend = None
         _embed_circuit = None
@@ -230,8 +235,11 @@ def encode_documents(texts: list[str]) -> np.ndarray:
         return np.empty((0, get_dimension()), dtype=np.float32)
 
     from consolidation_memory.config import get_config
-
-    from consolidation_memory.recall_budget import RecallBudgetExceeded, deadline_exceeded, is_active
+    from consolidation_memory.recall_budget import (
+        RecallBudgetExceeded,
+        deadline_exceeded,
+        is_active,
+    )
 
     batch_size = max(1, int(get_config().EMBEDDING_ENCODE_BATCH_SIZE))
     if len(texts) <= batch_size:

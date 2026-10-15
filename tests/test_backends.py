@@ -1,12 +1,12 @@
 """Tests for backend retry logic, normalization, and error handling."""
 
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
-from unittest.mock import patch, MagicMock
 
 from consolidation_memory.backends import retry_with_backoff
 from consolidation_memory.config import override_config
-
 
 # ── retry_with_backoff ────────────────────────────────────────────────────────
 
@@ -26,9 +26,11 @@ class TestRetryWithBackoff:
 
     def test_raises_after_max_retries(self):
         fn = MagicMock(side_effect=ConnectionError("fail"))
-        with patch("consolidation_memory.backends.time.sleep"):
-            with pytest.raises(ConnectionError, match="fail"):
-                retry_with_backoff(fn, max_retries=3, context="test")
+        with (
+            patch("consolidation_memory.backends.time.sleep"),
+            pytest.raises(ConnectionError, match="fail"),
+        ):
+            retry_with_backoff(fn, max_retries=3, context="test")
         assert fn.call_count == 3
 
     def test_non_transient_error_not_retried(self):
@@ -108,6 +110,7 @@ class TestOllamaEmbeddingBackend:
     @patch("consolidation_memory.backends.time.sleep")
     def test_encode_documents_retries_on_http_error(self, mock_sleep, mock_post):
         import httpx
+
         from consolidation_memory.backends.ollama import OllamaEmbeddingBackend
 
         mock_response = MagicMock()
@@ -158,6 +161,7 @@ class TestOllamaLLMBackend:
     @patch("consolidation_memory.backends.time.sleep")
     def test_generate_retries_on_error(self, mock_sleep, mock_post):
         import httpx
+
         from consolidation_memory.backends.ollama import OllamaLLMBackend
 
         mock_response = MagicMock()
@@ -235,9 +239,11 @@ class TestFastEmbedEmbeddingBackend:
         monkeypatch.setenv("CONSOLIDATION_MEMORY_FASTEMBED_CACHE_DIR", str(cache_dir))
         text_embedding_cls = MagicMock(side_effect=RuntimeError("unexpected failure"))
 
-        with patch.dict("sys.modules", {"fastembed": MagicMock(TextEmbedding=text_embedding_cls)}):
-            with pytest.raises(RuntimeError, match="unexpected failure"):
-                FastEmbedEmbeddingBackend(model_name="test-model")
+        with (
+            patch.dict("sys.modules", {"fastembed": MagicMock(TextEmbedding=text_embedding_cls)}),
+            pytest.raises(RuntimeError, match="unexpected failure"),
+        ):
+            FastEmbedEmbeddingBackend(model_name="test-model")
 
         assert text_embedding_cls.call_count == 1
 
@@ -255,6 +261,7 @@ class TestOpenAIEmbeddingBackend:
             mock_openai_cls = MagicMock()
         with patch.dict("sys.modules", {"openai": MagicMock(OpenAI=mock_openai_cls)}):
             from importlib import reload
+
             import consolidation_memory.backends.openai_backend as mod
             reload(mod)
             return mod.OpenAIEmbeddingBackend(**defaults), mock_openai_cls
@@ -305,6 +312,7 @@ class TestOpenAILLMBackend:
             mock_openai_cls = MagicMock()
         with patch.dict("sys.modules", {"openai": MagicMock(OpenAI=mock_openai_cls)}):
             from importlib import reload
+
             import consolidation_memory.backends.openai_backend as mod
             reload(mod)
             return mod.OpenAILLMBackend(**defaults), mock_openai_cls
@@ -335,6 +343,7 @@ class TestLMStudioLLMBackend:
     @patch("consolidation_memory.backends.lmstudio.httpx.post")
     def test_generate_does_not_retry_http_400(self, mock_post):
         import httpx
+
         from consolidation_memory.backends.lmstudio import LMStudioLLMBackend
 
         request = httpx.Request("POST", "http://localhost:1234/v1/chat/completions")
@@ -376,6 +385,7 @@ class TestLMStudioLLMBackend:
     @patch("consolidation_memory.backends.lmstudio.httpx.post")
     def test_generate_json_raises_when_structured_output_rejected(self, mock_post):
         import httpx
+
         from consolidation_memory.backends.lmstudio import LMStudioLLMBackend
 
         request = httpx.Request("POST", "http://localhost:1234/v1/chat/completions")

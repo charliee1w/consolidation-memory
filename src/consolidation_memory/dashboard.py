@@ -5,12 +5,13 @@ Requires: pip install consolidation-memory[dashboard]
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Container, Vertical
+    from textual.timer import Timer
     from textual.widgets import (
         DataTable,
         Footer,
@@ -20,7 +21,6 @@ try:
         TabbedContent,
         TabPane,
     )
-    from textual.timer import Timer
     _TEXTUAL_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised in tests without dashboard extra
     _TEXTUAL_AVAILABLE = False
@@ -288,7 +288,7 @@ else:
         }
         """
 
-        BINDINGS = [
+        BINDINGS: ClassVar[list[Any]] = [
             Binding("q", "quit", "Quit"),
             Binding("r", "refresh", "Refresh"),
             Binding("1", "tab_1", "Episodes", show=False),

@@ -9,13 +9,13 @@ from unittest.mock import patch
 import pytest
 
 from consolidation_memory.context_assembler import (
+    _TASK_INDICATORS,
     _distinctive_overlap_multiplier,
     _is_solution_shaped_query,
-    _recency_decay,
     _priority_score,
     _recall_episode_score,
+    _recency_decay,
     _tag_overlap_multiplier,
-    _TASK_INDICATORS,
 )
 
 FIXED_NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -120,6 +120,7 @@ class TestConfidenceAwareRanking:
     def test_high_confidence_record_ranks_higher(self):
         """Records with higher confidence should produce higher relevance."""
         from unittest.mock import patch
+
         import numpy as np
 
         from consolidation_memory.context_assembler import _search_records
@@ -170,7 +171,12 @@ class TestConfidenceAwareRanking:
 
         from consolidation_memory.claim_graph import claim_from_record
         from consolidation_memory.context_assembler import _search_records
-        from consolidation_memory.database import ensure_schema, insert_knowledge_records, upsert_claim, upsert_knowledge_topic
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_knowledge_records,
+            upsert_claim,
+            upsert_knowledge_topic,
+        )
 
         ensure_schema()
         high_content = {"type": "fact", "subject": "Python runtime", "info": "3.12"}

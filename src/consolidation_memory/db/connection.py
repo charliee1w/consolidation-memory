@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from consolidation_memory.config import get_config as _get_config
@@ -22,15 +22,13 @@ def _ensure_parent(path: Path) -> None:
 
 def _close_and_untrack_connection(conn: sqlite3.Connection) -> None:
     """Close a cached connection and remove it from global tracking."""
-    try:
+    # conn.close() raises only sqlite3.Error, so suppressing exactly that keeps a
+    # failed close from skipping the untrack below while masking nothing broader.
+    with suppress(sqlite3.Error):
         conn.close()
-    except Exception:
-        pass
-    with _conn_list_lock:
-        try:
-            _all_connections.remove(conn)
-        except ValueError:
-            pass
+    # The connection may already be untracked by a concurrent reset.
+    with _conn_list_lock, suppress(ValueError):
+        _all_connections.remove(conn)
 
 
 def _get_cached_connection() -> sqlite3.Connection:
@@ -86,10 +84,11 @@ def close_all_connections() -> None:
     """Close all thread-local connections. Call during shutdown or test teardown."""
     with _conn_list_lock:
         for conn in _all_connections:
-            try:
+            # conn.close() raises only sqlite3.Error (e.g. unfinalized statements).
+            # Suppressing exactly that lets the remaining connections still be
+            # closed and the tracking list still cleared; masks nothing broader.
+            with suppress(sqlite3.Error):
                 conn.close()
-            except Exception:
-                pass
         _all_connections.clear()
     # Also clear this thread's cached reference
     _local.conn = None
@@ -117,10 +116,9 @@ def get_connection():
             conn.commit()
     except Exception:
         if depth == 0:
-            try:
+            # Rollback is itself best-effort; the original error is re-raised.
+            with suppress(sqlite3.Error):
                 conn.rollback()
-            except Exception:
-                pass
         raise
     finally:
         _local.conn_depth = depth

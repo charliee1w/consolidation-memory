@@ -151,6 +151,7 @@ class TestCacheVersionRace:
     def test_topic_cache_invalidate_during_fetch(self, mock_topics, mock_embed, tmp_data_dir):
         """Concurrent invalidate during fetch returns dimensionally consistent data."""
         import numpy as np
+
         from consolidation_memory import topic_cache
 
         topic_cache.invalidate()
@@ -184,6 +185,7 @@ class TestCacheVersionRace:
     def test_record_cache_invalidate_during_fetch(self, mock_records, mock_embed, tmp_data_dir):
         """Concurrent invalidate during record fetch returns dimensionally consistent data."""
         import numpy as np
+
         from consolidation_memory import record_cache
 
         record_cache.invalidate()
@@ -219,6 +221,7 @@ class TestCacheVersionRace:
         tmp_data_dir,
     ):
         import numpy as np
+
         from consolidation_memory import record_cache
 
         record_cache.invalidate()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -60,7 +59,7 @@ class TestSurfaceRecallContract:
         )
 
         assert mock_execute.call_count >= 1
-        transport_args = assert_recall_deadline_injected(mock_execute.call_args.args[1])
+        transport_args = assert_recall_deadline_injected(mock_execute)
         assert transport_args["query"] == "hello"
         assert transport_args["scope"] == scope
         assert dispatch_out == mcp_out == rest_out == expected_payload
@@ -106,7 +105,7 @@ class TestSurfaceRecallContract:
             ),
         ):
             dispatch_out = dispatch_tool_call(mock_client, "memory_recall", tool_args)
-            mcp_out = json.loads(asyncio.run(memory_recall(query="hello", scope=scope)))
+            mcp_out = asyncio.run(memory_recall(query="hello", scope=scope))
             app = create_app()
             with TestClient(app) as client:
                 rest_resp = client.post("/memory/recall", json=tool_args)
@@ -140,7 +139,7 @@ class TestSurfaceClaimSearchContract:
             rest_json=tool_args,
         )
 
-        transport_args = assert_recall_deadline_injected(mock_execute.call_args.args[1])
+        transport_args = assert_recall_deadline_injected(mock_execute)
         assert transport_args["query"] == "python"
         assert transport_args["scope"] == scope
         assert dispatch_out == mcp_out == rest_out == expected_payload
@@ -183,7 +182,7 @@ class TestSurfaceOutcomeContract:
         mcp_client = MagicMock()
         mcp_client.query_browse_outcomes.return_value = expected
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
-            mcp_out = json.loads(asyncio.run(memory_outcome_browse(outcome_type="success", scope=scope)))
+            mcp_out = asyncio.run(memory_outcome_browse(outcome_type="success", scope=scope))
         mcp_client.query_browse_outcomes.assert_called_once_with(
             **expected_args,
             recall_deadline_monotonic=None,
@@ -257,14 +256,12 @@ class TestSurfaceOutcomeContract:
         mcp_client = MagicMock()
         mcp_client.record_outcome.return_value = expected
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
-            mcp_out = json.loads(
-                asyncio.run(
-                    memory_outcome_record(
-                        action_summary="Run targeted tests",
-                        outcome_type="success",
-                        source_claim_ids=["claim-1"],
-                        scope=scope,
-                    )
+            mcp_out = asyncio.run(
+                memory_outcome_record(
+                    action_summary="Run targeted tests",
+                    outcome_type="success",
+                    source_claim_ids=["claim-1"],
+                    scope=scope,
                 )
             )
         mcp_client.record_outcome.assert_called_once_with(
@@ -320,7 +317,7 @@ class TestSurfaceKnowledgeContracts:
         mcp_client = MagicMock()
         mcp_client.browse.return_value = expected
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
-            mcp_out = json.loads(asyncio.run(memory_browse(scope=scope)))
+            mcp_out = asyncio.run(memory_browse(scope=scope))
         mcp_client.browse.assert_called_once_with(scope=scope)
 
         with patch("consolidation_memory.client.MemoryClient.browse", return_value=expected) as rest_call:
@@ -356,7 +353,7 @@ class TestSurfaceKnowledgeContracts:
         mcp_client = MagicMock()
         mcp_client.read_topic.return_value = expected
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
-            mcp_out = json.loads(asyncio.run(memory_read_topic(filename="topic.md", scope=scope)))
+            mcp_out = asyncio.run(memory_read_topic(filename="topic.md", scope=scope))
         mcp_client.read_topic.assert_called_once_with(filename="topic.md", scope=scope)
 
         with patch("consolidation_memory.client.MemoryClient.read_topic", return_value=expected) as rest_call:
@@ -395,7 +392,7 @@ class TestSurfaceKnowledgeContracts:
         mcp_client = MagicMock()
         mcp_client.timeline.return_value = expected
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mcp_client):
-            mcp_out = json.loads(asyncio.run(memory_timeline(topic="python", scope=scope)))
+            mcp_out = asyncio.run(memory_timeline(topic="python", scope=scope))
         mcp_client.timeline.assert_called_once_with(topic="python", scope=scope)
 
         with patch("consolidation_memory.client.MemoryClient.timeline", return_value=expected) as rest_call:

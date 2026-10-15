@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-import consolidation_memory.dashboard as dashboard
+from consolidation_memory import dashboard
 
 
 def test_fmt_ts_handles_none_and_iso_values():

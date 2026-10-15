@@ -737,8 +737,8 @@ def claim_query_rank_profile(
 __all__ = [
     "claim_precision_from_evidence",
     "claim_precision_multiplier",
-    "claim_reliability_profile",
     "claim_query_rank_profile",
+    "claim_reliability_profile",
     "coerce_numeric_float",
     "filter_claims_for_scope",
     "matches_scope_filter",

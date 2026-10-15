@@ -15,6 +15,8 @@ Usage::
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -22,34 +24,72 @@ import tempfile
 import threading
 import time
 import uuid
-import hashlib
 from collections import deque
 from collections.abc import Mapping
-from pathlib import Path
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
-from typing import Any, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
+if TYPE_CHECKING:
+    # typing.Self is 3.11+ and this project supports 3.10, so the annotation in
+    # __enter__ needs typing_extensions. It is an undeclared dependency: it
+    # resolved only as a transitive of mcp -> pydantic. `from __future__ import
+    # annotations` means it is never evaluated at runtime, so the import stays in
+    # the type-checking block.
+    from typing_extensions import Self
+
 from consolidation_memory import __version__
 from consolidation_memory.client_runtime import (
-    check_embedding_backend as _check_embedding_backend_runtime,
-    compute_consolidation_utility as _compute_consolidation_utility_runtime,
-    compute_health as _compute_health_runtime,
-    consolidation_loop as _consolidation_loop_runtime,
     _compute_force_thresholds as _compute_force_thresholds_runtime,
+)
+from consolidation_memory.client_runtime import (
+    check_embedding_backend as _check_embedding_backend_runtime,
+)
+from consolidation_memory.client_runtime import (
+    compute_consolidation_utility as _compute_consolidation_utility_runtime,
+)
+from consolidation_memory.client_runtime import (
+    compute_health as _compute_health_runtime,
+)
+from consolidation_memory.client_runtime import (
+    consolidation_loop as _consolidation_loop_runtime,
+)
+from consolidation_memory.client_runtime import (
     finalize_auto_consolidation as _finalize_auto_consolidation_runtime,
+)
+from consolidation_memory.client_runtime import (
     maybe_auto_consolidate as _maybe_auto_consolidate_runtime,
+)
+from consolidation_memory.client_runtime import (
     probe_backend as _probe_backend_runtime,
-    record_recall_signal as _record_recall_signal_runtime,
+)
+from consolidation_memory.client_runtime import (
     recent_recall_signal_counts as _recent_recall_signal_counts_runtime,
+)
+from consolidation_memory.client_runtime import (
+    record_recall_signal as _record_recall_signal_runtime,
+)
+from consolidation_memory.client_runtime import (
     should_trigger_consolidation as _should_trigger_consolidation_runtime,
+)
+from consolidation_memory.client_runtime import (
     should_trigger_scheduler_run as _should_trigger_scheduler_run_runtime,
+)
+from consolidation_memory.client_runtime import (
     start_consolidation_thread as _start_consolidation_thread_runtime,
+)
+from consolidation_memory.client_runtime import (
     submit_auto_consolidation as _submit_auto_consolidation_runtime,
 )
 from consolidation_memory.markdown_records import parse_markdown_records
+from consolidation_memory.policy_engine import (
+    principal_tokens_for_scope,
+    resolve_effective_policy,
+)
 from consolidation_memory.query_service import (
     CanonicalQueryService,
     ClaimBrowseQuery,
@@ -59,54 +99,50 @@ from consolidation_memory.query_service import (
     OutcomeBrowseQuery,
     RecallQuery,
 )
-from consolidation_memory.policy_engine import (
-    principal_tokens_for_scope,
-    resolve_effective_policy,
-)
-from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.types import (
+    OUTCOME_TYPES,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
     RUN_STATUS_RUNNING,
-    AppClientScope,
     AgentScope,
-    MemoryOperationContext,
-    NamespaceScope,
-    PolicyScope,
-    ProjectRepoScope,
-    ResolvedScopeEnvelope,
-    ScopeEnvelope,
-    SessionScope,
-    coerce_scope_envelope,
-    ConsolidationLogResult,
-    ConsolidationReport,
-    build_consolidation_trigger_explanation,
-    parse_consolidation_utility_breakdown,
-    top_weighted_utility_components,
-    ContradictionResult,
-    HealthStatus,
-    StoreResult,
+    AppClientScope,
     BatchStoreResult,
-    RecallResult,
-    SearchResult,
+    BrowseResult,
     ClaimBrowseResult,
     ClaimSearchResult,
+    CompactResult,
+    ConsolidationLogResult,
+    ConsolidationReport,
+    ContradictionResult,
+    CorrectResult,
+    DecayReportResult,
+    DriftOutput,
+    ExportResult,
+    ForgetResult,
+    HealthStatus,
+    MemoryOperationContext,
+    NamespaceScope,
     OutcomeBrowseResult,
     OutcomeRecordResult,
-    DriftOutput,
-    ForgetResult,
-    StatusResult,
-    ExportResult,
-    CorrectResult,
-    CompactResult,
-    BrowseResult,
-    TopicDetailResult,
-    TimelineResult,
-    DecayReportResult,
-    ProtectResult,
-    OUTCOME_TYPES,
     OutcomeType,
+    PolicyScope,
+    ProjectRepoScope,
+    ProtectResult,
+    RecallResult,
+    ResolvedScopeEnvelope,
+    ScopeEnvelope,
+    SearchResult,
+    SessionScope,
+    StatusResult,
+    StoreResult,
+    TimelineResult,
+    TopicDetailResult,
+    build_consolidation_trigger_explanation,
+    coerce_scope_envelope,
+    parse_consolidation_utility_breakdown,
+    top_weighted_utility_components,
 )
+from consolidation_memory.utils import parse_datetime, parse_json_list
 
 logger = logging.getLogger("consolidation_memory")
 
@@ -295,15 +331,13 @@ def _write_temp_text(path: os.PathLike[str] | str, content: str) -> str:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
             handle.flush()
-            try:
+            # Best-effort durability: fsync is unsupported on some filesystems.
+            with contextlib.suppress(OSError):
                 os.fsync(handle.fileno())
-            except OSError:
-                pass
     except Exception:
-        try:
+        # Best-effort cleanup of a temp file whose write already failed.
+        with contextlib.suppress(OSError):
             os.unlink(temp_path)
-        except OSError:
-            pass
         raise
     return temp_path
 
@@ -446,7 +480,7 @@ def _row_matches_scope_filter(
 
 
 class MemoryClient:
-    """Trust-calibrated working memory client.
+    """Engineering knowledge layer client.
 
     Owns the vector store, database lifecycle, and optional background
     consolidation thread.  All public methods are synchronous and thread-safe.
@@ -527,8 +561,8 @@ class MemoryClient:
 
         should_close_connections = False
 
-        from consolidation_memory.plugins import get_plugin_manager
         from consolidation_memory.database import close_all_connections
+        from consolidation_memory.plugins import get_plugin_manager
 
         try:
             self._consolidation_stop.set()
@@ -571,7 +605,7 @@ class MemoryClient:
             if self._closed or self._closing:
                 raise RuntimeError(_CLOSED_MESSAGE)
 
-    def __enter__(self) -> MemoryClient:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -876,14 +910,14 @@ class MemoryClient:
         resolved_scope: ResolvedScopeEnvelope,
     ) -> StoreResult:
         """Store a memory episode with resolved canonical scope."""
+        from consolidation_memory.backends import encode_documents
+        from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             get_episode,
             hard_delete_episode,
             insert_episode,
             mark_episode_indexed,
         )
-        from consolidation_memory.backends import encode_documents
-        from consolidation_memory.config import get_config
 
         cfg = get_config()
         denied_message = _write_denied_message(resolved_scope)
@@ -1088,15 +1122,16 @@ class MemoryClient:
         Returns:
             BatchStoreResult with per-episode status.
         """
+        import numpy as np
+
+        from consolidation_memory.backends import encode_documents
+        from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             get_episode,
             hard_delete_episode,
             insert_episode,
             mark_episode_indexed,
         )
-        from consolidation_memory.backends import encode_documents
-        from consolidation_memory.config import get_config
-        import numpy as np
 
         cfg = get_config()
         denied_message = _write_denied_message(resolved_scope)
@@ -1877,10 +1912,10 @@ class MemoryClient:
             count_active_challenged_claims,
             get_claim_trust_stats,
             get_consolidation_scheduler_state,
-            get_recently_contradicted_topic_ids,
-            get_stats,
             get_last_consolidation_run,
             get_recent_consolidation_runs,
+            get_recently_contradicted_topic_ids,
+            get_stats,
         )
 
         stats = get_stats(scope=scope_filter)
@@ -2216,9 +2251,8 @@ class MemoryClient:
             get_plugin_manager().fire("on_forget", episode_id=episode_id)
 
             return ForgetResult(status="forgotten", id=episode_id)
-        else:
-            logger.warning("Episode %s not found for deletion", episode_id)
-            return ForgetResult(status="not_found", id=episode_id)
+        logger.warning("Episode %s not found for deletion", episode_id)
+        return ForgetResult(status="not_found", id=episode_id)
 
     def export(
         self,
@@ -2364,7 +2398,16 @@ class MemoryClient:
         Returns:
             CorrectResult with status and updated metadata.
         """
+        from consolidation_memory.backends import get_llm_backend
+        from consolidation_memory.claim_graph import claim_from_record
         from consolidation_memory.config import get_config
+        from consolidation_memory.consolidation.engine import _version_knowledge_file
+        from consolidation_memory.consolidation.prompting import (
+            _embedding_text_for_record,
+            _normalize_output,
+            _parse_frontmatter,
+            _sanitize_for_prompt,
+        )
         from consolidation_memory.database import (
             expire_claims_without_sources,
             expire_record,
@@ -2380,15 +2423,6 @@ class MemoryClient:
             upsert_claim,
             upsert_knowledge_topic,
         )
-        from consolidation_memory.claim_graph import claim_from_record
-        from consolidation_memory.consolidation.engine import _version_knowledge_file
-        from consolidation_memory.consolidation.prompting import (
-            _embedding_text_for_record,
-            _normalize_output,
-            _parse_frontmatter,
-            _sanitize_for_prompt,
-        )
-        from consolidation_memory.backends import get_llm_backend
         from consolidation_memory.knowledge_paths import resolve_topic_path
 
         self._ensure_open()
@@ -2635,7 +2669,9 @@ class MemoryClient:
         finally:
             if prepared_path is not None and os.path.exists(prepared_path):
                 os.unlink(prepared_path)
-        from consolidation_memory import claim_cache as _cc, topic_cache as _tc, record_cache as _rc
+        from consolidation_memory import claim_cache as _cc
+        from consolidation_memory import record_cache as _rc
+        from consolidation_memory import topic_cache as _tc
         _cc.invalidate()
         _tc.invalidate()
         _rc.invalidate()
@@ -2662,11 +2698,11 @@ class MemoryClient:
         Returns:
             BrowseResult with topic list and count.
         """
+        from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             get_all_active_records,
             get_all_knowledge_topics,
         )
-        from consolidation_memory.config import get_config
         from consolidation_memory.knowledge_paths import resolve_topic_path
 
         self._ensure_open()
@@ -2781,9 +2817,10 @@ class MemoryClient:
         Returns:
             TimelineResult with chronologically sorted entries.
         """
-        from consolidation_memory.database import get_all_active_records
-        from consolidation_memory.backends import encode_query
         import numpy as np
+
+        from consolidation_memory.backends import encode_query
+        from consolidation_memory.database import get_all_active_records
 
         self._ensure_open()
         self._vector_store.reload_if_stale()
@@ -2921,9 +2958,11 @@ class MemoryClient:
             ContradictionResult with logged contradictions.
         """
         from consolidation_memory.database import (
-            get_contradictions as db_get_contradictions,
             get_all_knowledge_topics,
             topic_storage_filename,
+        )
+        from consolidation_memory.database import (
+            get_contradictions as db_get_contradictions,
         )
 
         self._ensure_open()
@@ -2975,8 +3014,10 @@ class MemoryClient:
             ConsolidationLogResult with formatted changelog entries.
         """
         from consolidation_memory.database import (
-            get_recent_consolidation_runs,
             get_contradictions as db_get_contradictions,
+        )
+        from consolidation_memory.database import (
+            get_recent_consolidation_runs,
         )
 
         self._ensure_open()
@@ -3081,12 +3122,12 @@ class MemoryClient:
         Returns:
             DecayReportResult with counts and details.
         """
+        from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             count_protected_episodes,
-            get_prunable_episodes,
             get_low_confidence_records,
+            get_prunable_episodes,
         )
-        from consolidation_memory.config import get_config
 
         self._ensure_open()
         cfg = get_config()
@@ -3154,7 +3195,7 @@ class MemoryClient:
         Returns:
             ProtectResult with status and count.
         """
-        from consolidation_memory.database import protect_episode, protect_by_tag
+        from consolidation_memory.database import protect_by_tag, protect_episode
 
         self._ensure_open()
         if not episode_id and not tag:
@@ -3242,7 +3283,7 @@ class MemoryClient:
                 trigger_breakdown=manual_utility_state,
             )
 
-            report = run_consolidation(vector_store=self._vector_store)
+            report: ConsolidationReport = run_consolidation(vector_store=self._vector_store)
             run_status = report.get("status") if isinstance(report, dict) else None
             scheduler_status = (
                 RUN_STATUS_FAILED if run_status == RUN_STATUS_FAILED else RUN_STATUS_COMPLETED

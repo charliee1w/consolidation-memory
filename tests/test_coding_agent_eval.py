@@ -5,7 +5,6 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from benchmarks.novelty_eval import _local_embedding_patches
 from benchmarks.coding_agent_eval import (
     _reset_eval_environment,
     evaluate_contradiction_visibility,
@@ -15,6 +14,7 @@ from benchmarks.coding_agent_eval import (
     evaluate_stale_fix_suppression_after_drift,
     run_eval,
 )
+from benchmarks.novelty_eval import _local_embedding_patches
 
 
 def test_debug_solution_pipeline_passes_quick_sample():

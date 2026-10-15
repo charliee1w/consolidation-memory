@@ -18,37 +18,9 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
 from consolidation_memory import claim_cache, record_cache, topic_cache
+from consolidation_memory.backends import encode_documents
 from consolidation_memory.claim_graph import claim_from_record
 from consolidation_memory.config import get_config
-from consolidation_memory.hypothesis_competition import apply_competing_hypothesis_precision
-from consolidation_memory.database import (
-    complete_consolidation_run,
-    ensure_schema,
-    expire_claim,
-    expire_record,
-    get_claims_by_ids,
-    get_connection,
-    get_all_knowledge_topics,
-    get_prunable_episodes,
-    get_records_by_topic,
-    get_failure_linked_episode_ids_since,
-    get_unconsolidated_episodes,
-    increment_consolidation_attempts,
-    insert_claim_edge,
-    insert_claim_event,
-    insert_claim_sources,
-    insert_consolidation_metrics,
-    insert_contradiction,
-    insert_knowledge_records,
-    mark_consolidated,
-    mark_pruned,
-    reset_stale_consolidation_attempts,
-    start_consolidation_run,
-    upsert_claim,
-    upsert_knowledge_topic,
-)
-from consolidation_memory.vector_store import VectorStore
-from consolidation_memory.backends import encode_documents
 from consolidation_memory.consolidation.clustering import (
     _compute_cluster_confidence,
     _find_similar_topic,
@@ -67,13 +39,43 @@ from consolidation_memory.consolidation.prompting import (
     _strip_code_fences,
 )
 from consolidation_memory.consolidation.scoring import _adjust_surprise_scores
+from consolidation_memory.database import (
+    complete_consolidation_run,
+    ensure_schema,
+    expire_claim,
+    expire_record,
+    get_all_knowledge_topics,
+    get_claims_by_ids,
+    get_connection,
+    get_failure_linked_episode_ids_since,
+    get_prunable_episodes,
+    get_records_by_topic,
+    get_unconsolidated_episodes,
+    increment_consolidation_attempts,
+    insert_claim_edge,
+    insert_claim_event,
+    insert_claim_sources,
+    insert_consolidation_metrics,
+    insert_contradiction,
+    insert_knowledge_records,
+    mark_consolidated,
+    mark_pruned,
+    reset_stale_consolidation_attempts,
+    start_consolidation_run,
+    upsert_claim,
+    upsert_knowledge_topic,
+)
+from consolidation_memory.hypothesis_competition import (
+    apply_competing_hypothesis_precision,
+)
 from consolidation_memory.plugins import get_plugin_manager
 from consolidation_memory.types import (
-    ConsolidationReport,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_FAILED,
+    ConsolidationReport,
 )
 from consolidation_memory.utils import parse_json_list
+from consolidation_memory.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -1429,8 +1431,8 @@ def _process_cluster(
             llm_extraction_data, calls = _llm_extract_with_validation(prompt, cluster_episodes)
             extraction_data = cast(dict[str, object], llm_extraction_data)
             api_calls += calls
-        except Exception as e:
-            logger.error("LLM extraction failed for cluster %d: %s", cluster_id, e, exc_info=True)
+        except Exception:
+            logger.exception("LLM extraction failed for cluster %d", cluster_id)
             increment_consolidation_attempts(cluster_ep_ids)
             return {
                 "status": "failed",
@@ -1468,8 +1470,8 @@ def _process_cluster(
                     "fast_path": deterministic_only,
                 }
             return {"status": status, "api_calls": api_calls, "fast_path": deterministic_only}
-        except Exception as e:
-            logger.error("Merge failed for topic %s: %s", existing["filename"], e, exc_info=True)
+        except Exception:
+            logger.exception("Merge failed for topic %s", existing["filename"])
             increment_consolidation_attempts(cluster_ep_ids)
             return {
                 "status": "failed",
@@ -2000,7 +2002,7 @@ def run_consolidation(
                 vs._save()
 
     except Exception as e:
-        logger.exception("Consolidation failed: %s", e)
+        logger.exception("Consolidation failed")
         complete_consolidation_run(run_id, status=RUN_STATUS_FAILED, error_message=str(e))
         error_report: ConsolidationReport = {
             "status": "error",

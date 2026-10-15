@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from consolidation_memory.db.connection import get_connection
 from consolidation_memory.db.scope import _apply_scope_filters
 from consolidation_memory.types import StatsDict
+
 
 def get_stats(scope: Mapping[str, Any] | None = None) -> StatsDict:
     with get_connection() as conn:

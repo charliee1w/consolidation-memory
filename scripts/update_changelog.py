@@ -21,7 +21,13 @@ CHANGELOG = ROOT / "CHANGELOG.md"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.changelog_builder import upsert_unreleased_section  # noqa: E402
+from scripts.changelog_builder import (
+    DEFAULT_SUBJECT_LIMIT,
+    emit_selection_report,
+    positive_limit,
+    select_release_subjects,
+    upsert_unreleased_section,
+)
 
 
 def run(cmd: list[str], *, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
@@ -83,6 +89,16 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing.")
     parser.add_argument("--commit", action="store_true", help="Commit CHANGELOG.md if it changed.")
     parser.add_argument("--push", action="store_true", help="Push commit to origin/main (requires --commit).")
+    parser.add_argument(
+        "--limit",
+        type=positive_limit,
+        default=DEFAULT_SUBJECT_LIMIT,
+        help=(
+            "Maximum changelog bullets per release, at least 1. Internal-only commits "
+            "(docs/chore/test/ci/refactor/style/build) are dropped before user-visible ones. "
+            f"Truncation is reported, never silent (default: {DEFAULT_SUBJECT_LIMIT})."
+        ),
+    )
     args = parser.parse_args()
 
     if not CHANGELOG.exists():
@@ -92,8 +108,10 @@ def main() -> None:
 
     previous_tag = get_latest_tag()
     subjects = collect_commit_subjects(previous_tag)
+    selection = select_release_subjects(subjects, limit=args.limit)
+    emit_selection_report(selection)
     before = CHANGELOG.read_text(encoding="utf-8")
-    after = upsert_unreleased_section(before, subjects)
+    after = upsert_unreleased_section(before, subjects, limit=args.limit, emit_warning=False)
 
     if after == before:
         print("CHANGELOG.md is already up to date.")
@@ -101,10 +119,11 @@ def main() -> None:
 
     print("\nPlanned CHANGELOG.md update:")
     print("=" * 60)
-    for line in after.splitlines()[:40]:
+    preview_lines = after.splitlines()
+    for line in preview_lines[:40]:
         print(line)
-    if after.count("\n") > 40:
-        print("...")
+    if len(preview_lines) > 40:
+        print(f"... ({len(preview_lines) - 40} more preview lines not shown; see CHANGELOG.md)")
     print("=" * 60)
 
     if args.dry_run:

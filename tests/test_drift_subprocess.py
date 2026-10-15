@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
@@ -87,7 +86,10 @@ def test_run_detect_drift_subprocess_success(monkeypatch, tmp_path):
         "--repo-path",
         repo_path,
     )
-    assert seen["cwd"] == str(Path(repo_path).expanduser().resolve())
+    # No cwd at all: `python -m` puts the working directory at sys.path[0], ahead
+    # of PYTHONPATH and the stdlib, so a cwd inside the analysed repository would
+    # let its modules shadow the real package. See the shadowing regression test.
+    assert "cwd" not in seen["kwargs"]
     assert "stdin" in seen["kwargs"]
     assert "stdout" in seen["kwargs"]
     assert "stderr" in seen["kwargs"]

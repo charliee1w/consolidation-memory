@@ -12,13 +12,12 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import faiss
-from consolidation_memory.config import override_config
 import numpy as np
 import pytest
 
-from tests.helpers import make_normalized_vec as _make_normalized_vec
+from consolidation_memory.config import override_config
 from tests.helpers import make_normalized_batch as _make_normalized_batch
-
+from tests.helpers import make_normalized_vec as _make_normalized_vec
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 # Shared tmp_data_dir fixture is in conftest.py (autouse=True)
@@ -160,7 +159,12 @@ class TestDatabase:
         assert stats["knowledge_base"]["total_topics"] == 0
 
     def test_episode_crud(self):
-        from consolidation_memory.database import ensure_schema, insert_episode, get_episode, soft_delete_episode
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_episode,
+            insert_episode,
+            soft_delete_episode,
+        )
         ensure_schema()
 
         ep_id = insert_episode(
@@ -527,7 +531,11 @@ class TestDatabase:
         conn.execute("DROP TABLE consolidation_scheduler_with_breakdown")
 
     def test_action_outcomes_migration_from_v16_creates_tables(self):
-        from consolidation_memory.database import CURRENT_SCHEMA_VERSION, ensure_schema, get_connection
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+        )
 
         ensure_schema()
         with get_connection() as conn:
@@ -689,16 +697,20 @@ class TestDatabase:
         assert state.get("last_trigger_breakdown") is None
 
     def test_get_connection_depth_restored_on_commit_failure(self):
-        import consolidation_memory.database as database
+        from consolidation_memory import database
 
         database.ensure_schema()
-        with pytest.raises(sqlite3.ProgrammingError):
-            with database.get_connection() as conn:
-                conn.close()
+        with pytest.raises(sqlite3.ProgrammingError), database.get_connection() as conn:
+            conn.close()
         assert getattr(database._local, "conn_depth", 0) == 0
 
     def test_access_increment(self):
-        from consolidation_memory.database import ensure_schema, insert_episode, get_episode, increment_access
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_episode,
+            increment_access,
+            insert_episode,
+        )
         ensure_schema()
 
         ep_id = insert_episode(content="Access test", tags=["test"])
@@ -712,8 +724,11 @@ class TestDatabase:
 
     def test_consolidation_tracking(self):
         from consolidation_memory.database import (
-            ensure_schema, insert_episode, mark_consolidated,
-            get_unconsolidated_episodes, get_episode,
+            ensure_schema,
+            get_episode,
+            get_unconsolidated_episodes,
+            insert_episode,
+            mark_consolidated,
         )
         ensure_schema()
 
@@ -725,7 +740,11 @@ class TestDatabase:
         assert get_episode(ep_id)["consolidated"] == 1
 
     def test_knowledge_topic_upsert(self):
-        from consolidation_memory.database import ensure_schema, upsert_knowledge_topic, get_all_knowledge_topics
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_all_knowledge_topics,
+            upsert_knowledge_topic,
+        )
         ensure_schema()
 
         upsert_knowledge_topic(
@@ -753,7 +772,11 @@ class TestDatabase:
         assert set(sources) == {"ep1", "ep2"}
 
     def test_schema_version(self):
-        from consolidation_memory.database import ensure_schema, get_connection, CURRENT_SCHEMA_VERSION
+        from consolidation_memory.database import (
+            CURRENT_SCHEMA_VERSION,
+            ensure_schema,
+            get_connection,
+        )
         ensure_schema()
         with get_connection() as conn:
             row = conn.execute("SELECT MAX(version) as v FROM schema_version").fetchone()
@@ -820,8 +843,8 @@ class TestDatabase:
     def test_reconcile_stale_scheduler_state_marks_failed(self):
         from consolidation_memory.database import (
             ensure_schema,
-            get_consolidation_scheduler_state,
             get_connection,
+            get_consolidation_scheduler_state,
             reconcile_stale_consolidation_state,
         )
 
@@ -1009,9 +1032,10 @@ class TestVectorStore:
         assert results[0][0] == "persist-test"
 
     def test_integrity_check_mismatch(self):
-        from consolidation_memory.vector_store import VectorStore
-        from consolidation_memory.config import get_config
         import faiss
+
+        from consolidation_memory.config import get_config
+        from consolidation_memory.vector_store import VectorStore
 
         cfg = get_config()
         idx = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
@@ -1026,8 +1050,8 @@ class TestVectorStore:
 
     def test_dimension_mismatch_raises(self):
         """Changing embedding dimension with existing vectors must raise, not silently destroy data."""
-        from consolidation_memory.vector_store import VectorStore
         from consolidation_memory.config import get_config, reset_config
+        from consolidation_memory.vector_store import VectorStore
 
         # Create index with 384-dim vectors
         vs = VectorStore()
@@ -1128,8 +1152,8 @@ class TestTombstones:
 
 class TestReloadSignal:
     def test_signal_triggers_reload(self):
-        from consolidation_memory.vector_store import VectorStore
         from consolidation_memory.config import get_config
+        from consolidation_memory.vector_store import VectorStore
         cfg = get_config()
         vs = VectorStore()
 
@@ -1143,8 +1167,8 @@ class TestReloadSignal:
         assert reloaded is True
 
     def test_old_signal_ignored(self):
-        from consolidation_memory.vector_store import VectorStore
         from consolidation_memory.config import get_config
+        from consolidation_memory.vector_store import VectorStore
         cfg = get_config()
         vs = VectorStore()
 
@@ -1158,8 +1182,8 @@ class TestReloadSignal:
         assert reloaded is False
 
     def test_signal_file_written(self):
-        from consolidation_memory.vector_store import VectorStore
         from consolidation_memory.config import get_config
+        from consolidation_memory.vector_store import VectorStore
         cfg = get_config()
 
         assert not cfg.FAISS_RELOAD_SIGNAL.exists()
@@ -1399,8 +1423,8 @@ class TestIVFMigration:
 
 class TestVersioning:
     def test_creates_backup(self, tmp_data_dir):
-        from consolidation_memory.consolidation.engine import _version_knowledge_file
         from consolidation_memory.config import get_config
+        from consolidation_memory.consolidation.engine import _version_knowledge_file
         cfg = get_config()
 
         filepath = cfg.KNOWLEDGE_DIR / "test_topic.md"
@@ -1413,8 +1437,8 @@ class TestVersioning:
         assert versions[0].read_text(encoding="utf-8") == "# Original Content"
 
     def test_preserves_content(self, tmp_data_dir):
-        from consolidation_memory.consolidation.engine import _version_knowledge_file
         from consolidation_memory.config import get_config
+        from consolidation_memory.consolidation.engine import _version_knowledge_file
         cfg = get_config()
 
         filepath = cfg.KNOWLEDGE_DIR / "preserve.md"
@@ -1427,8 +1451,8 @@ class TestVersioning:
         assert versions[0].read_text(encoding="utf-8") == original
 
     def test_prunes_old_versions(self, tmp_data_dir):
-        from consolidation_memory.consolidation.engine import _version_knowledge_file
         from consolidation_memory.config import get_config
+        from consolidation_memory.consolidation.engine import _version_knowledge_file
         cfg = get_config()
 
         filepath = cfg.KNOWLEDGE_DIR / "pruned.md"
@@ -1442,8 +1466,8 @@ class TestVersioning:
         assert len(versions) <= 5
 
     def test_noop_new_file(self, tmp_data_dir):
-        from consolidation_memory.consolidation.engine import _version_knowledge_file
         from consolidation_memory.config import get_config
+        from consolidation_memory.consolidation.engine import _version_knowledge_file
         cfg = get_config()
 
         filepath = cfg.KNOWLEDGE_DIR / "nonexistent.md"
@@ -1457,8 +1481,8 @@ class TestVersioning:
 
 class TestTopicCache:
     def test_cache_invalidation(self):
-        from consolidation_memory.topic_cache import _cache, invalidate
         import consolidation_memory.topic_cache as tc
+        from consolidation_memory.topic_cache import _cache, invalidate
 
         # Populate cache with a known version
         tc._version = 5
@@ -1473,8 +1497,8 @@ class TestTopicCache:
 
     @patch("consolidation_memory.topic_cache.embed_items_incremental")
     def test_cache_reuse(self, mock_embed):
-        from consolidation_memory.topic_cache import get_topic_vecs, invalidate
         from consolidation_memory.database import ensure_schema, upsert_knowledge_topic
+        from consolidation_memory.topic_cache import get_topic_vecs, invalidate
 
         ensure_schema()
         upsert_knowledge_topic("t1.md", "Title 1", "Summary 1", ["ep1"])
@@ -1482,10 +1506,10 @@ class TestTopicCache:
         fake_vecs = _make_normalized_batch(1, seed=42)
         mock_embed.return_value = fake_vecs
         invalidate()
-        topics1, vecs1 = get_topic_vecs()
+        _topics1, _vecs1 = get_topic_vecs()
         assert mock_embed.call_count == 1
 
-        topics2, vecs2 = get_topic_vecs()
+        _topics2, _vecs2 = get_topic_vecs()
         assert mock_embed.call_count == 1
 
 
@@ -1516,8 +1540,8 @@ class TestDedup:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_allows_different_content(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1544,8 +1568,8 @@ class TestDedup:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_dedup_ignores_deleted(self, mock_embed):
-        from consolidation_memory.database import ensure_schema, soft_delete_episode
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, soft_delete_episode
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1569,8 +1593,8 @@ class TestDedup:
 
 class TestSurpriseAdjustment:
     def _setup_episodes(self, specs):
+        from consolidation_memory import database
         from consolidation_memory.database import ensure_schema, insert_episode
-        import consolidation_memory.database as database
 
         ensure_schema()
         ids = []
@@ -1604,9 +1628,9 @@ class TestSurpriseAdjustment:
         assert ep["surprise_score"] > 0.5
 
     def test_decay_inactive(self):
+        from consolidation_memory import database
         from consolidation_memory.consolidation.scoring import _adjust_surprise_scores
         from consolidation_memory.database import get_episode, mark_consolidated
-        import consolidation_memory.database as database
 
         ids = self._setup_episodes([
             (0, 0.5, 30),
@@ -1624,9 +1648,9 @@ class TestSurpriseAdjustment:
         assert ep["surprise_score"] < 0.5
 
     def test_clamped_to_range(self):
+        from consolidation_memory import database
         from consolidation_memory.consolidation.scoring import _adjust_surprise_scores
         from consolidation_memory.database import get_episode, mark_consolidated
-        import consolidation_memory.database as database
 
         ids = self._setup_episodes([
             (0, 0.12, 30),
@@ -1675,9 +1699,9 @@ class TestSurpriseAdjustment:
 
 class TestExport:
     def test_creates_export_file(self, tmp_data_dir):
-        from consolidation_memory.database import ensure_schema, insert_episode
         from consolidation_memory.client import MemoryClient
         from consolidation_memory.config import get_config
+        from consolidation_memory.database import ensure_schema, insert_episode
         cfg = get_config()
 
         ensure_schema()
@@ -1693,9 +1717,9 @@ class TestExport:
         client.close()
 
     def test_includes_knowledge(self, tmp_data_dir):
-        from consolidation_memory.database import ensure_schema, upsert_knowledge_topic
         from consolidation_memory.client import MemoryClient
         from consolidation_memory.config import get_config
+        from consolidation_memory.database import ensure_schema, upsert_knowledge_topic
         cfg = get_config()
 
         ensure_schema()
@@ -1708,15 +1732,15 @@ class TestExport:
         result = client.export()
         assert result.knowledge_topics == 1
 
-        export_file = list(cfg.BACKUP_DIR.glob("memory_export_*.json"))[0]
+        export_file = next(iter(cfg.BACKUP_DIR.glob("memory_export_*.json")))
         data = json.loads(export_file.read_text(encoding="utf-8"))
         assert data["knowledge_topics"][0]["file_content"] == "# Test Knowledge"
         client.close()
 
     def test_prunes_old_exports(self, tmp_data_dir):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
         from consolidation_memory.config import get_config
+        from consolidation_memory.database import ensure_schema
         cfg = get_config()
 
         ensure_schema()
@@ -1847,7 +1871,12 @@ class TestClusterConfidence:
 
 class TestDatabaseExport:
     def test_get_all_episodes(self):
-        from consolidation_memory.database import ensure_schema, insert_episode, get_all_episodes, soft_delete_episode
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_all_episodes,
+            insert_episode,
+            soft_delete_episode,
+        )
         ensure_schema()
 
         id1 = insert_episode(content="Ep 1", tags=[])
@@ -1863,8 +1892,12 @@ class TestDatabaseExport:
 
     def test_get_all_active_episodes(self):
         from consolidation_memory.database import (
-            ensure_schema, insert_episode, get_all_active_episodes,
-            mark_pruned, mark_consolidated, soft_delete_episode,
+            ensure_schema,
+            get_all_active_episodes,
+            insert_episode,
+            mark_consolidated,
+            mark_pruned,
+            soft_delete_episode,
         )
         ensure_schema()
 
@@ -1883,7 +1916,12 @@ class TestDatabaseExport:
         assert id3 not in active_ids
 
     def test_update_surprise_scores(self):
-        from consolidation_memory.database import ensure_schema, insert_episode, get_episode, update_surprise_scores
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_episode,
+            insert_episode,
+            update_surprise_scores,
+        )
         ensure_schema()
 
         id1 = insert_episode(content="Score test", surprise_score=0.5, tags=[])
@@ -1900,15 +1938,17 @@ class TestBackendFactory:
         from consolidation_memory.backends import reset_backends
         reset_backends()
         # After reset, globals should be None
-        import consolidation_memory.backends as backends
+        from consolidation_memory import backends
         assert backends._embedding_backend is None
         assert backends._llm_backend is None
 
     def test_invalid_backend_raises(self):
         from consolidation_memory.backends import _create_embedding_backend
-        with override_config(EMBEDDING_BACKEND="nonexistent"):
-            with pytest.raises(ValueError, match="Unknown embedding backend"):
-                _create_embedding_backend()
+        with (
+            override_config(EMBEDDING_BACKEND="nonexistent"),
+            pytest.raises(ValueError, match="Unknown embedding backend"),
+        ):
+            _create_embedding_backend()
 
 
 # ── Config defaults regression tests ────────────────────────────────────────
@@ -2113,7 +2153,7 @@ class TestCircuitBreaker:
 
 class TestConfigWeightValidation:
     def test_invalid_weight_sum_raises(self):
-        from consolidation_memory.config import _validate_config, Config
+        from consolidation_memory.config import Config, _validate_config
         cfg = Config(
             HYBRID_SEMANTIC_WEIGHT=0.9,
             HYBRID_KEYWORD_WEIGHT=0.6,  # sum = 1.5, should fail
@@ -2122,12 +2162,12 @@ class TestConfigWeightValidation:
             _validate_config(cfg)
 
     def test_valid_weight_sum_passes(self):
-        from consolidation_memory.config import _validate_config, Config
+        from consolidation_memory.config import Config, _validate_config
         cfg = Config()  # defaults sum to 1.0
         _validate_config(cfg)  # should not raise
 
     def test_priority_weights_invalid_sum(self):
-        from consolidation_memory.config import _validate_config, Config
+        from consolidation_memory.config import Config, _validate_config
         cfg = Config(
             CONSOLIDATION_PRIORITY_WEIGHTS={
                 "recency": 0.5,
@@ -2139,7 +2179,7 @@ class TestConfigWeightValidation:
             _validate_config(cfg)
 
     def test_utility_weights_invalid_keys(self):
-        from consolidation_memory.config import _validate_config, Config
+        from consolidation_memory.config import Config, _validate_config
 
         cfg = Config(
             CONSOLIDATION_UTILITY_WEIGHTS={
@@ -2150,7 +2190,7 @@ class TestConfigWeightValidation:
             _validate_config(cfg)
 
     def test_utility_weights_invalid_sum(self):
-        from consolidation_memory.config import _validate_config, Config
+        from consolidation_memory.config import Config, _validate_config
 
         cfg = Config(
             CONSOLIDATION_UTILITY_WEIGHTS={
@@ -2165,7 +2205,7 @@ class TestConfigWeightValidation:
             _validate_config(cfg)
 
     def test_utility_threshold_out_of_range(self):
-        from consolidation_memory.config import _validate_config, Config
+        from consolidation_memory.config import Config, _validate_config
 
         cfg = Config(CONSOLIDATION_UTILITY_THRESHOLD=1.1)
         with pytest.raises(ValueError, match="utility_threshold"):
@@ -2226,8 +2266,10 @@ class TestSanitization:
 class TestPartialFailureTracking:
     def test_attempt_counter_increments(self, tmp_data_dir):
         from consolidation_memory.database import (
-            ensure_schema, insert_episode, get_connection,
+            ensure_schema,
+            get_connection,
             increment_consolidation_attempts,
+            insert_episode,
         )
         ensure_schema()
         ep_id = insert_episode(
@@ -2245,9 +2287,10 @@ class TestPartialFailureTracking:
 
     def test_max_attempts_excludes(self, tmp_data_dir):
         from consolidation_memory.database import (
-            ensure_schema, insert_episode,
+            ensure_schema,
             get_unconsolidated_episodes,
             increment_consolidation_attempts,
+            insert_episode,
         )
         ensure_schema()
         ep_id = insert_episode(
@@ -2263,9 +2306,10 @@ class TestPartialFailureTracking:
 
     def test_below_max_still_included(self, tmp_data_dir):
         from consolidation_memory.database import (
-            ensure_schema, insert_episode,
+            ensure_schema,
             get_unconsolidated_episodes,
             increment_consolidation_attempts,
+            insert_episode,
         )
         ensure_schema()
         ep_id = insert_episode(
@@ -2285,8 +2329,9 @@ class TestPartialFailureTracking:
 class TestConsolidationMetrics:
     def test_insert_and_retrieve(self, tmp_data_dir):
         from consolidation_memory.database import (
-            ensure_schema, insert_consolidation_metrics,
+            ensure_schema,
             get_consolidation_metrics,
+            insert_consolidation_metrics,
         )
         ensure_schema()
         insert_consolidation_metrics(
@@ -2312,8 +2357,9 @@ class TestConsolidationMetrics:
 
     def test_ordering_newest_first(self, tmp_data_dir):
         from consolidation_memory.database import (
-            ensure_schema, insert_consolidation_metrics,
+            ensure_schema,
             get_consolidation_metrics,
+            insert_consolidation_metrics,
         )
         ensure_schema()
         insert_consolidation_metrics(

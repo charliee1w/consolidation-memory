@@ -78,10 +78,15 @@ class TestBuildOpsOverview:
                 "fix_label": "Run consolidation",
             },
         ]
-        with patch("consolidation_memory.ui_ops.collect_ops_warnings", return_value=fake_warnings):
-            with patch("consolidation_memory.ui_ops.assess_setup_status", return_value={"needs_setup": False}):
-                with patch("consolidation_memory.ui_ops.build_health_snapshot", return_value=("ok", "Ready")):
-                    overview = build_ops_overview()
+        with (
+            patch("consolidation_memory.ui_ops.collect_ops_warnings", return_value=fake_warnings),
+            patch(
+                "consolidation_memory.ui_ops.assess_setup_status",
+                return_value={"needs_setup": False},
+            ),
+            patch("consolidation_memory.ui_ops.build_health_snapshot", return_value=("ok", "Ready")),
+        ):
+            overview = build_ops_overview()
 
         assert overview["health"] == "warning"
         assert len(overview["warnings"]) == 2

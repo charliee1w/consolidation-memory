@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -252,6 +252,9 @@ class TestCanonicalQueryServiceClaims:
             },
         ]
 
+        # Reliability scores recency against the current time, so the evidence has to stay fresh.
+        recent_observed_at = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+
         with (
             patch("consolidation_memory.database.get_active_claims", side_effect=[strategy_rows, []]),
             patch(
@@ -264,7 +267,7 @@ class TestCanonicalQueryServiceClaims:
                         "failure_count": 0,
                         "contradiction_count": 0,
                         "challenged_count": 0,
-                        "last_observed_at": "2026-01-03T00:00:00+00:00",
+                        "last_observed_at": recent_observed_at,
                     },
                     "strategy-degraded": {
                         "validation_count": 4,
@@ -273,7 +276,7 @@ class TestCanonicalQueryServiceClaims:
                         "failure_count": 3,
                         "contradiction_count": 1,
                         "challenged_count": 1,
-                        "last_observed_at": "2026-01-03T00:00:00+00:00",
+                        "last_observed_at": recent_observed_at,
                     },
                 },
             ),

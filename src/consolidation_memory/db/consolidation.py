@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, cast
-
 import sqlite3
+import uuid
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 from consolidation_memory.config import get_config as _get_config
 from consolidation_memory.db._helpers import _now
@@ -407,7 +407,7 @@ def increment_consolidation_attempts(episode_ids: list[str]) -> None:
         conn.execute(
             f"UPDATE episodes SET consolidation_attempts = consolidation_attempts + 1, "
             f"last_consolidation_attempt = ? WHERE id IN ({placeholders})",
-            [now] + episode_ids,
+            [now, *episode_ids],
         )
 
 

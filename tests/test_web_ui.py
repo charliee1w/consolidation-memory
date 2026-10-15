@@ -223,6 +223,33 @@ class TestWebUiRoutes:
         assert body["query"] == "UI remember test"
         assert isinstance(body["episodes"], list)
 
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_ask_still_recalls_knowledge_end_to_end(self, mock_embed, ui_client):
+        """Dropping the pre-translation must not drop the knowledge half.
+
+        ``include_knowledge`` is set by ``build_ask_recall_arguments`` from
+        inside ``memory_ask``'s dispatch, so the UI never had to send it; this
+        asserts the value that reaches the client instead of the key that no
+        longer crosses the hop.
+        """
+        from unittest.mock import patch as _patch
+
+        from consolidation_memory.types import RecallResult
+        from tests.helpers import make_normalized_vec as _vec
+
+        mock_embed.return_value = _vec(seed=13).reshape(1, -1)
+
+        with _patch(
+            "consolidation_memory.client.MemoryClient.query_recall",
+            autospec=True,
+            return_value=RecallResult(),
+        ) as mock_recall:
+            response = ui_client.post("/ui/api/ask", json={"query": "ui knowledge probe"})
+
+        assert response.status_code == 200, response.text
+        assert mock_recall.call_args.kwargs["include_knowledge"] is True
+        assert mock_recall.call_args.kwargs["query"] == "ui knowledge probe"
+
     def test_remember_rejects_invalid_kind(self, ui_client):
         resp = ui_client.post(
             "/ui/api/remember",
@@ -235,6 +262,52 @@ class TestWebUiRoutes:
             json={"content": "bad", "kind": "invalid"},
         )
         assert resp.status_code == 422
+
+
+@requires_fastapi
+class TestAskPathSendsPublishedArguments:
+    """``/ui/api/ask`` must not pre-translate its arguments.
+
+    The UI used to pass ``build_ask_recall_arguments(...)`` output —
+    ``query``/``n_results``/**``include_knowledge``** — into ``memory_ask``,
+    whose published schema declares only ``query``/``n_results``/``scope``.
+    ``include_knowledge`` was a constant the translator always set, so the
+    double translation was a no-op that would now be a contract violation;
+    these tests pin both the argument names and the value that mattered.
+    """
+
+    @pytest.fixture
+    def recorded_ui_app(self):
+        """Web UI on a recording ``execute``, so the hop is observed directly."""
+        from fastapi import FastAPI
+
+        from consolidation_memory.web_ui import register_web_ui_routes
+
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        async def _record(name, arguments, **_kwargs):
+            calls.append((name, dict(arguments)))
+            return {"query": arguments.get("query"), "episodes": []}
+
+        app = FastAPI()
+        register_web_ui_routes(app, execute=_record)
+        with TestClient(app) as client:
+            yield client, calls
+
+    def test_ask_passes_only_published_ask_arguments(self, recorded_ui_app):
+        from consolidation_memory.tool_dispatch import accepted_argument_names
+
+        client, calls = recorded_ui_app
+
+        response = client.post("/ui/api/ask", json={"query": "ui ask", "n_results": 4})
+
+        assert response.status_code == 200, response.text
+        assert [name for name, _ in calls] == ["memory_ask"]
+        arguments = calls[0][1]
+        assert arguments == {"query": "ui ask", "n_results": 4}
+        assert set(arguments) <= accepted_argument_names("memory_ask")
+        assert "include_knowledge" not in arguments
+
 
 
 @requires_fastapi

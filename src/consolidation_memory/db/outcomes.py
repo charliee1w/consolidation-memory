@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from consolidation_memory.db._helpers import (
     _derive_action_key,
@@ -18,7 +19,7 @@ from consolidation_memory.db.scope import _apply_scope_filters, _coerce_scope_ro
 
 def _uuid4():
     """Resolve uuid4 via the database facade for test patch compatibility."""
-    import consolidation_memory.database as database
+    from consolidation_memory import database
 
     return database.uuid.uuid4()
 

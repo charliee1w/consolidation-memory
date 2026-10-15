@@ -44,7 +44,11 @@ def test_context_assembler_reads_storage_filename_when_logical_file_missing(tmp_
 def test_export_reads_storage_filename_when_logical_file_missing(tmp_data_dir):
     from consolidation_memory.client import MemoryClient
     from consolidation_memory.config import get_config
-    from consolidation_memory.database import ensure_schema, get_knowledge_topic, upsert_knowledge_topic
+    from consolidation_memory.database import (
+        ensure_schema,
+        get_knowledge_topic,
+        upsert_knowledge_topic,
+    )
 
     ensure_schema()
     cfg = get_config()

@@ -10,11 +10,11 @@ import posixpath
 import subprocess  # nosec B404
 import threading
 import time
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from consolidation_memory.types import DriftAnchor, DriftClaimImpact, DriftOutput
 
@@ -324,7 +324,10 @@ def _detect_code_drift_once(
     repo_dir: Path,
     scope: Mapping[str, Any] | None,
 ) -> DriftOutput:
-    from consolidation_memory.database import insert_claim_events, mark_claims_challenged_by_ids
+    from consolidation_memory.database import (
+        insert_claim_events,
+        mark_claims_challenged_by_ids,
+    )
 
     changed_files = get_changed_files(base_ref=base_ref, repo_path=repo_dir)
 
@@ -486,7 +489,7 @@ def detect_code_drift(
 
 
 __all__ = [
+    "detect_code_drift",
     "get_changed_files",
     "map_changed_files_to_claims",
-    "detect_code_drift",
 ]

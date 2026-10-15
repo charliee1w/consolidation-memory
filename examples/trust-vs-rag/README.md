@@ -16,17 +16,22 @@ with expiry, contradiction events, and drift auditability.
 
 ## Run the demo
 
-From the repository root (LLM optional — uses fast-path / disabled consolidation):
+From the repository root:
 
 ```bash
 pip install -e ".[fastembed,dev]"
 python examples/trust-vs-rag/demo_flow.py
 ```
 
+The script builds its own throwaway data dir and git repo under a temp
+directory, so it touches nothing in your active project. It sets
+`llm.backend = "disabled"` and `consolidation.min_cluster_size = 1` on that
+config, so consolidation runs on the fast path with no LLM and no API key.
+
 The script:
 
 - Stores a solution episode with a file anchor
-- Runs consolidation (fast-path when `LLM_BACKEND=disabled`)
+- Runs consolidation on the fast path
 - Simulates a git rename on the anchored path
 - Runs drift detection and shows challenged claims
 - Recalls the problem query and prints ranked claims with status

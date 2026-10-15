@@ -4,16 +4,16 @@ import json
 
 import pytest
 
+from consolidation_memory.dashboard_data import DashboardData
 from consolidation_memory.database import (
+    complete_consolidation_run,
     ensure_schema,
     get_connection,
     insert_episode,
-    upsert_knowledge_topic,
     insert_knowledge_records,
     start_consolidation_run,
-    complete_consolidation_run,
+    upsert_knowledge_topic,
 )
-from consolidation_memory.dashboard_data import DashboardData
 
 
 @pytest.fixture

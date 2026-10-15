@@ -21,7 +21,7 @@ SRC_PATH = ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from consolidation_memory.release_gates import evaluate_release_gates  # noqa: E402
+from consolidation_memory.release_gates import evaluate_release_gates
 
 
 def _scope_alignment(use_case: str, wedge_doc: Path) -> tuple[bool, str]:

@@ -11,9 +11,9 @@ from consolidation_memory.tool_adapter import (
     build_recall_timeout_fallback_result,
     deferred_knowledge_requested,
     effective_include_knowledge,
-    inject_recall_deadline,
     maybe_complete_deferred_recall,
     recall_deadline_monotonic,
+    resolve_recall_deadline,
     result_has_deferred_knowledge_warning,
 )
 from consolidation_memory.tool_dispatch import execute_tool_call
@@ -43,12 +43,10 @@ class TestRecallAdapterSemantics:
         assert updated["warnings"][0].startswith("Knowledge/records/claims deferred")
         assert updated["warnings"][1] == "existing"
 
-    def test_inject_recall_deadline(self):
+    def test_resolve_recall_deadline_returns_a_budget_not_a_payload_key(self):
         import time
 
-        payload: dict[str, object] = {"query": "hello"}
-        inject_recall_deadline(payload, timeout_seconds=60.0)
-        deadline = payload["_recall_deadline_monotonic"]
+        deadline = resolve_recall_deadline(60.0)
         assert isinstance(deadline, float)
         assert deadline >= time.monotonic()
         assert deadline <= recall_deadline_monotonic(60.0) + 0.05

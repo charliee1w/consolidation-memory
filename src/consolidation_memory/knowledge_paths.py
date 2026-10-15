@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import Any
 
 _SAFE_SEGMENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_SUFFIX_RE = re.compile(r"[^A-Za-z0-9.]+")

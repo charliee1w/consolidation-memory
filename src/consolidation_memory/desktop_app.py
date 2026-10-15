@@ -6,7 +6,8 @@ Requires: pip install consolidation-memory[desktop]
 from __future__ import annotations
 
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from consolidation_memory.desktop_backend import DesktopBackend
 
@@ -28,9 +29,9 @@ try:
         QPushButton,
         QStatusBar,
         QSystemTrayIcon,
-        QTabWidget,
         QTableWidget,
         QTableWidgetItem,
+        QTabWidget,
         QTextBrowser,
         QTextEdit,
         QVBoxLayout,
@@ -167,7 +168,7 @@ if _PYSIDE_AVAILABLE:
         def run(self) -> None:
             try:
                 result = self._fn(*self._args, **self._kwargs)
-            except Exception as exc:  # noqa: BLE001 - surface to UI
+            except Exception as exc:
                 self.failed.emit(str(exc))
                 return
             self.finished_ok.emit(result)
@@ -182,7 +183,7 @@ if _PYSIDE_AVAILABLE:
             self._worker: _Worker | None = None
             self._icon = build_app_icon()
 
-            self.setWindowTitle("consolidation-memory")
+            self.setWindowTitle("consolidation-memory — engineering knowledge layer")
             self.setWindowIcon(self._icon)
             self.resize(920, 680)
             self.setStyleSheet(APP_STYLESHEET)
@@ -197,7 +198,7 @@ if _PYSIDE_AVAILABLE:
             title_block = QVBoxLayout()
             title = QLabel("consolidation-memory")
             title.setStyleSheet("font-size: 20px; font-weight: 650; color: #e8eef5;")
-            subtitle = QLabel("Remember fixes and notes. Search them later in plain language.")
+            subtitle = QLabel("Remember fixes and notes — knowledge your agents can reuse.")
             subtitle.setStyleSheet("color: #8fa3b8;")
             title_block.addWidget(title)
             title_block.addWidget(subtitle)

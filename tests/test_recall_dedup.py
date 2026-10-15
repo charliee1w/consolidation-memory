@@ -81,16 +81,17 @@ class TestDeduplicationInRecall:
     def setup_db(self, tmp_data_dir):
         """Store episodes and create knowledge records that reference them."""
         import json
+
         import numpy as np
 
+        from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             ensure_schema,
             insert_episode,
-            upsert_knowledge_topic,
             insert_knowledge_records,
+            upsert_knowledge_topic,
         )
         from consolidation_memory.vector_store import VectorStore
-        from consolidation_memory.config import get_config
 
         ensure_schema()
         cfg = get_config()
@@ -183,8 +184,8 @@ class TestDeduplicationInRecall:
         """When RECALL_DEDUP_ENABLED=False, no dedup happens."""
         from unittest.mock import patch
 
-        from consolidation_memory.context_assembler import recall
         from consolidation_memory.config import override_config
+        from consolidation_memory.context_assembler import recall
 
         vs, ep_ids, query_vec = setup_db
 

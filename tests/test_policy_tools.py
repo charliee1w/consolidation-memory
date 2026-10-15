@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -171,5 +170,5 @@ class TestPolicySurfaceContract:
             "consolidation_memory.server._get_client_with_timeout",
             side_effect=RuntimeError("client init should not run"),
         ):
-            output = json.loads(asyncio.run(memory_policy_list()))
+            output = asyncio.run(memory_policy_list())
         assert output["status"] == "ok"

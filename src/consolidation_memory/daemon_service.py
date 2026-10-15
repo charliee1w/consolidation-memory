@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import platform
@@ -523,7 +524,11 @@ def daemon_status(*, project: str | None = None) -> dict[str, Any]:
 def run_daemon(*, stop_event: threading.Event | None = None) -> dict[str, Any]:
     """Foreground maintenance daemon with utility scheduler enabled."""
     from consolidation_memory.client import MemoryClient
-    from consolidation_memory.config import get_active_project, get_config, override_config
+    from consolidation_memory.config import (
+        get_active_project,
+        get_config,
+        override_config,
+    )
     from consolidation_memory.process_write_lock import ProcessWriteLease
 
     project = get_active_project()
@@ -539,10 +544,9 @@ def run_daemon(*, stop_event: threading.Event | None = None) -> dict[str, Any]:
 
     previous_handlers: dict[int, Any] = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        # Not the main thread, or the signal is unavailable here.
+        with contextlib.suppress(ValueError, OSError):
             previous_handlers[sig] = signal.signal(sig, _handle_signal)
-        except (ValueError, OSError):
-            pass
 
     lease_timeout = 2.0
     lease = ProcessWriteLease(lock_path, timeout_seconds=lease_timeout)
@@ -579,10 +583,9 @@ def run_daemon(*, stop_event: threading.Event | None = None) -> dict[str, Any]:
         }
     finally:
         for signum, handler in previous_handlers.items():
-            try:
+            # Best-effort restore; a rejected signal leaves the default handler.
+            with contextlib.suppress(ValueError, OSError):
                 signal.signal(signum, handler)
-            except (ValueError, OSError):
-                pass
 
     return {
         "status": "stopped",

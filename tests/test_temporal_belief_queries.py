@@ -22,7 +22,6 @@ from consolidation_memory.database import (
 from consolidation_memory.types import RecallResult
 from tests.helpers import mock_encode
 
-
 # ── Database: get_records_as_of ──────────────────────────────────────────────
 
 class TestGetRecordsAsOf:
@@ -45,8 +44,9 @@ class TestGetRecordsAsOf:
         )
 
         # Insert record_old at T0 (using manual created_at)
-        from consolidation_memory.database import get_connection
         import uuid
+
+        from consolidation_memory.database import get_connection
 
         t0 = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         t1 = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
@@ -77,7 +77,7 @@ class TestGetRecordsAsOf:
 
     def test_as_of_returns_old_record_at_early_time(self, tmp_data_dir):
         """Querying at T0 should return the old record only."""
-        tid, old_id, new_id, t0, t1 = self._setup_timeline()
+        _tid, old_id, new_id, _t0, _t1 = self._setup_timeline()
 
         # Query at T0 + 1 day (between T0 and T1)
         query_time = (datetime.now(timezone.utc) - timedelta(days=25)).isoformat()
@@ -89,7 +89,7 @@ class TestGetRecordsAsOf:
 
     def test_as_of_returns_new_record_at_later_time(self, tmp_data_dir):
         """Querying at T1 should return only the new record."""
-        tid, old_id, new_id, t0, t1 = self._setup_timeline()
+        _tid, old_id, new_id, _t0, _t1 = self._setup_timeline()
 
         # Query at T1 + 1 day (after T1)
         query_time = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
@@ -101,7 +101,7 @@ class TestGetRecordsAsOf:
 
     def test_as_of_returns_both_at_transition(self, tmp_data_dir):
         """At the exact moment T1, old should be excluded (valid_until = T1 means expired at T1)."""
-        tid, old_id, new_id, t0, t1 = self._setup_timeline()
+        _tid, old_id, new_id, _t0, t1 = self._setup_timeline()
 
         records = get_records_as_of(t1)
         record_ids = {r["id"] for r in records}
@@ -169,7 +169,7 @@ class TestGetRecordsAsOf:
 
     def test_as_of_before_any_records(self, tmp_data_dir):
         """Querying before any records existed should return nothing."""
-        tid, old_id, new_id, t0, t1 = self._setup_timeline()
+        _tid, _old_id, _new_id, _t0, _t1 = self._setup_timeline()
 
         very_early = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
         records = get_records_as_of(very_early)
@@ -177,7 +177,7 @@ class TestGetRecordsAsOf:
 
     def test_as_of_includes_topic_metadata(self, tmp_data_dir):
         """Records from as_of query should include joined topic metadata."""
-        tid, old_id, new_id, t0, t1 = self._setup_timeline()
+        _tid, _old_id, _new_id, _t0, _t1 = self._setup_timeline()
 
         query_time = (datetime.now(timezone.utc) - timedelta(days=25)).isoformat()
         records = get_records_as_of(query_time)
@@ -256,7 +256,7 @@ class TestSearchRecordsAsOf:
             mock_db.return_value = [mock_record]
             mock_backends.encode_documents.return_value = np.stack([query_vec])
 
-            records, warnings = _search_records(
+            records, _warnings = _search_records(
                 "X", query_vec, as_of="2025-06-01T00:00:00+00:00",
             )
 
@@ -276,7 +276,7 @@ class TestSearchRecordsAsOf:
             patch("consolidation_memory.context_assembler.increment_record_access"),
         ):
             mock_rc.get_record_vecs.return_value = ([], None)
-            records, warnings = _search_records("X", query_vec, as_of=None)
+            _records, _warnings = _search_records("X", query_vec, as_of=None)
             mock_rc.get_record_vecs.assert_called_once()
 
     def test_as_of_embed_failure_returns_records_without_semantic(self, tmp_data_dir):
@@ -306,7 +306,7 @@ class TestSearchRecordsAsOf:
             mock_backends.encode_documents.side_effect = RuntimeError("backend down")
 
             # Should not raise -- degrades to keyword-only matching
-            records, warnings = _search_records(
+            records, _warnings = _search_records(
                 "X old", query_vec, as_of="2025-06-01T00:00:00+00:00",
             )
             # With keyword matching, the record may or may not pass threshold,
@@ -360,7 +360,7 @@ class TestSearchKnowledgeAsOf:
             mock_tc.get_topic_vecs.return_value = ([old_topic, new_topic], summary_vecs)
 
             # Query as of mid-2025 -- should exclude new_topic
-            topics, warnings = _search_knowledge(
+            topics, _warnings = _search_knowledge(
                 "test", query_vec, as_of="2025-06-01T00:00:00+00:00",
             )
 
@@ -395,7 +395,7 @@ class TestSearchKnowledgeAsOf:
         ):
             mock_tc.get_topic_vecs.return_value = ([topic], np.stack([query_vec]))
 
-            topics, warnings = _search_knowledge("test", query_vec, as_of=None)
+            topics, _warnings = _search_knowledge("test", query_vec, as_of=None)
             assert len(topics) == 1
 
     def test_as_of_before_all_topics_returns_empty(self, tmp_data_dir):
@@ -419,7 +419,7 @@ class TestSearchKnowledgeAsOf:
         ):
             mock_tc.get_topic_vecs.return_value = ([topic], np.stack([query_vec]))
 
-            topics, warnings = _search_knowledge(
+            topics, _warnings = _search_knowledge(
                 "test", query_vec, as_of="2024-01-01T00:00:00+00:00",
             )
             assert topics == []
@@ -496,7 +496,7 @@ class TestSearchKnowledgeAsOf:
         ):
             mock_tc.get_topic_vecs.return_value = ([topic_row], np.stack([query_vec]))
 
-            topics, warnings = _search_knowledge(
+            topics, _warnings = _search_knowledge(
                 "topic",
                 query_vec,
                 as_of="2026-01-15T00:00:00+00:00",
@@ -516,8 +516,8 @@ class TestRecallAsOf:
     def test_as_of_caps_episode_before_filter(self, tmp_data_dir):
         """as_of should act as a 'before' cap on episodes."""
         from consolidation_memory.context_assembler import recall
-        from consolidation_memory.vector_store import VectorStore
         from consolidation_memory.database import ensure_schema, insert_episode
+        from consolidation_memory.vector_store import VectorStore
 
         ensure_schema()
         vs = VectorStore()
@@ -562,8 +562,8 @@ class TestRecallAsOf:
     def test_as_of_respects_explicit_before(self, tmp_data_dir):
         """If 'before' is explicitly set and earlier than as_of, use 'before'."""
         from consolidation_memory.context_assembler import recall
-        from consolidation_memory.vector_store import VectorStore
         from consolidation_memory.database import ensure_schema, insert_episode
+        from consolidation_memory.vector_store import VectorStore
 
         ensure_schema()
         vs = VectorStore()
@@ -605,8 +605,8 @@ class TestRecallAsOf:
     def test_as_of_none_has_no_effect(self, tmp_data_dir):
         """When as_of is None, recall behaves normally."""
         from consolidation_memory.context_assembler import recall
-        from consolidation_memory.vector_store import VectorStore
         from consolidation_memory.database import ensure_schema, insert_episode
+        from consolidation_memory.vector_store import VectorStore
 
         ensure_schema()
         vs = VectorStore()
@@ -673,6 +673,7 @@ class TestMCPServerAsOf:
 
     def test_memory_recall_signature_has_as_of(self):
         import inspect
+
         from consolidation_memory.server import memory_recall
         sig = inspect.signature(memory_recall)
         assert "as_of" in sig.parameters

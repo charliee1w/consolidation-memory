@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from consolidation_memory.db.connection import get_connection
 from consolidation_memory.db.scope import _apply_scope_filters
@@ -99,11 +100,11 @@ def get_record_ids_by_subject_token(
 
     conditions = [
         "kr.deleted = 0",
-        "("
+        ("("
         "LOWER(json_extract(kr.content, '$.subject')) = ? OR "
         "LOWER(json_extract(kr.content, '$.key')) = ? OR "
         "LOWER(kr.embedding_text) LIKE ?"
-        ")",
+        ")"),
     ]
     params: list[Any] = [token, token, f"%{token}%"]
     _apply_scope_filters(conditions, params, scope, table_alias="kr")
@@ -133,11 +134,11 @@ def get_claim_ids_by_subject_token(
         return []
 
     conditions = [
-        "("
+        ("("
         "LOWER(json_extract(c.payload, '$.subject')) = ? OR "
         "LOWER(json_extract(c.payload, '$.key')) = ? OR "
         "LOWER(c.canonical_text) LIKE ?"
-        ")",
+        ")"),
     ]
     params: list[Any] = [token, token, f"%{token}%"]
     _apply_scope_filters(conditions, params, scope, table_alias="e")

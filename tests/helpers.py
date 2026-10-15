@@ -46,3 +46,13 @@ def mock_embed_items_incremental(items, *, namespace, retain_ids=None):
     if not any(text.strip() for text in texts):
         return None
     return mock_encode(texts)
+
+
+def as_payload(result):
+    """Unwrap an MCP handler result: success payloads are plain dicts, tool
+    execution errors arrive as CallToolResult with isError=true."""
+    if hasattr(result, "structured_content"):
+        payload = result.structured_content
+        assert payload is not None, "tool execution errors must keep structured content"
+        return payload
+    return result

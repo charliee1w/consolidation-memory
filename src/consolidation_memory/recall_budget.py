@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import time
-from typing import Iterator
+from collections.abc import Iterator
 
 _recall_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "_recall_deadline",

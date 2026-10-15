@@ -22,7 +22,7 @@ def load_memory(state: AgentState) -> AgentState:
             include_knowledge=True,
         )
 
-    memory_hits = [episode.content for episode in result.episodes]
+    memory_hits = [str(episode["content"]) for episode in result.episodes]
     return {
         **state,
         "memory_hits": memory_hits,

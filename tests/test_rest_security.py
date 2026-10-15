@@ -129,7 +129,7 @@ def test_rest_module_uses_defaults_when_numeric_env_values_are_invalid(monkeypat
     monkeypatch.setenv("CONSOLIDATION_MEMORY_RECALL_FALLBACK_TIMEOUT_SECONDS", "inf")
     monkeypatch.setenv("CONSOLIDATION_MEMORY_CLIENT_INIT_TIMEOUT_SECONDS", "")
 
-    import consolidation_memory.rest as rest
+    from consolidation_memory import rest
 
     rest = importlib.reload(rest)
 

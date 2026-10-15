@@ -8,12 +8,12 @@ import logging
 from datetime import datetime, timezone
 
 from consolidation_memory.config import get_config
-from consolidation_memory.utils import parse_datetime
 from consolidation_memory.database import (
     get_active_episodes_paginated,
     get_median_access_count,
     update_surprise_scores,
 )
+from consolidation_memory.utils import parse_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def _adjust_surprise_scores() -> int:
             new_score = original
             access = ep["access_count"]
 
-            if access > median_access and median_access > 0:
+            if access > median_access > 0:
                 excess = access - median_access
                 # Absolute target rather than additive boost — prevents
                 # cumulative inflation across repeated consolidation runs.

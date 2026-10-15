@@ -6,17 +6,17 @@ import pytest
 
 from consolidation_memory.config import override_config
 from consolidation_memory.database import (
-    _sanitize_fts_query,
     _reset_fts5_cache,
+    _sanitize_fts_query,
     ensure_schema,
     fts_available,
     fts_insert,
     fts_rebuild,
     fts_search,
     get_episode,
+    hard_delete_episode,
     insert_episode,
     soft_delete_episode,
-    hard_delete_episode,
 )
 from tests.helpers import mock_encode as _mock_encode
 

@@ -30,7 +30,7 @@ def main() -> None:
 
     if result.episodes:
         print("\nTop episode:")
-        print(result.episodes[0].content)
+        print(result.episodes[0]["content"])
 
 
 if __name__ == "__main__":

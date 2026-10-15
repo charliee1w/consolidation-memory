@@ -23,8 +23,8 @@ from consolidation_memory.database import (
     insert_claim_sources,
     insert_episode,
     insert_episode_anchors,
-    mark_claims_challenged_by_ids,
     mark_claims_challenged_by_anchors,
+    mark_claims_challenged_by_ids,
     record_action_outcome,
     upsert_claim,
 )

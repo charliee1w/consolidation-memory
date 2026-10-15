@@ -113,9 +113,11 @@ class TestAuditScopeIsolation:
         from consolidation_memory.database import ensure_schema
 
         ensure_schema()
-        with MemoryClient(auto_consolidate=False) as client:
-            with pytest.raises(ValueError, match="content_type must be one of"):
-                client.store("bad type", content_type="not-a-real-type")
+        with (
+            MemoryClient(auto_consolidate=False) as client,
+            pytest.raises(ValueError, match="content_type must be one of"),
+        ):
+            client.store("bad type", content_type="not-a-real-type")
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_procedure_content_type_accepted_by_python_sdk(self, mock_embed, tmp_data_dir):

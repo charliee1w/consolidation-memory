@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 
 from consolidation_memory.tool_dispatch import dispatch_tool_call as _dispatch_tool_call
 
-
 # ── Tool Schemas ─────────────────────────────────────────────────────────────
 
 _MAX_CONTENT_LENGTH = 50_000
@@ -41,11 +40,31 @@ _MAX_TOPIC_LENGTH = 500
 _MAX_FILENAME_LENGTH = 255
 _MAX_PATH_LENGTH = 4096
 
+def _nullable_str(max_length: int) -> dict[str, Any]:
+    """A scope string field that also accepts ``null``.
+
+    ``memory_scope_list`` publishes discovered envelopes with ``null`` for every
+    identity key a row does not carry, and the guide promises an entry can be
+    passed back verbatim. A host that validates arguments against this schema
+    (``additionalProperties: false``, strings only) rejected that envelope while
+    MCP and REST accepted it, so the surfaces disagreed. Coercion already treated
+    ``null`` as "not set" for all of them.
+    """
+    return {"type": ["string", "null"], "maxLength": max_length}
+
+
+def _nullable_section(properties: dict[str, Any]) -> dict[str, Any]:
+    """A scope sub-object that may be ``null`` (``agent``, ``session``)."""
+    return {"type": ["object", "null"], "additionalProperties": False, "properties": properties}
+
+
 SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": (
         "Optional canonical scope envelope for universal shared memory. "
-        "If omitted, legacy single-project defaults are used."
+        "If omitted, legacy single-project defaults are used. "
+        "A memory_scope_list envelope round-trips verbatim: absent identity keys "
+        "arrive as null and mean 'not set'."
     ),
     "additionalProperties": False,
     "properties": {
@@ -57,8 +76,8 @@ SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
                 "slug": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "display_name": {"type": "string", "maxLength": _MAX_TOPIC_LENGTH},
                 "sharing_mode": {
-                    "type": "string",
-                    "enum": ["private", "shared", "team", "managed"],
+                    "type": ["string", "null"],
+                    "enum": ["private", "shared", "team", "managed", None],
                 },
             },
         },
@@ -82,43 +101,39 @@ SCOPE_ENVELOPE_SCHEMA: dict[str, Any] = {
                     ],
                 },
                 "name": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
-                "provider": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
-                "external_key": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "provider": _nullable_str(_MAX_FILENAME_LENGTH),
+                "external_key": _nullable_str(_MAX_FILENAME_LENGTH),
             },
         },
-        "agent": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
+        "agent": _nullable_section(
+            {
                 "id": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "name": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "external_key": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "model_provider": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "model_name": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
-            },
-        },
-        "session": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
+            }
+        ),
+        "session": _nullable_section(
+            {
                 "id": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "external_key": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "session_kind": {
-                    "type": "string",
-                    "enum": ["conversation", "thread", "workflow", "job"],
+                    "type": ["string", "null"],
+                    "enum": ["conversation", "thread", "workflow", "job", None],
                 },
-            },
-        },
+            }
+        ),
         "project": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
                 "id": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
                 "slug": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
-                "display_name": {"type": "string", "maxLength": _MAX_TOPIC_LENGTH},
-                "root_uri": {"type": "string", "maxLength": _MAX_PATH_LENGTH},
-                "repo_remote": {"type": "string", "maxLength": _MAX_PATH_LENGTH},
-                "default_branch": {"type": "string", "maxLength": _MAX_FILENAME_LENGTH},
+                "display_name": _nullable_str(_MAX_TOPIC_LENGTH),
+                "root_uri": _nullable_str(_MAX_PATH_LENGTH),
+                "repo_remote": _nullable_str(_MAX_PATH_LENGTH),
+                "default_branch": _nullable_str(_MAX_FILENAME_LENGTH),
             },
         },
         "policy": {
@@ -170,7 +185,8 @@ MEMORY_REMEMBER_SCHEMA: dict[str, Any] = {
         "name": "memory_remember",
         "description": (
             "Save something to memory using plain language. "
-            "Prefer this over memory_store when you do not need advanced content_type control. "
+            "Prefer this over memory_store when the simple kind vocabulary is enough; "
+            "memory_store is the one that takes an explicit content_type. "
             "Use kind=fix for debugging solutions (problem + what worked)."
         ),
         "parameters": {
@@ -1052,12 +1068,55 @@ MEMORY_POLICY_LIST_SCHEMA: dict[str, Any] = {
         "name": "memory_policy_list",
         "description": (
             "List persisted namespace/project access policies and ACL bindings. "
-            "Use to inspect who can read or write memory in self-hosted deployments."
+            "Use to inspect who can read or write memory in self-hosted deployments. "
+            "Like scope discovery, this listing is deployment-wide: it is NOT "
+            "filtered by read_visibility or the caller's scope, so it names every "
+            "persisted binding, including principals the caller cannot read into."
         ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
             "properties": {},
+            "required": [],
+        },
+    },
+}
+
+MEMORY_SCOPE_LIST_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_scope_list",
+        "description": (
+            "Discover which scopes exist: lists every scope that has stored data, "
+            "with per-table usage counts and a canonical scope envelope you can "
+            "pass back as the scope argument of other tools. Counts cover live "
+            "rows only. This listing is deployment-wide: it is a topology audit, "
+            "intentionally NOT filtered by read_visibility, policy or the caller's "
+            "scope, so it names every scope that holds data. No content is read "
+            "through it. Keep the MCP subprocess off untrusted multi-tenant "
+            "deployments without OS-level isolation."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 100,
+                    "description": "Maximum number of scopes to return (1-1000).",
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": (
+                        "0-based offset into the ordered scope list for page "
+                        "iteration; combine with limit."
+                    ),
+                },
+            },
             "required": [],
         },
     },
@@ -1232,6 +1291,7 @@ openai_tools: list[dict[str, Any]] = [
     MEMORY_DECAY_REPORT_SCHEMA,
     MEMORY_CONSOLIDATION_LOG_SCHEMA,
     MEMORY_POLICY_LIST_SCHEMA,
+    MEMORY_SCOPE_LIST_SCHEMA,
     MEMORY_POLICY_GRANT_SCHEMA,
     MEMORY_HYGIENE_SCAN_SCHEMA,
     MEMORY_HYGIENE_APPLY_SCHEMA,
@@ -1240,10 +1300,35 @@ openai_tools: list[dict[str, Any]] = [
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 
+# Every schema above declares ``additionalProperties: false``; the dispatch path
+# enforces that instead of trusting it. Unknown argument keys raise
+# ``consolidation_memory.tool_dispatch.ToolContractError`` (a ``ValueError``) with
+# the offending keys named and the published ``inputSchema`` named as the contract
+# — the same actionable rejection the MCP path produces from pydantic's
+# ``extra="forbid"``. Runtime and value validation failures still come back as
+# ``{"error": ...}`` payloads, the long-standing OpenAI surface convention for a
+# failed tool call.
+
 def dispatch_tool_call(
     client: MemoryClient,
     name: str,
     arguments: dict[str, Any],
+    *,
+    recall_deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
-    """Execute a tool call against a MemoryClient and return the result as a dict."""
-    return _dispatch_tool_call(client, name, arguments)
+    """Execute a tool call against a MemoryClient and return the result as a dict.
+
+    Raises ``consolidation_memory.tool_dispatch.ToolContractError`` when
+    ``arguments`` carry keys the published schema does not declare.
+
+    ``recall_deadline_monotonic`` is a caller-resolved transport budget, not a
+    tool argument: it is passed beside ``arguments`` because no published schema
+    declares it, and a key in ``arguments`` would have to be exempted from the
+    contract check.
+    """
+    return _dispatch_tool_call(
+        client,
+        name,
+        arguments,
+        recall_deadline_monotonic=recall_deadline_monotonic,
+    )

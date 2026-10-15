@@ -9,8 +9,8 @@ import re
 
 import numpy as np
 
-from consolidation_memory.config import get_config
 from consolidation_memory import topic_cache
+from consolidation_memory.config import get_config
 
 logger = logging.getLogger(__name__)
 

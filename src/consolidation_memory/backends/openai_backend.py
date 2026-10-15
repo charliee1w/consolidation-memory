@@ -20,9 +20,9 @@ class OpenAIEmbeddingBackend:
             from openai import OpenAI
         except ImportError:
             raise ImportError(
-                "openai is required for the openai backend. "
+                "openai is required for the openai embedding backend. "
                 "Install it with: pip install consolidation-memory[openai]"
-            )
+            ) from None
         kwargs: dict[str, str] = {"api_key": api_key}
         if api_base:
             kwargs["base_url"] = api_base
@@ -33,7 +33,7 @@ class OpenAIEmbeddingBackend:
     def _get_transient_exceptions(self) -> tuple:
         """Return OpenAI SDK transient exception types (import-time safe)."""
         try:
-            from openai import APIError, APITimeoutError, APIConnectionError
+            from openai import APIConnectionError, APIError, APITimeoutError
             return (APIError, APITimeoutError, APIConnectionError, ConnectionError, TimeoutError)
         except ImportError:
             return (ConnectionError, TimeoutError, OSError)
@@ -74,7 +74,7 @@ class OpenAILLMBackend:
             raise ImportError(
                 "openai is required for the openai LLM backend. "
                 "Install it with: pip install consolidation-memory[openai]"
-            )
+            ) from None
         kwargs: dict[str, str] = {"api_key": api_key}
         if api_base:
             kwargs["base_url"] = api_base
@@ -85,7 +85,7 @@ class OpenAILLMBackend:
 
     def _get_transient_exceptions(self) -> tuple:
         try:
-            from openai import APIError, APITimeoutError, APIConnectionError
+            from openai import APIConnectionError, APIError, APITimeoutError
             return (APIError, APITimeoutError, APIConnectionError, ConnectionError, TimeoutError)
         except ImportError:
             return (ConnectionError, TimeoutError, OSError)

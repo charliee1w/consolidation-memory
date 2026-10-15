@@ -1,8 +1,21 @@
-"""Consolidation Memory — trust-calibrated working memory for coding agents."""
+"""Consolidation Memory — engineering knowledge layer for agents."""
 
+from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
-__version__ = _pkg_version("consolidation-memory")
+# Sentinel used when the distribution metadata is unavailable, e.g. running from
+# a source checkout that was never installed, or from a subprocess whose
+# interpreter cannot see the dist-info. It stays a valid PEP 440 version so every
+# consumer that formats or reports ``__version__`` keeps working, and it sorts
+# below every real 0.x release so it can never masquerade as a newer build.
+_UNKNOWN_VERSION = "0.0.0"
+
+try:
+    __version__ = _pkg_version("consolidation-memory")
+except PackageNotFoundError:
+    # Only a missing distribution is tolerated; any other lookup failure is a
+    # real error and must stay visible.
+    __version__ = _UNKNOWN_VERSION
 
 # Lazy imports to avoid pulling in heavy deps (faiss, numpy) on bare import.
 _LAZY_IMPORTS = {
@@ -32,6 +45,8 @@ _LAZY_IMPORTS = {
     "DecayReportResult": "consolidation_memory.types",
     "ProtectResult": "consolidation_memory.types",
     "ContradictionResult": "consolidation_memory.types",
+    "ConsolidationLogResult": "consolidation_memory.types",
+    "HygieneApplyResult": "consolidation_memory.types",
     "ContentType": "consolidation_memory.types",
     "RecordType": "consolidation_memory.types",
     "OutcomeType": "consolidation_memory.types",
@@ -52,7 +67,10 @@ _LAZY_IMPORTS = {
     "RUN_STATUS_FAILED": "consolidation_memory.types",
 }
 
-__all__ = ["__version__", *_LAZY_IMPORTS]
+# The suppression below is deliberate: the names are the keys of a dict[str, str],
+# so every entry is a string by construction, but the rule cannot see through the
+# unpacking, and the concatenated form trips RUF005 instead.
+__all__ = ["__version__", *list(_LAZY_IMPORTS)]  # noqa: PLE0604
 
 
 def __getattr__(name: str):

@@ -19,7 +19,7 @@ def test_rest_extra_exposes_create_app_when_fastapi_is_installed():
 def test_dashboard_extra_exposes_textual_dashboard_when_installed():
     pytest.importorskip("textual")
 
-    import consolidation_memory.dashboard as dashboard
+    from consolidation_memory import dashboard
 
     assert dashboard._TEXTUAL_AVAILABLE is True
     app = dashboard.DashboardApp()

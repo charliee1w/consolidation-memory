@@ -6,7 +6,7 @@ Outcome-based direction for `consolidation-memory`. Details may shift as the imp
 
 Make local-first agent memory dependable for coding workflows: useful recall, explicit trust signals, and low operational overhead — **usable by anyone**, not only MCP power users.
 
-## Shipped today
+## Shipped
 
 - Hybrid retrieval over episodes, topics, records, and claims
 - Temporal queries (`as_of`) on trust surfaces
@@ -17,41 +17,39 @@ Make local-first agent memory dependable for coding workflows: useful recall, ex
 - Scope columns and persisted policy/ACL primitives
 - Entity-centric recall — optional `entity` on `memory_recall` boosts path/subject-linked episodes, records, and claims via anchors
 - Hypothesis competition — config `hypothesis_competition_enabled` keeps contradicted records during consolidation with lowered precision; optional `hypothesis_competition` on `memory_recall` surfaces competing claims
-- MCP, REST, Python, and OpenAI tool parity through `MemoryClient`
-- ~~**Policy ergonomics**~~ — `memory_policy_list` / `memory_policy_grant` on MCP, REST, and OpenAI dispatch; CLI `policy list|grant`
-- **Browser UI** — `consolidation-memory ui` serves `/ui/` (Ask · Remember · Browse · Health · Hygiene · Metrics); `init --quick` for zero-prompt setup; in-browser setup wizard when config is missing
-- **Corpus hygiene** — `forget()` expires claims that lose all provenance; Hygiene tab + `corpus_hygiene` scan/apply for noisy episodes and orphaned claims
-- **Native desktop UI** — `consolidation-memory app` (PySide6) with Ask · Remember · Browse and system tray icon
-- ~~**MCP simple tools**~~ — `memory_remember` / `memory_ask` on MCP, REST (`POST /memory/remember`, `POST /memory/ask`), and OpenAI dispatch; browser UI uses the same aliases
+- Surface parity — MCP, REST, Python, and OpenAI dispatch through `MemoryClient`, with one strict allowed-argument set across all of them
+- Policy ergonomics — `memory_policy_list` / `memory_policy_grant` on MCP, REST, and OpenAI dispatch; CLI `policy list|grant`
+- Simple agent surface — `memory_remember` / `memory_ask` on MCP, REST (`POST /memory/remember`, `POST /memory/ask`) and OpenAI dispatch; `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple` exposes 3 of the 29 full-profile tools
+- Scope discovery — `memory_scope_list` (and `GET /memory/scopes`) aggregates existing scopes (no external registry needed) with per-table usage counts and pageable windows. Counts cover live rows only, and the result is intentionally **not** filtered by `read_visibility` — it is a topology audit, not a tenant boundary (see [ACL.md](ACL.md#trust-boundary)); returned envelopes are reusable as `scope` arguments
+- MCP spec surface — host-negotiated protocol revisions, a typed `outputSchema` per tool, `isError` execution failures and one strict argument contract enforced on every surface — see [MCP_GUIDE.md](MCP_GUIDE.md)
+- Corpus hygiene — `forget()` expires claims that lose all provenance; `memory_hygiene_scan` / `memory_hygiene_apply` clean noisy episodes and repair orphaned claims, exposed on every surface plus a Hygiene tab
+- Graphical surfaces — browser (`consolidation-memory ui`, Ask · Remember · Browse · Health · Hygiene · Metrics) with `init --quick` and an in-browser setup wizard when config is missing; Textual TUI (`consolidation-memory dashboard`); native desktop (`consolidation-memory app`, PySide6, system tray) — see [UI.md](UI.md)
+- Live recall evidence — trending `real_world_eval --mode full` on the live `universal` corpus; the published run and thresholds are in [REAL_WORLD_METRICS.md](REAL_WORLD_METRICS.md) and the CI fixture stays regression-only
+- Benchmark and positioning narrative — [LOCOMO_BENCHMARK.md](LOCOMO_BENCHMARK.md) (full run needs `OPENAI_API_KEY`), [examples/trust-vs-rag/](../examples/trust-vs-rag/) with `demo_flow.py`, [PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md) and the [examples/](../examples/) adapters
 
-## Adoption blockers (tracked)
+## Shipped adoption gaps
 
-Prioritized gaps between engineering maturity and broad adoption. Each item has a measurable done-when.
-
-| Priority | Blocker | Done-when |
+| Priority | Gap | Done-when |
 | --- | --- | --- |
-| P0 | **No simple agent surface** — full MCP profile (28 tools) overwhelms newcomers | ~~`memory_remember` / `memory_ask` + `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`~~ (shipped) |
-| P0 | **Live recall proof gap** — synthetic CI passes; messy corpora underperform | ~~Trending `real_world_eval --mode full` on live `universal` corpus~~ (2026-06-14, see [REAL_WORLD_METRICS.md](REAL_WORLD_METRICS.md)); CI fixture stays regression-only |
-| P1 | **Setup friction** — Python path, embeddings, hooks, scope concepts | ~~One-command `init --quick` + `ui`; in-browser setup wizard when config missing~~ (shipped) |
-| P1 | **Ops opacity** — stale consolidation / embedding health unclear to casual users | ~~Actionable health in UI + warnings; fix-it flows (consolidate, reindex, warmup)~~ (shipped) |
-| P1 | **Corpus hygiene** — forget episodes does not retract claims | ~~Claim retraction/expiry on forget; cleanup wizard for noisy corpora~~ (shipped) |
-| P2 | **Positioning vs simple RAG** — narrow wedge hard to explain in 30s | ~~[examples/trust-vs-rag/](../examples/trust-vs-rag/) + `demo_flow.py`~~ (shipped) |
-| P2 | **Benchmark narrative** — LoCoMo / head-to-head not published | ~~[LOCOMO_BENCHMARK.md](LOCOMO_BENCHMARK.md) harness + dry-run docs~~ (shipped; full run needs `OPENAI_API_KEY`) |
-| P2 | **Ecosystem packaging** — adapter docs, plugin author guide, community templates | ~~[PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md) + [examples/](examples/) adapters~~ (shipped) |
+| P0 | **No simple agent surface** — the full MCP profile overwhelms newcomers | ~~`memory_remember` / `memory_ask` + `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`~~ |
+| P0 | **Live recall proof** — synthetic CI passes; messy corpora underperform | ~~Trending `real_world_eval --mode full` on the live corpus~~ ([REAL_WORLD_METRICS.md](REAL_WORLD_METRICS.md)) |
+| P1 | **Setup friction** — Python path, embeddings, hooks, scope concepts | ~~One-command `init --quick` + `ui`; in-browser setup wizard when config missing~~ |
+| P1 | **Ops opacity** — stale consolidation / embedding health unclear to casual users | ~~Actionable health in the UIs plus warnings and fix-it flows (consolidate, reindex, warmup)~~ |
+| P1 | **Corpus hygiene** — forgetting episodes does not retract claims | ~~Claim expiry on `forget()`; `memory_hygiene_apply` for noisy corpora~~ |
+| P2 | **Positioning vs simple RAG** — the wedge is hard to explain in 30s | ~~[examples/trust-vs-rag/](../examples/trust-vs-rag/) + `demo_flow.py`~~ |
+| P2 | **Benchmark narrative** — LoCoMo / head-to-head not published | ~~[LOCOMO_BENCHMARK.md](LOCOMO_BENCHMARK.md) harness + dry-run docs~~ |
+| P2 | **Ecosystem packaging** — adapter docs, plugin author guide, community templates | ~~[PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md) + [examples/](../examples/) adapters~~ |
 
-## Near term (adoption slice)
+## Next
 
-1. ~~**Agent simple profile**~~ — `CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE=simple`; documented in README and CONTRIBUTING
-2. ~~**UI setup wizard**~~ — detect missing config from `/ui/`, guide `init --quick`, show MCP snippets
-3. ~~**Live metrics dashboard**~~ — Metrics tab charts bundled/live `real_world_eval` sections
-4. **Adapter maturity** — keep transport parity as new retrieval and trust features land
-
-## Mid term
-
-- ~~Claim-level retraction when episodes are forgotten~~ (shipped via `forget()` + hygiene orphan repair)
-- Broader agent-ecosystem adapters with trust invariants preserved
-- Stronger operational tooling for migrations, consolidation observability, and drift audits
-- Continued evaluation depth for release-quality evidence
+- **Adapter maturity** — keep transport parity as new retrieval and trust
+  features land, and hold every third-party agent adapter to the trust
+  invariants in [CONTRIBUTING.md](../CONTRIBUTING.md#trust-invariants).
+- **Evaluation depth** — trend live-corpus recall per release so release
+  evidence grows with the feature surface, keeping drift response and
+  provenance coverage at 100%.
+- **Operational observability** — surface applied schema migrations and the
+  consolidation/drift audit trail in `memory_status` rather than only in logs.
 
 ## Non-goals
 

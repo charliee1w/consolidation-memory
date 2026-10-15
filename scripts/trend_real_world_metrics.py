@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from consolidation_memory.ui_ops import summarize_metrics_report  # noqa: E402
+from consolidation_memory.ui_ops import summarize_metrics_report
 
 _SECTION_ORDER = (
     "live_solution_recall_at_5",

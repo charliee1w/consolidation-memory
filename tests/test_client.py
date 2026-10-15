@@ -71,7 +71,6 @@ class TestClientLifecycle:
 
             def __exit__(self, exc_type, exc, tb):
                 del exc_type, exc, tb
-                return None
 
             def read(self):
                 return b"not-json"
@@ -89,8 +88,8 @@ class TestClientLifecycle:
 
 class TestClientScopeModel:
     def test_resolve_scope_defaults_to_legacy_single_project(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -106,8 +105,8 @@ class TestClientScopeModel:
             client.close()
 
     def test_resolve_scope_uses_explicit_canonical_values(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
         from consolidation_memory.types import (
             AgentScope,
             AppClientScope,
@@ -146,8 +145,8 @@ class TestClientScopeModel:
             client.close()
 
     def test_resolve_scope_defaults_policy_to_private_allow(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -161,13 +160,13 @@ class TestClientScopeModel:
             client.close()
 
     def test_resolve_scope_uses_persisted_acl_when_present(self):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
             ensure_schema,
             upsert_access_policy,
             upsert_policy_acl_entry,
             upsert_policy_principal,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         principal_id = upsert_policy_principal("app_client", "python_sdk:legacy_client")
@@ -192,8 +191,8 @@ class TestClientScopeModel:
             client.close()
 
     def test_store_with_scope_keeps_existing_store_behavior(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
         from consolidation_memory.types import StoreResult
 
         ensure_schema()
@@ -226,8 +225,8 @@ class TestClientScopeModel:
             client.close()
 
     def test_store_with_scope_write_deny_policy_returns_write_denied(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -249,8 +248,8 @@ class TestClientScopeModel:
             client.close()
 
     def test_store_batch_with_scope_write_deny_policy_returns_write_denied(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -272,9 +271,49 @@ class TestClientScopeModel:
         finally:
             client.close()
 
-    def test_read_visibility_namespace_widens_scope_filter(self):
+    def test_store_batch_denial_is_one_result_not_one_per_episode(self):
+        """A denied batch is refused whole, before any episode is validated.
+
+        `docs/ACL.md` used to promise the denial was reported per episode inside
+        `results`. It is not: the check runs ahead of the loop, so a batch of
+        three comes back with a single synthetic entry and nothing written.
+        """
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import ensure_schema
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch("consolidation_memory.backends.encode_documents") as mock_embed:
+                result = client.store_batch_with_scope(
+                    episodes=[
+                        {"content": "first blocked"},
+                        {"content": "second blocked"},
+                        {"content": "third blocked"},
+                    ],
+                    scope={
+                        "namespace": {"slug": "team-a"},
+                        "project": {"slug": "repo-a"},
+                        "policy": {"write_mode": "deny"},
+                    },
+                )
+
+            assert result.status == "write_denied"
+            assert result.stored == 0
+            assert result.duplicates == 0
+            assert len(result.results) == 1, (
+                "one synthetic denial entry, not one per episode: "
+                f"{result.results}"
+            )
+            assert result.results[0]["status"] == "write_denied"
+            assert result.results[0]["message"]
+            mock_embed.assert_not_called()
+        finally:
+            client.close()
+
+    def test_read_visibility_namespace_widens_scope_filter(self):
         from consolidation_memory.client import MemoryClient, _resolved_scope_to_query_filter
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -297,8 +336,8 @@ class TestClientScopeModel:
             client.close()
 
     def test_recall_with_scope_keeps_existing_recall_behavior(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
         from consolidation_memory.types import RecallResult
 
         ensure_schema()
@@ -331,8 +370,8 @@ class TestClientScopeModel:
     @patch("consolidation_memory.backends.encode_query")
     @patch("consolidation_memory.backends.encode_documents")
     def test_scope_isolation_and_explicit_shared_namespace(self, mock_embed_docs, mock_embed_query):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         mock_embed_docs.side_effect = _mock_encode
@@ -372,8 +411,8 @@ class TestClientScopeModel:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_scope_aware_dedup_isolated_for_private_apps(self, mock_embed_docs):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         mock_embed_docs.side_effect = _mock_encode
@@ -402,8 +441,8 @@ class TestClientScopeModel:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_scope_aware_dedup_shared_namespace_cross_app(self, mock_embed_docs):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         mock_embed_docs.side_effect = _mock_encode
@@ -434,8 +473,8 @@ class TestClientScopeModel:
 class TestClientStore:
     @patch("consolidation_memory.backends.encode_documents")
     def test_basic_store(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -453,8 +492,8 @@ class TestClientStore:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_solution_shape_warning_on_unstructured_store(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -513,8 +552,8 @@ class TestClientStore:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_store_rolls_back_vector_when_mark_indexed_fails(self, mock_embed):
-        from consolidation_memory.database import ensure_schema, get_all_episodes
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, get_all_episodes
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -525,9 +564,8 @@ class TestClientStore:
             with patch(
                 "consolidation_memory.database.mark_episode_indexed",
                 side_effect=RuntimeError("mark failed"),
-            ):
-                with pytest.raises(RuntimeError, match="mark failed"):
-                    client.store("rollback single-store path")
+            ), pytest.raises(RuntimeError, match="mark failed"):
+                client.store("rollback single-store path")
 
             assert get_all_episodes(include_deleted=True) == []
             assert client._vector_store.size == 0
@@ -621,8 +659,8 @@ class TestClientAutoConsolidation:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_surprise_clamping(self, mock_embed):
-        from consolidation_memory.database import ensure_schema, get_episode
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, get_episode
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -649,8 +687,8 @@ class TestClientRecall:
     @patch("consolidation_memory.backends.encode_query")
     @patch("consolidation_memory.backends.encode_documents")
     def test_basic_recall(self, mock_embed_docs, mock_embed_query):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -671,8 +709,8 @@ class TestClientRecall:
     @patch("consolidation_memory.backends.encode_query")
     @patch("consolidation_memory.backends.encode_documents")
     def test_empty_recall(self, mock_embed_docs, mock_embed_query):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -688,8 +726,8 @@ class TestClientRecall:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_store_batch_all_invalid_returns_empty_result(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -706,17 +744,19 @@ class TestClientRecall:
     def test_store_batch_raises_on_malformed_embedding_batch_before_persistence(self, mock_embed):
         import numpy as np
 
-        from consolidation_memory.database import ensure_schema, get_all_episodes
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, get_all_episodes
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
         try:
             mock_embed.return_value = np.ones((2, 384), dtype=np.float32)
 
-            with patch.object(client._vector_store, "add_batch") as mock_add_batch:
-                with pytest.raises(ValueError, match="returned 2 vectors for 1 texts"):
-                    client.store_batch([{"content": "broken embedding batch"}])
+            with (
+                patch.object(client._vector_store, "add_batch") as mock_add_batch,
+                pytest.raises(ValueError, match="returned 2 vectors for 1 texts"),
+            ):
+                client.store_batch([{"content": "broken embedding batch"}])
 
             assert get_all_episodes(include_deleted=False) == []
             mock_add_batch.assert_not_called()
@@ -769,8 +809,8 @@ class TestClientRecall:
     def test_store_batch_rolls_back_vectors_when_mark_indexed_fails(self, mock_embed):
         import numpy as np
 
-        from consolidation_memory.database import ensure_schema, get_all_episodes
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, get_all_episodes
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -796,8 +836,8 @@ class TestClientRecall:
             client.close()
 
     def test_recall_surfaces_claims_field(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -830,13 +870,13 @@ class TestClientRecall:
 
 class TestClientClaims:
     def test_browse_claims_supports_as_of(self):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
             ensure_schema,
             insert_claim_sources,
             insert_episode,
             upsert_claim,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         episode_id = insert_episode(content="claim provenance seed")
@@ -871,13 +911,13 @@ class TestClientClaims:
             client.close()
 
     def test_search_claims_matches_canonical_text(self):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
             ensure_schema,
             insert_claim_sources,
             insert_episode,
             upsert_claim,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         episode_id = insert_episode(content="claim search provenance")
@@ -900,13 +940,13 @@ class TestClientClaims:
             client.close()
 
     def test_default_claim_queries_enforce_private_scope(self):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
             ensure_schema,
             insert_claim_sources,
             insert_episode,
             upsert_claim,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         visible_episode_id = insert_episode(
@@ -955,8 +995,8 @@ class TestClientClaims:
             client.close()
 
     def test_scoped_claim_queries_exclude_unsourced_legacy_claims_outside_default_scope(self):
-        from consolidation_memory.database import ensure_schema, upsert_claim
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, upsert_claim
 
         ensure_schema()
         upsert_claim(
@@ -989,8 +1029,8 @@ class TestClientClaims:
 
 class TestClientDrift:
     def test_detect_drift_delegates_to_drift_module(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         expected = {
@@ -1022,8 +1062,8 @@ class TestClientDrift:
 class TestClientForget:
     @patch("consolidation_memory.backends.encode_documents")
     def test_forget_existing(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1039,8 +1079,8 @@ class TestClientForget:
         client.close()
 
     def test_forget_nonexistent(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1052,8 +1092,13 @@ class TestClientForget:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_forget_expires_claim_with_only_forgotten_episode_source(self, mock_embed):
-        from consolidation_memory.database import ensure_schema, get_connection, insert_claim_sources, upsert_claim
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_connection,
+            insert_claim_sources,
+            upsert_claim,
+        )
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1106,6 +1151,7 @@ class TestClientForget:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_forget_preserves_claim_with_surviving_record_source(self, mock_embed):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
             ensure_schema,
             get_connection,
@@ -1114,7 +1160,6 @@ class TestClientForget:
             upsert_claim,
             upsert_knowledge_topic,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1183,8 +1228,8 @@ class TestClientForget:
             client.close()
 
     def test_forget_respects_write_policy_and_scope(self):
-        from consolidation_memory.database import ensure_schema, insert_episode
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, insert_episode
 
         ensure_schema()
         visible_id = insert_episode(
@@ -1221,8 +1266,8 @@ class TestClientForget:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_forget_rolls_back_sqlite_when_vector_tombstone_fails(self, mock_embed):
-        from consolidation_memory.database import ensure_schema, get_connection
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, get_connection
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1235,9 +1280,8 @@ class TestClientForget:
                 client._vector_store,
                 "remove",
                 side_effect=RuntimeError("vector tombstone failed"),
-            ):
-                with pytest.raises(RuntimeError, match="vector tombstone failed"):
-                    client.forget(stored.id)
+            ), pytest.raises(RuntimeError, match="vector tombstone failed"):
+                client.forget(stored.id)
 
             with get_connection() as conn:
                 row = conn.execute(
@@ -1256,8 +1300,8 @@ class TestClientForget:
 class TestClientStatus:
     @patch("consolidation_memory.backends.encode_documents")
     def test_status_counts(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1285,9 +1329,9 @@ class TestClientStatus:
         client.close()
 
     def test_status_lightweight_skips_markdown_consistency_scan(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient, clear_status_cache
         from consolidation_memory.config import override_config
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         clear_status_cache()
@@ -1310,9 +1354,9 @@ class TestClientStatus:
         mock_consistency.assert_not_called()
 
     def test_status_lightweight_uses_cache(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient, clear_status_cache
         from consolidation_memory.config import override_config
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         clear_status_cache()
@@ -1330,11 +1374,11 @@ class TestClientStatus:
         assert second.faiss_index_size != 99999
 
     def test_status_exposes_fast_path_metrics_from_last_run(self):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
             ensure_schema,
             insert_consolidation_metrics,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         insert_consolidation_metrics(
@@ -1369,6 +1413,7 @@ class TestClientStatus:
         assert status.consolidation_metrics[0]["llm_fallbacks"] == 1
 
     def test_status_trust_profile_reports_claim_and_provenance_state(self):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
             ensure_schema,
             insert_claim_sources,
@@ -1376,7 +1421,6 @@ class TestClientStatus:
             insert_episode_anchors,
             upsert_claim,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         episode_id = insert_episode(content="trust profile provenance")
@@ -1426,6 +1470,7 @@ class TestClientStatus:
 class TestClientExport:
     @patch("consolidation_memory.backends.encode_documents")
     def test_export_round_trip(self, mock_embed):
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.database import (
             ensure_schema,
             insert_claim_edge,
@@ -1434,7 +1479,6 @@ class TestClientExport:
             insert_episode_anchors,
             upsert_claim,
         )
-        from consolidation_memory.client import MemoryClient
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1563,6 +1607,8 @@ class TestClientExport:
     def test_export_respects_scope_for_all_exported_entities(self):
         from pathlib import Path
 
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             ensure_schema,
             insert_claim_edge,
@@ -1574,8 +1620,6 @@ class TestClientExport:
             upsert_claim,
             upsert_knowledge_topic,
         )
-        from consolidation_memory.client import MemoryClient
-        from consolidation_memory.config import get_config
 
         ensure_schema()
         cfg = get_config()
@@ -1715,8 +1759,8 @@ class TestClientExport:
 class TestClientCompact:
     @patch("consolidation_memory.backends.encode_documents")
     def test_compact_with_tombstones(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1735,8 +1779,8 @@ class TestClientCompact:
         client.close()
 
     def test_compact_no_tombstones(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1749,8 +1793,8 @@ class TestClientCompact:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_compact_preserves_live_vectors(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1776,8 +1820,8 @@ class TestClientCompact:
 
 class TestClientConsolidate:
     def test_consolidate_lock(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1792,8 +1836,8 @@ class TestClientConsolidate:
         client.close()
 
     def test_consolidate_respects_scheduler_lease(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1814,8 +1858,8 @@ class TestClientConsolidate:
             client.close()
 
     def test_consolidate_updates_scheduler_status_on_failed_report(self):
-        from consolidation_memory.database import ensure_schema, get_consolidation_scheduler_state
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema, get_consolidation_scheduler_state
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)
@@ -1836,8 +1880,8 @@ class TestClientConsolidate:
 
 class TestClientCorrect:
     def test_correct_updates_structured_records(self, tmp_data_dir):
-        from consolidation_memory.client import MemoryClient
         from consolidation_memory.claim_graph import claim_from_record
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             ensure_schema,
@@ -1953,8 +1997,8 @@ class TestClientCorrect:
             client.close()
 
     def test_correct_expires_legacy_topic_only_claims(self, tmp_data_dir):
-        from consolidation_memory.client import MemoryClient
         from consolidation_memory.claim_graph import claim_from_record
+        from consolidation_memory.client import MemoryClient
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
             ensure_schema,
@@ -2375,8 +2419,8 @@ class TestClientCorrect:
 
 class TestClosedClientSemantics:
     def test_closed_client_methods_fail_fast(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
         client = MemoryClient(auto_consolidate=False)

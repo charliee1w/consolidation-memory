@@ -42,7 +42,7 @@ def main() -> int:
             imported = __import__(module, fromlist=[attr])
             if not hasattr(imported, attr):
                 errors.append(f"missing attribute: {module}.{attr}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # any import-time failure is a finding, not a crash
             errors.append(f"import failed: {module} ({exc})")
 
     if errors:

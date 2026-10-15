@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import re
+import types
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -13,9 +15,9 @@ if TYPE_CHECKING:
 from consolidation_memory.tool_adapter import (
     append_deferred_knowledge_warning,
     effective_include_knowledge,
-    inject_recall_deadline,
     maybe_complete_deferred_recall,
     recall_timeout_seconds,
+    resolve_recall_deadline,
 )
 from consolidation_memory.types import (
     OUTCOME_TYPES,
@@ -46,6 +48,7 @@ _CLIENTLESS_TOOLS = frozenset(
         "memory_policy_grant",
         "memory_hygiene_scan",
         "memory_hygiene_apply",
+        "memory_scope_list",
     }
 )
 
@@ -54,24 +57,88 @@ def tool_requires_client(name: str) -> bool:
     return name not in _CLIENTLESS_TOOLS
 
 
+# ── Published input contract ────────────────────────────────────────────────
+# Every published input schema declares ``additionalProperties: false``, so an
+# argument the contract does not name is an error, never a silently dropped key.
+# MCP rejects unknown arguments at registration time (pydantic ``extra="forbid"``
+# on ``ArgModelBase`` in server.py) and surfaces them as ``ToolError``;
+# ``reject_unknown_arguments`` is the same check for the dispatch seam every
+# other surface shares (OpenAI dispatch, REST, desktop). The allowed set is read
+# from ``schemas.openai_tools`` — the published contract — rather than a second
+# hand-maintained table, and the MCP tool signatures publish the same argument
+# names, so both surfaces accept exactly the same keys.
+#
+# The recall deadline travels as its own keyword on ``execute_tool_call``, never
+# as a key in the argument dict. It used to be injected as
+# ``_recall_deadline_monotonic`` and exempted here, which meant any tool accepted
+# it - dispatch_tool_call(client, "memory_store", {..., "_recall_deadline_monotonic": 0})
+# passed and the key was silently dropped, contradicting the claim that unknown
+# arguments are rejected on every surface. There is no exemption list now.
+_ARGUMENT_CONTRACT_HINT = (
+    "Extra inputs are not permitted; the published inputSchema for this tool "
+    "is the contract."
+)
+
+
+class ToolContractError(ValueError):
+    """A tool call violated the published input contract (unknown argument).
+
+    Subclasses ``ValueError`` so existing callers keep classifying it as an
+    input error (``rest._execute`` turns it into HTTP 422, ``server`` turns it
+    into ``isError`` with actionable text), while ``dispatch_tool_call`` can
+    re-raise it instead of returning a soft ``{"error": ...}`` payload that
+    reads like a successful call.
+    """
+
+
+@functools.cache
+def _published_argument_names() -> Mapping[str, frozenset[str]]:
+    # Imported lazily: schemas.py re-exports dispatch_tool_call from this module.
+    from consolidation_memory.schemas import openai_tools
+
+    return types.MappingProxyType(
+        {
+            tool["function"]["name"]: frozenset(
+                tool["function"]["parameters"].get("properties") or {}
+            )
+            for tool in openai_tools
+        }
+    )
+
+
+def accepted_argument_names(name: str) -> frozenset[str] | None:
+    """Published argument names for ``name``; ``None`` when the tool is unknown."""
+    return _published_argument_names().get(name)
+
+
+def reject_unknown_arguments(name: str, arguments: Mapping[str, object]) -> None:
+    """Raise :class:`ToolContractError` for arguments the published schema omits.
+
+    MCP validates against the per-tool argument model derived from the handler
+    signature before any body runs, so a rejected key never reaches here and
+    pydantic's ``extra="forbid"`` stays the MCP fast path. The delegation that
+    is possible is :func:`server._verify_published_argument_contract`, which asks
+    this function about every registered tool at startup and refuses to serve on
+    any divergence.
+    """
+    accepted = accepted_argument_names(name)
+    if accepted is None:
+        return  # unknown tool names fail later with "Unknown tool: <name>"
+    unknown = sorted(str(key) for key in arguments if str(key) not in accepted)
+    if not unknown:
+        return
+    raise ToolContractError(
+        f"{name}: unknown argument(s) {', '.join(unknown)}. {_ARGUMENT_CONTRACT_HINT}"
+    )
+
+
 def _require_client(client: MemoryClient | None, name: str) -> MemoryClient:
     if client is None:
         raise RuntimeError(f"Tool {name} requires a MemoryClient instance")
     return client
 
 
-def _extract_recall_deadline_monotonic(arguments: Mapping[str, object]) -> float | None:
-    recall_deadline_value = arguments.get("_recall_deadline_monotonic")
-    if recall_deadline_value is None:
-        return None
-    if isinstance(recall_deadline_value, (int, float)):
-        return float(recall_deadline_value)
-    if isinstance(recall_deadline_value, str):
-        return float(recall_deadline_value)
-    raise TypeError(
-        "_recall_deadline_monotonic must be a number, "
-        f"got {type(recall_deadline_value).__name__}"
-    )
+
 
 
 def _run_detect_drift(*, base_ref: str | None = None, repo_path: str | None = None) -> dict[str, Any]:
@@ -80,9 +147,19 @@ def _run_detect_drift(*, base_ref: str | None = None, repo_path: str | None = No
     return dict(detect_code_drift(base_ref=base_ref, repo_path=repo_path))
 
 
+# Argument validators below raise ValueError, not TypeError, and that is the
+# seam's deliberate convention rather than an oversight. Every surface that can
+# reach these helpers collapses the two anyway: `rest._tool_endpoint` maps
+# `except (TypeError, ValueError)` to HTTP 422, and the MCP and OpenAI dispatch
+# wrappers catch `Exception` and return `isError` / an error payload. So the
+# choice of class is not observable on any published surface, and keeping one
+# class means a rejected argument reads the same whether it failed on type or on
+# value. The TRY004 suppressions below record that decision site by site.
 def _validate_content(value: object) -> str:
     if not isinstance(value, str):
-        raise ValueError("content must be a string")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            "content must be a string"
+        )
     if len(value) > _MAX_CONTENT_LENGTH:
         raise ValueError(
             f"Content too long ({len(value)} chars). Maximum is {_MAX_CONTENT_LENGTH} characters."
@@ -100,7 +177,9 @@ def _validate_optional_text(
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError(f"{field_name} must be a string")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            f"{field_name} must be a string"
+        )
     if not allow_empty and not value.strip():
         raise ValueError(f"{field_name} must not be empty")
     if len(value) > max_length:
@@ -130,7 +209,9 @@ def _validate_content_type_list(field_name: str, value: object) -> list[str] | N
     if value is None:
         return None
     if not isinstance(value, list):
-        raise ValueError(f"{field_name} must be a list of strings")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            f"{field_name} must be a list of strings"
+        )
     validated: list[str] = []
     for index, item in enumerate(value):
         validated.append(
@@ -146,13 +227,17 @@ def _validate_tags(value: object) -> list[str] | None:
     if value is None:
         return None
     if not isinstance(value, list):
-        raise ValueError("tags must be a list of strings")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            "tags must be a list of strings"
+        )
     if len(value) > _MAX_TAGS:
         raise ValueError(f"tags exceeds maximum of {_MAX_TAGS} entries")
     validated: list[str] = []
     for index, item in enumerate(value):
         if not isinstance(item, str):
-            raise ValueError(f"tags[{index}] must be a string")
+            raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+                f"tags[{index}] must be a string"
+            )
         if len(item) > _MAX_TAG_LENGTH:
             raise ValueError(
                 f"tags[{index}] too long ({len(item)} chars). Maximum is {_MAX_TAG_LENGTH} characters."
@@ -163,7 +248,9 @@ def _validate_tags(value: object) -> list[str] | None:
 
 def _validate_surprise(value: object, *, field_name: str = "surprise") -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{field_name} must be a number between 0.0 and 1.0")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            f"{field_name} must be a number between 0.0 and 1.0"
+        )
     surprise = float(value)
     if not 0.0 <= surprise <= 1.0:
         raise ValueError(f"{field_name} must be between 0.0 and 1.0")
@@ -180,13 +267,17 @@ def _validate_string_list(
     if value is None:
         return None
     if not isinstance(value, list):
-        raise ValueError(f"{field_name} must be a list of strings")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            f"{field_name} must be a list of strings"
+        )
     if len(value) > max_items:
         raise ValueError(f"{field_name} exceeds maximum of {max_items} entries")
     validated: list[str] = []
     for index, item in enumerate(value):
         if not isinstance(item, str):
-            raise ValueError(f"{field_name}[{index}] must be a string")
+            raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+                f"{field_name}[{index}] must be a string"
+            )
         token = item.strip()
         if not token:
             continue
@@ -200,7 +291,9 @@ def _validate_string_list(
 
 def _validate_outcome_type(value: object) -> str:
     if not isinstance(value, str):
-        raise ValueError("outcome_type must be a string")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            "outcome_type must be a string"
+        )
     token = value.strip().lower()
     if token not in _VALID_OUTCOME_TYPES:
         allowed = ", ".join(sorted(_VALID_OUTCOME_TYPES))
@@ -212,11 +305,15 @@ def _validate_code_anchors(value: object) -> list[dict[str, str]] | None:
     if value is None:
         return None
     if not isinstance(value, list):
-        raise ValueError("code_anchors must be a list of objects")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            "code_anchors must be a list of objects"
+        )
     anchors: list[dict[str, str]] = []
     for index, item in enumerate(value):
         if not isinstance(item, Mapping):
-            raise ValueError(f"code_anchors[{index}] must be an object")
+            raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+                f"code_anchors[{index}] must be an object"
+            )
         anchor_type = item.get("anchor_type", item.get("type"))
         anchor_value = item.get("anchor_value", item.get("value"))
         if not isinstance(anchor_type, str) or not anchor_type.strip():
@@ -254,7 +351,9 @@ def _validate_bounded_int(
     maximum: int,
 ) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{field_name} must be an integer between {minimum} and {maximum}")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            f"{field_name} must be an integer between {minimum} and {maximum}"
+        )
     if value < minimum or value > maximum:
         raise ValueError(f"{field_name} must be between {minimum} and {maximum}")
     return value
@@ -262,7 +361,9 @@ def _validate_bounded_int(
 
 def _validate_bool(field_name: str, value: object) -> bool:
     if not isinstance(value, bool):
-        raise ValueError(f"{field_name} must be a boolean")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            f"{field_name} must be a boolean"
+        )
     return value
 
 
@@ -297,12 +398,16 @@ def _validate_scope(value: object) -> ScopeEnvelope | dict[str, object] | None:
         coerce_scope_envelope(normalized_from_string)
         return normalized_from_string
     if not isinstance(value, Mapping):
-        raise ValueError("scope must be an object or string")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            "scope must be an object or string"
+        )
 
     normalized: dict[str, object] = {}
     for key, item in value.items():
         if not isinstance(key, str):
-            raise ValueError("scope keys must be strings")
+            raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+                "scope keys must be strings"
+            )
         normalized[key] = item
 
     coerce_scope_envelope(normalized)
@@ -318,13 +423,17 @@ def _validate_filename(value: object, *, field_name: str = "filename") -> str:
 
 def _validate_batch_episodes(episodes: object) -> list[dict[str, Any]]:
     if not isinstance(episodes, list):
-        raise ValueError("episodes must be a list")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            "episodes must be a list"
+        )
     if len(episodes) > _MAX_BATCH_SIZE:
         raise ValueError(f"Batch size {len(episodes)} exceeds maximum of {_MAX_BATCH_SIZE}")
     validated: list[dict[str, Any]] = []
     for index, item in enumerate(episodes):
         if not isinstance(item, dict):
-            raise ValueError(f"Episode {index} must be an object")
+            raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+                f"Episode {index} must be an object"
+            )
         if "content" not in item:
             raise ValueError(f"Episode {index} is missing required field 'content'")
         content = _validate_content(item["content"])
@@ -351,6 +460,8 @@ def _validate_batch_episodes(episodes: object) -> list[dict[str, Any]]:
 def _memory_recall_result(
     client: MemoryClient,
     arguments: dict[str, Any],
+    *,
+    recall_deadline_monotonic: float | None = None,
 ) -> tuple[dict[str, Any], bool]:
     query = _validate_required_text("query", arguments["query"], max_length=_MAX_QUERY_LENGTH)
     n_results = _validate_bounded_int(
@@ -363,7 +474,6 @@ def _memory_recall_result(
         "include_knowledge",
         arguments.get("include_knowledge", True),
     )
-    recall_deadline_monotonic = _extract_recall_deadline_monotonic(arguments)
     effective_knowledge = effective_include_knowledge(include_knowledge)
     recall_result = client.query_recall(
         query=query,
@@ -400,8 +510,20 @@ def execute_tool_call(
     arguments: dict[str, Any],
     *,
     client: MemoryClient | None = None,
+    recall_deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
-    """Execute a canonical tool call and return a JSON-serializable dict."""
+    """Execute a canonical tool call and return a JSON-serializable dict.
+
+    Raises :class:`ToolContractError` before touching the client when the
+    arguments carry keys the published ``inputSchema`` does not declare.
+
+    ``recall_deadline_monotonic`` is transport state the calling surface resolved
+    for its own timeout budget. It is a keyword rather than an argument key
+    because no published schema declares it: as a key it had to be exempted from
+    the argument check, and that exemption applied to every tool.
+    """
+    reject_unknown_arguments(name, arguments)
+
     if name == "memory_remember":
         from consolidation_memory.simple_api import build_remember_store_arguments
 
@@ -418,7 +540,12 @@ def execute_tool_call(
         )
 
         recall_args = build_ask_recall_arguments(arguments)
-        raw = execute_tool_call("memory_recall", recall_args, client=client)
+        raw = execute_tool_call(
+            "memory_recall",
+            recall_args,
+            client=client,
+            recall_deadline_monotonic=recall_deadline_monotonic,
+        )
         simplified = simplify_recall_result(raw)
         simplified["query"] = recall_args["query"]
         return simplified
@@ -459,12 +586,21 @@ def execute_tool_call(
 
     if name == "memory_recall":
         resolved_client = _require_client(client, name)
-        result, include_knowledge = _memory_recall_result(resolved_client, arguments)
+        result, include_knowledge = _memory_recall_result(
+            resolved_client,
+            arguments,
+            recall_deadline_monotonic=recall_deadline_monotonic,
+        )
 
         def recall_again() -> dict[str, Any]:
-            retry_args = dict(arguments)
-            inject_recall_deadline(retry_args, timeout_seconds=recall_timeout_seconds())
-            payload, _ = _memory_recall_result(resolved_client, retry_args)
+            # The retry runs after the first attempt, so it gets a fresh budget.
+            payload, _ = _memory_recall_result(
+                resolved_client,
+                arguments,
+                recall_deadline_monotonic=resolve_recall_deadline(
+                    recall_timeout_seconds()
+                ),
+            )
             return payload
 
         return maybe_complete_deferred_recall(
@@ -534,7 +670,7 @@ def execute_tool_call(
                 maximum=200,
             ),
             scope=_validate_scope(arguments.get("scope")),
-            recall_deadline_monotonic=_extract_recall_deadline_monotonic(arguments),
+            recall_deadline_monotonic=recall_deadline_monotonic,
         )
         return dataclasses.asdict(claim_search_result)
 
@@ -610,7 +746,7 @@ def execute_tool_call(
                 allow_empty=False,
             ),
             scope=_validate_scope(arguments.get("scope")),
-            recall_deadline_monotonic=_extract_recall_deadline_monotonic(arguments),
+            recall_deadline_monotonic=recall_deadline_monotonic,
         )
         return dataclasses.asdict(outcome_result)
 
@@ -654,7 +790,7 @@ def execute_tool_call(
                 maximum=200,
             ),
             scope=_validate_scope(arguments.get("scope")),
-            recall_deadline_monotonic=_extract_recall_deadline_monotonic(arguments),
+            recall_deadline_monotonic=recall_deadline_monotonic,
         )
         return dataclasses.asdict(outcome_browse_result)
 
@@ -824,6 +960,24 @@ def execute_tool_call(
 
         return list_policy_bindings()
 
+    if name == "memory_scope_list":
+        from consolidation_memory.db.scope import list_scope_usage
+
+        return list_scope_usage(
+            limit=_validate_bounded_int(
+                "limit",
+                arguments.get("limit", 100),
+                minimum=1,
+                maximum=1000,
+            ),
+            offset=_validate_bounded_int(
+                "offset",
+                arguments.get("offset", 0),
+                minimum=0,
+                maximum=1_000_000,
+            ),
+        )
+
     if name == "memory_hygiene_scan":
         from consolidation_memory.corpus_hygiene import scan_corpus_hygiene
 
@@ -901,9 +1055,25 @@ def dispatch_tool_call(
     client: MemoryClient,
     name: str,
     arguments: dict[str, Any],
+    *,
+    recall_deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
-    """OpenAI-style wrapper that returns error payloads instead of raising."""
+    """OpenAI-style wrapper that returns error payloads instead of raising.
+
+    Contract violations are the exception: an unknown argument never becomes a
+    soft ``{"error": ...}`` result, because a payload shaped like a successful
+    call hides the fact that the tool ran with different arguments than the
+    caller asked for (or did not run at all). ``ToolContractError`` propagates
+    so hosts see the same actionable rejection MCP reports via ``isError``.
+    """
     try:
-        return execute_tool_call(name, arguments, client=client)
+        return execute_tool_call(
+            name,
+            arguments,
+            client=client,
+            recall_deadline_monotonic=recall_deadline_monotonic,
+        )
+    except ToolContractError:
+        raise
     except Exception as exc:
         return {"error": str(exc)}

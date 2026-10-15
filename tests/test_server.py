@@ -6,7 +6,6 @@ import asyncio
 import concurrent.futures
 import importlib
 import inspect
-import json
 import threading
 import time
 from contextlib import contextmanager
@@ -14,10 +13,12 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.helpers import as_payload
+
 
 @contextmanager
 def _patched_server_runtime():
-    import consolidation_memory.server as server
+    from consolidation_memory import server
     from consolidation_memory.runtime import MemoryRuntime
 
     runtime = MemoryRuntime(max_workers=2)
@@ -36,7 +37,7 @@ class TestMcpToolProfile:
     def test_simple_profile_registers_only_recall_remember_ask(self, monkeypatch):
         monkeypatch.setenv("CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE", "simple")
 
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         server = importlib.reload(server)
         tools = asyncio.run(server.mcp.list_tools())
@@ -47,7 +48,7 @@ class TestMcpToolProfile:
     def test_full_profile_registers_all_tools(self, monkeypatch):
         monkeypatch.setenv("CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE", "full")
 
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         server = importlib.reload(server)
         tools = asyncio.run(server.mcp.list_tools())
@@ -60,7 +61,7 @@ class TestMcpToolProfile:
     def test_invalid_profile_falls_back_to_full(self, monkeypatch):
         monkeypatch.setenv("CONSOLIDATION_MEMORY_MCP_TOOL_PROFILE", "tiny")
 
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         server = importlib.reload(server)
         tools = asyncio.run(server.mcp.list_tools())
@@ -85,7 +86,7 @@ class TestServerEnvParsing:
             "",
         )
 
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         server = importlib.reload(server)
 
@@ -102,7 +103,7 @@ class TestServerEnvParsing:
     def test_mcp_client_factory_defaults_auto_consolidate_to_false(self, monkeypatch):
         monkeypatch.delenv("CONSOLIDATION_MEMORY_MCP_AUTO_CONSOLIDATE", raising=False)
 
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         server = importlib.reload(server)
         with patch("consolidation_memory.client.MemoryClient") as mock_client:
@@ -113,7 +114,7 @@ class TestServerEnvParsing:
     def test_mcp_client_factory_allows_auto_consolidate_override(self, monkeypatch):
         monkeypatch.setenv("CONSOLIDATION_MEMORY_MCP_AUTO_CONSOLIDATE", "true")
 
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         server = importlib.reload(server)
         with patch("consolidation_memory.client.MemoryClient") as mock_client:
@@ -156,7 +157,7 @@ class TestMCPDetectDriftTool:
                 memory_detect_drift(base_ref="origin/main", repo_path="C:/repo")
             )
 
-        assert json.loads(output) == expected
+        assert output == expected
         mock_detect.assert_awaited_once_with(
             base_ref="origin/main",
             repo_path="C:/repo",
@@ -173,7 +174,7 @@ class TestMCPDetectDriftTool:
         ):
             output = asyncio.run(memory_detect_drift())
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert "error" in data
         assert "git diff failed" in data["error"]
 
@@ -201,7 +202,7 @@ class TestMCPDetectDriftTool:
         ):
             output = asyncio.run(memory_detect_drift(base_ref="origin/main"))
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert data["checked_anchors"] == [
             {"anchor_type": "path", "anchor_value": "src/fallback.py"}
         ]
@@ -225,7 +226,7 @@ class TestMCPDetectDriftTool:
         ):
             output = asyncio.run(memory_detect_drift())
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert data["checked_anchors"] == []
         assert data["impacted_claim_ids"] == []
         assert data["challenged_claim_ids"] == []
@@ -255,7 +256,7 @@ class TestMCPDetectDriftTool:
         ):
             output = asyncio.run(memory_detect_drift())
 
-        assert json.loads(output) == expected
+        assert output == expected
 
 
 class TestMCPStoreTools:
@@ -285,7 +286,7 @@ class TestMCPStoreTools:
                 )
             )
 
-        assert json.loads(output)["id"] == "scoped-id"
+        assert output["id"] == "scoped-id"
         mock_client.store_with_scope.assert_called_once_with(
             content="scoped write",
             content_type="exchange",
@@ -322,7 +323,7 @@ class TestMCPStoreTools:
                 )
             )
 
-        assert json.loads(output)["stored"] == 1
+        assert output["stored"] == 1
         mock_client.store_batch_with_scope.assert_called_once_with(
             episodes=[{"content": "x", "content_type": "exchange", "tags": None, "surprise": 0.5}],
             scope=scoped_payload,
@@ -391,20 +392,20 @@ class TestMCPServerLifecycle:
         with _patched_server_runtime() as (server, runtime):
             async def _enter_and_call():
                 async with server.lifespan(server.mcp):
-                    return json.loads(await memory_status())
+                    return await memory_status()
 
             with (
                 patch("consolidation_memory.server._WARMUP_ON_START", False),
                 patch.object(runtime, "startup", side_effect=RuntimeError("schema boom")),
             ):
-                result = asyncio.run(_enter_and_call())
+                result = as_payload(asyncio.run(_enter_and_call()))
 
         assert "error" in result
         assert "MCP runtime startup failed" in result["error"]
         assert "schema boom" in result["error"]
 
     def test_get_client_with_timeout_raises_timeout_error(self):
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         with (
             patch("consolidation_memory.server._ensure_runtime_started"),
@@ -502,9 +503,8 @@ class TestMCPServerLifecycle:
             with patch(
                 "consolidation_memory.server._get_client_with_timeout",
                 side_effect=AssertionError("warmup should not initialize during shutdown"),
-            ):
-                with patch("consolidation_memory.server._WARMUP_START_DELAY_SECONDS", 0.0):
-                    asyncio.run(server._warm_client_background())
+            ), patch("consolidation_memory.server._WARMUP_START_DELAY_SECONDS", 0.0):
+                asyncio.run(server._warm_client_background())
 
     def test_warm_recall_caches_primes_records_by_default(self):
         with (
@@ -525,7 +525,7 @@ class TestMCPServerLifecycle:
         mock_claims.assert_not_called()
 
     def test_run_server_acquires_and_releases_stdio_singleton_guard(self):
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         guard = MagicMock()
         with (
@@ -543,7 +543,7 @@ class TestMCPServerLifecycle:
         guard.release.assert_called_once_with()
 
     def test_run_server_releases_stdio_singleton_guard_on_transport_error(self):
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         guard = MagicMock()
         with (
@@ -563,7 +563,7 @@ class TestMCPServerLifecycle:
         guard.release.assert_called_once_with()
 
     def test_stdio_singleton_guard_rejects_duplicate_same_parent_server(self):
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         locked_handle = MagicMock()
         with (
@@ -584,15 +584,14 @@ class TestMCPServerLifecycle:
             patch(
                 "consolidation_memory.server._process_exists",
                 return_value=True,
-            ),
+            ),pytest.raises(RuntimeError, match="already running")
         ):
-            with pytest.raises(RuntimeError, match="already running"):
-                server._acquire_parent_scoped_stdio_singleton_guard("default")
+            server._acquire_parent_scoped_stdio_singleton_guard("default")
 
         locked_handle.close.assert_called_once_with()
 
     def test_safe_process_int_rejects_non_pid_values(self):
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         assert server._safe_process_int(True) is None
         assert server._safe_process_int(0) is None
@@ -604,7 +603,7 @@ class TestMCPServerLifecycle:
         assert server._safe_process_int("123") == 123
 
     def test_terminate_process_skips_reserved_and_parent_pids(self):
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         with (
             patch("consolidation_memory.server.os.getpid", return_value=50),
@@ -619,7 +618,7 @@ class TestMCPServerLifecycle:
         mock_kill.assert_called_once_with(99, server.signal.SIGTERM)
 
     def test_runtime_has_background_activity_detects_consolidation_future(self):
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         client = MagicMock()
         future = MagicMock()
@@ -635,7 +634,7 @@ class TestMCPServerLifecycle:
             assert server._runtime_has_background_activity() is True
 
     def test_runtime_has_background_activity_returns_false_when_idle(self):
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         client = MagicMock()
         future = MagicMock()
@@ -667,7 +666,7 @@ class TestMCPServerLifecycle:
             assert server._startup_error is None
 
     def test_idle_shutdown_monitor_recycles_runtime_instead_of_exiting(self):
-        import consolidation_memory.server as server
+        from consolidation_memory import server
 
         sleep_calls = 0
 
@@ -685,9 +684,9 @@ class TestMCPServerLifecycle:
             patch("consolidation_memory.server._runtime_has_background_activity", return_value=False),
             patch("consolidation_memory.server._recycle_idle_runtime") as mock_recycle,
             patch("consolidation_memory.server.asyncio.sleep", side_effect=_fake_sleep),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                asyncio.run(server._idle_shutdown_monitor())
+            asyncio.run(server._idle_shutdown_monitor())
 
         mock_recycle.assert_called_once_with()
 
@@ -709,7 +708,7 @@ class TestMCPRecallTool:
                 )
             )
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert data["total_episodes"] == 0
         mock_client.query_recall.assert_called_once_with(
             query="python runtime",
@@ -736,7 +735,7 @@ class TestMCPRecallTool:
         ):
             output = asyncio.run(memory_recall(query="test"))
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert "error" in data
         assert "client init failed" in data["error"]
 
@@ -755,7 +754,7 @@ class TestMCPRecallTool:
                 )
             )
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert data["total_episodes"] == 0
         mock_client.query_recall.assert_called_once_with(
             query="python runtime",
@@ -788,7 +787,7 @@ class TestMCPRecallTool:
                 )
             )
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert data["total_episodes"] == 0
         mock_client.query_recall.assert_called_once_with(
             query="python runtime",
@@ -816,7 +815,7 @@ class TestMCPRecallTool:
             )
         )
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert data == {"error": "scope.policy.write_mode must be one of: allow, deny"}
 
     def test_memory_claim_search_rejects_oversized_query(self):
@@ -824,7 +823,7 @@ class TestMCPRecallTool:
 
         output = asyncio.run(memory_claim_search(query="x" * 10_001))
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert "error" in data
         assert "Maximum is 10000 characters" in data["error"]
 
@@ -848,7 +847,7 @@ class TestMCPScopeForwarding:
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(memory_forget(episode_id="ep-1", scope=scope))
 
-        assert json.loads(output)["status"] == "forgotten"
+        assert output["status"] == "forgotten"
         mock_client.forget.assert_called_once_with(episode_id="ep-1", scope=scope)
 
     def test_memory_export_signature_supports_scope(self):
@@ -869,7 +868,7 @@ class TestMCPScopeForwarding:
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(memory_export(scope=scope))
 
-        assert json.loads(output)["status"] == "exported"
+        assert output["status"] == "exported"
         mock_client.export.assert_called_once_with(scope=scope)
 
     def test_memory_correct_with_scope_calls_client_method(self):
@@ -885,7 +884,7 @@ class TestMCPScopeForwarding:
                 memory_correct(topic_filename="topic.md", correction="fix", scope=scope)
             )
 
-        assert json.loads(output)["status"] == "write_denied"
+        assert output["status"] == "write_denied"
         mock_client.correct.assert_called_once_with(
             topic_filename="topic.md",
             correction="fix",
@@ -903,7 +902,7 @@ class TestMCPScopeForwarding:
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(memory_protect(episode_id="ep-1", scope=scope))
 
-        assert json.loads(output)["status"] == "protected"
+        assert output["status"] == "protected"
         mock_client.protect.assert_called_once_with(episode_id="ep-1", tag=None, scope=scope)
 
     def test_memory_browse_read_topic_and_timeline_with_scope_call_client_methods(self):
@@ -921,9 +920,9 @@ class TestMCPScopeForwarding:
             read_output = asyncio.run(memory_read_topic(filename="topic.md", scope=scope))
             timeline_output = asyncio.run(memory_timeline(topic="python", scope=scope))
 
-        assert json.loads(browse_output)["total"] == 0
-        assert json.loads(read_output)["status"] == "ok"
-        assert json.loads(timeline_output)["query"] == "python"
+        assert browse_output["total"] == 0
+        assert read_output["status"] == "ok"
+        assert timeline_output["query"] == "python"
         mock_client.browse.assert_called_once_with(scope=scope)
         mock_client.read_topic.assert_called_once_with(filename="topic.md", scope=scope)
         mock_client.timeline.assert_called_once_with(topic="python", scope=scope)
@@ -944,7 +943,7 @@ class TestMCPScopeForwarding:
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             browse_output = asyncio.run(memory_browse(scope=flat_scope))
 
-        assert json.loads(browse_output)["total"] == 0
+        assert browse_output["total"] == 0
         mock_client.browse.assert_called_once_with(scope=flat_scope)
 
     def test_memory_recall_timeout_falls_back_to_episodes_only(self):
@@ -977,7 +976,7 @@ class TestMCPScopeForwarding:
                 )
             )
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert data["episodes"] == [{"id": "ep-1"}]
         assert any("episodes-only fallback" in msg for msg in data.get("warnings", []))
         mock_client.query_search.assert_called_once_with(
@@ -1019,7 +1018,7 @@ class TestMCPScopeForwarding:
                 )
             )
 
-        data = json.loads(output)
+        data = as_payload(output)
         assert "error" in data
         assert "memory_recall timed out after" in data["error"]
         assert "keyword fallback timed out after" in data["error"]
@@ -1041,7 +1040,7 @@ class TestMCPClaimTools:
                 )
             )
 
-        assert json.loads(output)["total"] == 0
+        assert output["total"] == 0
         mock_client.query_browse_claims.assert_called_once_with(
             claim_type="fact",
             as_of=None,
@@ -1068,7 +1067,7 @@ class TestMCPClaimTools:
                 )
             )
 
-        assert json.loads(output)["total_matches"] == 0
+        assert output["total_matches"] == 0
         mock_client.query_search_claims.assert_called_once_with(
             query="python",
             claim_type=None,
@@ -1102,7 +1101,7 @@ class TestMCPOutcomeTools:
                 )
             )
 
-        assert json.loads(output)["status"] == "recorded"
+        assert output["status"] == "recorded"
         mock_client.record_outcome.assert_called_once_with(
             action_summary="Run targeted pytest",
             outcome_type="success",
@@ -1138,7 +1137,7 @@ class TestMCPOutcomeTools:
                 )
             )
 
-        assert json.loads(output)["total"] == 0
+        assert output["total"] == 0
         mock_client.query_browse_outcomes.assert_called_once_with(
             outcome_type="failure",
             action_key=None,
@@ -1162,7 +1161,7 @@ class TestMCPConsolidateTool:
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(memory_consolidate())
 
-        assert json.loads(output) == {"status": "error", "message": "boom"}
+        assert output == {"status": "error", "message": "boom"}
 
     def test_memory_consolidate_already_running_message(self):
         from consolidation_memory.server import memory_consolidate
@@ -1173,7 +1172,7 @@ class TestMCPConsolidateTool:
         with patch("consolidation_memory.server._get_client_with_timeout", return_value=mock_client):
             output = asyncio.run(memory_consolidate())
 
-        assert json.loads(output) == {
+        assert output == {
             "status": "already_running",
             "message": "A consolidation run is already in progress",
         }

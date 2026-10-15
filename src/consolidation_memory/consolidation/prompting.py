@@ -210,7 +210,7 @@ def _call_llm(
         try:
             if json_schema is not None and hasattr(llm, "generate_json"):
                 future = executor.submit(
-                    getattr(llm, "generate_json"),
+                    llm.generate_json,
                     _LLM_SYSTEM_PROMPT,
                     prompt,
                     json_schema,
@@ -364,13 +364,13 @@ def _embedding_text_for_record(record: dict) -> str:
     rtype = record.get("type", "fact")
     if rtype == "fact":
         return f"{record.get('subject', '')}: {record.get('info', '')}"
-    elif rtype == "solution":
+    if rtype == "solution":
         return f"Problem: {record.get('problem', '')}. Fix: {record.get('fix', '')}"
-    elif rtype == "preference":
+    if rtype == "preference":
         return f"Preference {record.get('key', '')}: {record.get('value', '')}"
-    elif rtype == "procedure":
+    if rtype == "procedure":
         return f"Procedure: {record.get('trigger', '')} -> {record.get('steps', '')}"
-    elif rtype == "strategy":
+    if rtype == "strategy":
         return (
             f"Strategy for {record.get('problem_pattern', '')}: {record.get('strategy', '')}. "
             f"Preconditions: {record.get('preconditions', '')}. "
@@ -472,9 +472,9 @@ def _build_contradiction_prompt(
 ) -> str:
     """Build an LLM prompt to verify which record pairs are contradictions."""
     lines = [
-        "You are a contradiction detector. For each numbered pair of knowledge records, "
+        ("You are a contradiction detector. For each numbered pair of knowledge records, "
         "determine if they CONTRADICT each other (state incompatible facts about the same subject) "
-        "or are COMPATIBLE (same topic but not conflicting, or complementary information).\n",
+        "or are COMPATIBLE (same topic but not conflicting, or complementary information).\n"),
         "STRICT RULES:",
         "- CONTRADICTS means the two records cannot both be true simultaneously.",
         "- COMPATIBLE means they can coexist (even if about the same subject).",

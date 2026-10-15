@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Sequence
 
 from consolidation_memory.utils import parse_datetime
 

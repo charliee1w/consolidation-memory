@@ -5,16 +5,16 @@ topics with recent contradictions are marked as "evolving".
 """
 
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from consolidation_memory.config import reset_config
 from consolidation_memory.context_assembler import (
-    _apply_uncertainty_signals,
-    _apply_evolving_topic_signals,
+    _EVOLVING_TOPIC_WARNING,
     _LOW_CONFIDENCE_THRESHOLD,
     _LOW_CONFIDENCE_WARNING,
-    _EVOLVING_TOPIC_WARNING,
+    _apply_evolving_topic_signals,
+    _apply_uncertainty_signals,
 )
 from consolidation_memory.database import (
     ensure_schema,
@@ -22,7 +22,6 @@ from consolidation_memory.database import (
     insert_contradiction,
     upsert_knowledge_topic,
 )
-
 
 # ── Low-confidence record signaling ──────────────────────────────────────────
 

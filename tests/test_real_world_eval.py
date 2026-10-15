@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 from benchmarks.real_world_eval import (
     _claim_query_from_payload,
@@ -48,16 +49,17 @@ def test_drift_challenge_rate_counts_already_challenged_impacts():
 
 def test_episode_recall_hit_accepts_claim_provenance_link():
     class _Recall:
-        episodes = []
-        claims = [{"sources": [{"source_episode_id": "ep-1"}]}]
-        records = []
+        episodes: ClassVar[list] = []
+        claims: ClassVar[list[dict[str, object]]] = [{"sources": [{"source_episode_id": "ep-1"}]}]
+        records: ClassVar[list] = []
 
     assert _episode_recall_hit(_Recall(), "ep-1") is True
 
 
 def test_drift_passes_when_paths_change_without_impacted_claims():
-    from benchmarks.real_world_eval import evaluate_live_drift_response
     from unittest.mock import MagicMock, patch
+
+    from benchmarks.real_world_eval import evaluate_live_drift_response
 
     drift_payload = {
         "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/new_file.py"}],

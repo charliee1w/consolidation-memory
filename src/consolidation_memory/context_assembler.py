@@ -15,8 +15,9 @@ from typing import SupportsFloat
 
 import numpy as np
 
+from consolidation_memory import backends, claim_cache, record_cache, topic_cache
+from consolidation_memory.claim_graph import claim_from_record
 from consolidation_memory.config import get_config
-from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.database import (
     fts_available,
     fts_search,
@@ -24,8 +25,8 @@ from consolidation_memory.database import (
     get_claim_outcome_evidence,
     get_claims_as_of,
     get_claims_by_ids,
-    get_contradicting_partner_claim_ids,
     get_connection,
+    get_contradicting_partner_claim_ids,
     get_episodes_batch,
     get_recently_contradicted_topic_ids,
     get_records_as_of,
@@ -35,29 +36,37 @@ from consolidation_memory.database import (
     increment_topic_access,
     increment_topic_access_by_ids,
 )
-from consolidation_memory import backends
-from consolidation_memory import claim_cache
-from consolidation_memory.knowledge_paths import resolve_topic_path
-from consolidation_memory.claim_graph import claim_from_record
-from consolidation_memory.query_semantics import (
-    claim_precision_multiplier as _claim_precision_multiplier,
-    claim_query_rank_profile as _claim_query_rank_profile,
-    claim_reliability_profile as _claim_reliability_profile,
-    coerce_numeric_float as _coerce_numeric_float,
-    filter_claims_for_scope as _filter_claims_for_scope,
-    matches_scope_filter as _matches_scope_filter,
-    strategy_reuse_profile as _strategy_reuse_profile,
-)
 from consolidation_memory.entity_recall import (
     EntityResolution,
     entity_content_match_multiplier,
     resolve_entity_context,
 )
-from consolidation_memory.hypothesis_competition import _COMPETING_HYPOTHESIS_WARNING
 from consolidation_memory.episode_embedding import distinctive_token_set
+from consolidation_memory.hypothesis_competition import _COMPETING_HYPOTHESIS_WARNING
+from consolidation_memory.knowledge_paths import resolve_topic_path
+from consolidation_memory.query_semantics import (
+    claim_precision_multiplier as _claim_precision_multiplier,
+)
+from consolidation_memory.query_semantics import (
+    claim_query_rank_profile as _claim_query_rank_profile,
+)
+from consolidation_memory.query_semantics import (
+    claim_reliability_profile as _claim_reliability_profile,
+)
+from consolidation_memory.query_semantics import (
+    coerce_numeric_float as _coerce_numeric_float,
+)
+from consolidation_memory.query_semantics import (
+    filter_claims_for_scope as _filter_claims_for_scope,
+)
+from consolidation_memory.query_semantics import (
+    matches_scope_filter as _matches_scope_filter,
+)
+from consolidation_memory.query_semantics import (
+    strategy_reuse_profile as _strategy_reuse_profile,
+)
+from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.vector_store import VectorStore
-from consolidation_memory import topic_cache
-from consolidation_memory import record_cache
 
 _TASK_INDICATORS: frozenset[str] = frozenset({
     "how", "workflow", "steps", "process", "deploy", "build",
@@ -165,7 +174,7 @@ def _tag_overlap_multiplier(query: str, episode: dict) -> float:
     tags = {str(t).strip().lower() for t in parse_json_list(episode.get("tags", "[]")) if str(t).strip()}
     if not tags:
         return 1.0
-    query_words = {word for word in re.findall(r"[a-z0-9_]{4,}", str(query).lower())}
+    query_words = set(re.findall(r"[a-z0-9_]{4,}", str(query).lower()))
     overlap = query_words & tags
     if not overlap:
         return 1.0
@@ -698,8 +707,8 @@ def _append_competing_hypothesis_claims(
     merged = [*scoped_claims, *appended]
     merged.sort(key=lambda row: row["relevance"], reverse=True)
     return merged[: cfg.RECORDS_MAX_RESULTS], [
-        f"{len(appended)} competing hypothes{'es' if len(appended) != 1 else 'is'} "
-        f"included via contradicts edges"
+        (f"{len(appended)} competing hypothes{'es' if len(appended) != 1 else 'is'} "
+        f"included via contradicts edges")
     ]
 
 
@@ -1060,9 +1069,8 @@ def recall(
 
     # Temporal belief query: as_of caps episode results to that point in time.
     # Use whichever is earlier: the explicit `before` or `as_of`.
-    if as_of_dt:
-        if before_dt is None or as_of_dt < before_dt:
-            before_dt = as_of_dt
+    if as_of_dt and (before_dt is None or as_of_dt < before_dt):
+        before_dt = as_of_dt
 
     # Fetch more candidates when filtering, since many will be discarded
     fetch_k = n_results * 5 if (content_types or tags or after or before) else n_results * 3
@@ -1075,14 +1083,14 @@ def recall(
     candidates = vector_store.search(query_vec, k=fetch_k)
 
     # Build cosine similarity map from FAISS results
-    cosine_map: dict[str, float] = {eid: sim for eid, sim in candidates}
+    cosine_map: dict[str, float] = dict(candidates)
 
     # FTS5 keyword search (hybrid)
     bm25_map: dict[str, float] = {}
     _hybrid = cfg.HYBRID_SEARCH_ENABLED and fts_available()
     if _hybrid:
         fts_results = fts_search(query, limit=cfg.HYBRID_FTS_CANDIDATES)
-        bm25_map = {eid: score for eid, score in fts_results}
+        bm25_map = dict(fts_results)
 
     # Merge candidate IDs from vector, FTS, and entity linkage
     entity_episode_ids = (

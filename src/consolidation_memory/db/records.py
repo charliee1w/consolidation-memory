@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any
 
 from consolidation_memory.db._helpers import _normalize_utc_timestamp, _now
 from consolidation_memory.db.connection import get_connection
 from consolidation_memory.db.scope import _apply_scope_filters, _coerce_scope_row
 from consolidation_memory.utils import parse_json_list
+
 
 def insert_knowledge_records(
     topic_id: str,
@@ -505,7 +507,7 @@ def soft_delete_records_by_ids(record_ids: list[str]) -> int:
         placeholders = ",".join("?" for _ in record_ids)
         cursor = conn.execute(
             f"UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE id IN ({placeholders}) AND deleted = 0",
-            [now] + record_ids,
+            [now, *record_ids],
         )
     return int(cursor.rowcount)
 
@@ -520,7 +522,7 @@ def increment_record_access(record_ids: list[str]) -> None:
             updated_at = ? WHERE id IN ({placeholders})"""
         conn.execute(
             query,
-            [_now()] + record_ids,
+            [_now(), *record_ids],
         )
 
 

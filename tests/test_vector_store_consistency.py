@@ -31,9 +31,11 @@ class TestVectorStorePersistenceRollback:
         vs = VectorStore()
         vec = _make_normalized_vec(seed=42)
 
-        with patch.object(vs, "_save", side_effect=RuntimeError("disk full")):
-            with pytest.raises(RuntimeError, match="disk full"):
-                vs.add("ep-1", vec)
+        with (
+            patch.object(vs, "_save", side_effect=RuntimeError("disk full")),
+            pytest.raises(RuntimeError, match="disk full"),
+        ):
+            vs.add("ep-1", vec)
 
         assert vs.size == 0
         assert vs._id_map == []
@@ -46,9 +48,11 @@ class TestVectorStorePersistenceRollback:
         ids = ["ep-1", "ep-2", "ep-3"]
         vecs = _make_normalized_batch(len(ids), seed=42)
 
-        with patch.object(vs, "_save", side_effect=RuntimeError("disk full")):
-            with pytest.raises(RuntimeError, match="disk full"):
-                vs.add_batch(ids, vecs)
+        with (
+            patch.object(vs, "_save", side_effect=RuntimeError("disk full")),
+            pytest.raises(RuntimeError, match="disk full"),
+        ):
+            vs.add_batch(ids, vecs)
 
         assert vs.size == 0
         assert vs._id_map == []

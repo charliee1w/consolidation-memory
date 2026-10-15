@@ -12,7 +12,6 @@ import unicodedata
 from collections.abc import Iterable, Mapping
 from typing import Any, TypedDict
 
-
 _WS_RE = re.compile(r"\s+")
 
 _RECORD_TYPE_ALIASES: dict[str, str] = {
@@ -26,7 +25,7 @@ _RECORD_TYPE_ALIASES: dict[str, str] = {
 DEFAULT_CLAIM_PRECISION = 1.0
 
 _RECORD_FIELD_SPECS: dict[str, list[tuple[str, bool]]] = {
-    # (field_name, lowercase_for_identity)
+    # each entry is one field name plus whether identity matching lowercases it
     "fact": [("subject", True), ("info", False)],
     "solution": [("problem", True), ("fix", False), ("context", False)],
     "preference": [("key", True), ("value", False), ("context", False)],
@@ -186,8 +185,8 @@ def claims_from_records(records: Iterable[Mapping[str, Any]]) -> list[ClaimObjec
 
 
 __all__ = [
-    "ClaimObject",
     "DEFAULT_CLAIM_PRECISION",
+    "ClaimObject",
     "canonical_claim_id",
     "claim_from_record",
     "claim_text",

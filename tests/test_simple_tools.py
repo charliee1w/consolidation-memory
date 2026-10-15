@@ -12,7 +12,11 @@ from consolidation_memory.simple_api import (
     map_simple_kind,
     simplify_recall_result,
 )
-from consolidation_memory.tool_dispatch import execute_tool_call
+from consolidation_memory.tool_dispatch import (
+    ToolContractError,
+    accepted_argument_names,
+    execute_tool_call,
+)
 from tests.surface_contract_helpers import invoke_surfaces_with_execute_tool_call
 
 try:
@@ -36,6 +40,54 @@ class TestSimpleApiHelpers:
         assert args["query"] == "auth fix"
         assert args["n_results"] == 5
         assert args["include_knowledge"] is True
+
+    def test_ask_translation_sets_include_knowledge_rather_than_reading_it(self):
+        """Why the web UI may pass its own arguments through untouched.
+
+        The UI used to translate before calling ``memory_ask``, and the value it
+        forwarded was this constant. Removing the double translation therefore
+        changed nothing: the flag is set here, inside the tool that owns it.
+        """
+        assert build_ask_recall_arguments(
+            {"query": "auth fix", "include_knowledge": False}
+        )["include_knowledge"] is True
+
+    def test_translation_outputs_only_published_target_arguments(self):
+        """Both translators feed the dispatch seam, which rejects unknown keys."""
+        store_published = accepted_argument_names("memory_store") or frozenset()
+        recall_published = accepted_argument_names("memory_recall") or frozenset()
+
+        store_args = build_remember_store_arguments(
+            {"content": "c", "kind": "fact", "tags": ["a"], "scope": {"namespace": {"slug": "n"}}}
+        )
+        recall_args = build_ask_recall_arguments({"query": "q", "n_results": 3})
+
+        assert set(store_args) <= store_published
+        assert set(recall_args) <= recall_published
+
+    def test_remember_does_not_forward_an_unpublished_surprise(self):
+        """``surprise`` is a memory_store parameter, not a memory_remember one.
+
+        A branch that forwarded it was unreachable: dispatch rejects the key
+        before the translation runs, and no surface (MCP, REST, OpenAI, the
+        browser UI) ever published it for the simple tool.
+        """
+        assert "surprise" not in (accepted_argument_names("memory_remember") or frozenset())
+        args = build_remember_store_arguments({"content": "c", "kind": "note", "surprise": 0.9})
+        assert "surprise" not in args
+
+    def test_surprise_is_rejected_before_the_translation_runs(self):
+        with pytest.raises(ToolContractError) as excinfo:
+            execute_tool_call("memory_remember", {"content": "c", "surprise": 0.9})
+        assert "surprise" in str(excinfo.value)
+        assert "Extra inputs are not permitted" in str(excinfo.value)
+
+    def test_non_string_kind_is_a_type_error(self):
+        """A type problem is TypeError; an unknown kind string is ValueError."""
+        with pytest.raises(TypeError, match="kind must be a string"):
+            build_remember_store_arguments({"content": "c", "kind": 7})
+        with pytest.raises(ValueError, match="kind must be one of"):
+            build_remember_store_arguments({"content": "c", "kind": "nope"})
 
 
 class TestSimpleToolDispatch:

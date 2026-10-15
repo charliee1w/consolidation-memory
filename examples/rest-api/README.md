@@ -9,8 +9,21 @@ pip install -e ".[fastembed,rest]"
 consolidation-memory serve --rest --host 127.0.0.1 --port 8080
 ```
 
-If you enable auth for non-loopback binds, export the same token before running
-the client:
+Run the example. `client.py` imports `httpx`, which is a core dependency of the
+project, so the `.[rest]` install above already provides it:
+
+```bash
+python examples/rest-api/client.py
+```
+
+(Install `httpx` by hand only if you run the script outside a project
+environment.)
+
+The script calls `GET /health`, `POST /memory/store`, `POST /memory/recall` and
+`GET /memory/status`.
+
+`127.0.0.1` needs no token. For a non-loopback bind the server refuses to start
+without one, so export the same token on both sides:
 
 ```bash
 export CONSOLIDATION_MEMORY_REST_AUTH_TOKEN="change-me"
@@ -18,12 +31,6 @@ export CONSOLIDATION_MEMORY_REST_AUTH_TOKEN="change-me"
 
 ```powershell
 $env:CONSOLIDATION_MEMORY_REST_AUTH_TOKEN = "change-me"
-```
-
-Then run:
-
-```bash
-python examples/rest-api/client.py
 ```
 
 Environment variables:

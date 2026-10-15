@@ -118,7 +118,11 @@ def fastembed_available() -> bool:
 
 def assess_setup_status() -> dict[str, object]:
     """Return whether the browser UI should show the setup wizard."""
-    from consolidation_memory.config import get_active_project, get_config_path, get_default_config_dir
+    from consolidation_memory.config import (
+        get_active_project,
+        get_config_path,
+        get_default_config_dir,
+    )
 
     config_path = get_config_path()
     project = get_active_project()

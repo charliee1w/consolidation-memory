@@ -21,8 +21,7 @@ class OllamaEmbeddingBackend:
     def __init__(self, api_base: str, model_name: str, dimension: int):
         # Strip trailing /v1 or /v1/ if present (common misconfiguration from LM Studio defaults)
         base = api_base.rstrip("/")
-        if base.endswith("/v1"):
-            base = base[:-3]
+        base = base.removesuffix("/v1")
         self._api_base = base
         self._model_name = model_name
         self._dim = dimension
@@ -72,8 +71,7 @@ class OllamaLLMBackend:
         temperature: float = 0.3,
     ):
         base = api_base.rstrip("/")
-        if base.endswith("/v1"):
-            base = base[:-3]
+        base = base.removesuffix("/v1")
         self._api_base = base
         self._model = model
         self._max_tokens = max_tokens

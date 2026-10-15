@@ -12,6 +12,8 @@ import concurrent.futures
 import functools
 import gc
 import hashlib
+import importlib
+import inspect
 import json
 import logging
 import math
@@ -22,21 +24,61 @@ import tempfile
 import threading
 import time
 import traceback
-from contextlib import asynccontextmanager
-from typing import Any, Awaitable, Callable, TypeAlias, TypeVar
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager, suppress
+from typing import Annotated, Any, TypeAlias, TypeVar, cast
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.types import CallToolResult, TextContent
+from pydantic import ConfigDict, Field
 
+from consolidation_memory import mcp_compat
 from consolidation_memory.drift_subprocess import run_detect_drift_subprocess
 from consolidation_memory.runtime import MemoryRuntime
 from consolidation_memory.tool_adapter import (
     build_recall_search_arguments,
     build_recall_timeout_fallback_result,
-    inject_recall_deadline,
     recall_result_needs_background_warm,
+    resolve_recall_deadline,
     warm_recall_caches,
 )
-from consolidation_memory.tool_dispatch import execute_tool_call, tool_requires_client
+from consolidation_memory.tool_contracts import (
+    AskOutput,
+    BatchStoreOutput,
+    BrowseOutput,
+    ClaimBrowseOutput,
+    ClaimSearchOutput,
+    CompactOutput,
+    ConsolidationLogOutput,
+    ConsolidationOutput,
+    ContradictionOutput,
+    CorrectOutput,
+    DecayReportOutput,
+    DriftScanOutput,
+    ExportOutput,
+    ForgetOutput,
+    HygieneApplyOutput,
+    HygieneScanOutput,
+    OutcomeBrowseOutput,
+    OutcomeRecordOutput,
+    PolicyGrantOutput,
+    PolicyListOutput,
+    ProtectOutput,
+    RecallOutput,
+    ScopeListOutput,
+    SearchOutput,
+    StatusOutput,
+    StoreOutput,
+    TimelineOutput,
+    TopicDetailOutput,
+)
+from consolidation_memory.tool_dispatch import (
+    ToolContractError,
+    accepted_argument_names,
+    execute_tool_call,
+    reject_unknown_arguments,
+    tool_requires_client,
+)
 
 # Configure logging to stderr (stdout is the MCP JSON-RPC channel).
 logging.basicConfig(
@@ -74,7 +116,7 @@ _SIMPLE_MCP_TOOL_NAMES = frozenset({
     "memory_remember",
     "memory_ask",
 })
-# Default budgets for MCP tools that go through ``_call_tool_json`` / ``_call_tool_payload``.
+# Default budgets for MCP tools that go through ``_call_tool_result`` / ``_call_tool_payload``.
 # Recall/drift keep dedicated handlers; consolidate is intentionally long.
 _DEFAULT_TOOL_TIMEOUTS_SECONDS: dict[str, float] = {
     "memory_store": 30.0,
@@ -233,17 +275,18 @@ _runtime_start_lock = threading.Lock()
 _stdio_singleton_guard = None
 ScopeInput: TypeAlias = dict[str, object] | str | None
 
-if os.name == "nt":
+# sys.platform (not os.name) so type checkers skip the Windows-only branch.
+if sys.platform == "win32":
     import msvcrt
-    _msvcrt_locking: Callable[[int, int, int], Any] = getattr(msvcrt, "locking")
-    _msvcrt_lk_nblck = int(getattr(msvcrt, "LK_NBLCK"))
-    _msvcrt_lk_unlck = int(getattr(msvcrt, "LK_UNLCK"))
+    _msvcrt_locking: Callable[[int, int, int], Any] = msvcrt.locking
+    _msvcrt_lk_nblck = int(msvcrt.LK_NBLCK)
+    _msvcrt_lk_unlck = int(msvcrt.LK_UNLCK)
 else:
     import fcntl
-    _fcntl_flock: Callable[[int, int], Any] = getattr(fcntl, "flock")
-    _fcntl_lock_ex = int(getattr(fcntl, "LOCK_EX"))
-    _fcntl_lock_nb = int(getattr(fcntl, "LOCK_NB"))
-    _fcntl_lock_un = int(getattr(fcntl, "LOCK_UN"))
+    _fcntl_flock: Callable[[int, int], Any] = fcntl.flock
+    _fcntl_lock_ex = int(fcntl.LOCK_EX)
+    _fcntl_lock_nb = int(fcntl.LOCK_NB)
+    _fcntl_lock_un = int(fcntl.LOCK_UN)
 
 
 def _drift_timeout_seconds() -> float:
@@ -304,7 +347,6 @@ def _warmup_await_seconds() -> float:
 
 async def _await_warmup_ready() -> bool:
     """Wait briefly for background cache warmup before interactive recall."""
-    global _warmup_task
     if _warmup_task is None or _warmup_task.done():
         return True
 
@@ -476,7 +518,7 @@ def _singleton_lock_path(*, project: str, parent_pid: int) -> str:
     if not safe_project:
         safe_project = "default"
     safe_project = safe_project[:48]
-    fingerprint = hashlib.sha256(f"{project}:{parent_pid}".encode("utf-8")).hexdigest()[:12]
+    fingerprint = hashlib.sha256(f"{project}:{parent_pid}".encode()).hexdigest()[:12]
     filename = (
         f"consolidation_memory_stdio_{safe_project}_{parent_pid}_{fingerprint}.lock"
     )
@@ -491,7 +533,7 @@ def _open_singleton_lock_handle(path: str):
 def _try_lock_singleton_handle(handle) -> bool:
     handle.seek(0, os.SEEK_SET)
     try:
-        if os.name == "nt":
+        if sys.platform == "win32":
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
                 handle.write(" ")
@@ -507,7 +549,7 @@ def _try_lock_singleton_handle(handle) -> bool:
 
 def _unlock_singleton_handle(handle) -> None:
     handle.seek(0, os.SEEK_SET)
-    if os.name == "nt":
+    if sys.platform == "win32":
         try:
             _msvcrt_locking(handle.fileno(), _msvcrt_lk_unlck, 1)
         except OSError:
@@ -533,10 +575,9 @@ def _write_singleton_metadata(handle, metadata: dict[str, object]) -> None:
     handle.truncate()
     handle.write(json.dumps(metadata, sort_keys=True))
     handle.flush()
-    try:
+    # Best-effort durability: fsync is unsupported on some filesystems.
+    with suppress(OSError):
         os.fsync(handle.fileno())
-    except OSError:
-        pass
 
 
 def _process_exists(pid: int) -> bool:
@@ -718,8 +759,8 @@ def _preload_numeric_backends() -> None:
     if _PRELOAD_NUMERIC_BACKENDS_ON_START:
         started = time.monotonic()
         try:
-            import faiss  # noqa: F401
-            import numpy  # noqa: F401
+            importlib.import_module("faiss")
+            importlib.import_module("numpy")
         except Exception as exc:
             logger.warning("Numeric backend preload failed: %s", exc)
         else:
@@ -791,6 +832,7 @@ async def _call_tool_payload(
     arguments: dict[str, object],
     *,
     timeout: float | None = None,
+    recall_deadline_monotonic: float | None = None,
 ) -> dict[str, object]:
     client = None
     if tool_requires_client(name):
@@ -802,44 +844,97 @@ async def _call_tool_payload(
         arguments,
         client=client,
         timeout=effective_timeout,
+        recall_deadline_monotonic=recall_deadline_monotonic,
     )
 
 
-async def _call_tool_json(
+def _json_payload(value: Mapping[str, object]) -> _T:  # type: ignore[type-var]
+    """Coerce a tool result to plain JSON types (anything else goes through str)."""
+    return cast(_T, json.loads(json.dumps(value, default=str)))
+
+
+def _tool_error_result(
+    message: str,
+    *,
+    structured: Mapping[str, object] | None = None,
+) -> _T:  # type: ignore[type-var]
+    """Report a tool execution error as isError=true with actionable text (MCP spec).
+
+    Handlers stay annotated with their output contract: FastMCP passes a
+    CallToolResult through untouched and skips output validation when
+    ``is_error`` is set. The TypeVar only defers the annotation; runtime
+    validation against the contract happens for successful payloads.
+    """
+    payload: dict[str, Any] = _json_payload(structured if structured is not None else {"error": message})
+    return cast(
+        _T,
+        CallToolResult(
+            content=[TextContent(type="text", text=message)],
+            structured_content=payload,
+            is_error=True,
+        ),
+    )
+
+
+async def _call_tool_result(
     name: str,
     arguments: dict[str, object],
     *,
     timeout: float | None = None,
-) -> str:
+    recall_deadline_monotonic: float | None = None,
+) -> _T:  # type: ignore[type-var]
     try:
-        result = await _call_tool_payload(name, arguments, timeout=timeout)
-        return json.dumps(result, default=str)
-    except (TimeoutError, asyncio.TimeoutError):
-        budget = _tool_timeout_seconds(name) if timeout is None else timeout
-        message = (
-            f"{name} timed out after {budget:g}s. "
-            f"Raise CONSOLIDATION_MEMORY_TIMEOUT_{name.upper()} or "
-            "CONSOLIDATION_MEMORY_TOOL_TIMEOUT_SECONDS."
+        result = await _call_tool_payload(
+            name,
+            arguments,
+            timeout=timeout,
+            recall_deadline_monotonic=recall_deadline_monotonic,
         )
+        return _json_payload(result)
+    except (TimeoutError, asyncio.TimeoutError):
+        # Name the variable that actually governs this call: a caller-supplied
+        # timeout bypasses _tool_timeout_seconds entirely, so the per-tool
+        # CONSOLIDATION_MEMORY_TIMEOUT_<TOOL> override would be advice the
+        # caller cannot act on.
+        if timeout is None:
+            hint = (
+                f"Raise CONSOLIDATION_MEMORY_TIMEOUT_{name.upper()} or "
+                "CONSOLIDATION_MEMORY_TOOL_TIMEOUT_SECONDS."
+            )
+        else:
+            hint = (
+                "The caller fixed this budget, so no environment variable "
+                "applies; raise it where the call is made."
+            )
+        message = f"{name} timed out after {(timeout if timeout is not None else _tool_timeout_seconds(name)):g}s. {hint}"
         logger.error(message)
-        return json.dumps({"error": message})
+        return _tool_error_result(message)
     except Exception as exc:
         logger.exception("%s failed", name)
-        return json.dumps({"error": str(exc)})
+        return _tool_error_result(str(exc))
 
 
 def _degraded_drift_output(*, message: str) -> dict[str, object]:
+    """Degraded drift payload for a timed-out scan.
+
+    Carries the full `DriftScanOutput` shape with empty lists *and* an `error`
+    key. The shape alone matched the success arm of the published
+    `anyOf[success, error]`, so a client validating `structuredContent` read a
+    timeout as a successful empty scan; the `error` key is what the error arm
+    requires, so the same payload now validates as the failure it is.
+    """
     return {
         "checked_anchors": [],
         "impacted_claim_ids": [],
         "challenged_claim_ids": [],
         "impacts": [],
         "message": message,
+        "error": message,
     }
 
 
 @asynccontextmanager
-async def lifespan(server: FastMCP):
+async def lifespan(server: MCPServer):
     """Start and stop the runtime-owned MCP server resources."""
     del server
     global _warmup_task, _idle_task, _runtime_started, _startup_error
@@ -849,6 +944,16 @@ async def lifespan(server: FastMCP):
 
     logger.info("Starting consolidation_memory MCP server v%s...", __version__)
     logger.info("Active project: %s", get_active_project())
+    # Refuse to serve if any registered tool lost its two-arm outputSchema
+    # (late registration, or a private mcp SDK surface moving). Cheap: the
+    # already-published tools are cache hits.
+    _publish_and_verify_output_schemas()
+    # Re-check that the argument set the SDK enforces is still the published one,
+    # in case a tool was registered after the import-time check.
+    _verify_published_argument_contract()
+    # A tool registered after the import-time check must still publish the same
+    # description the OpenAI surface does.
+    _verify_tool_descriptions()
     _preload_numeric_backends()
     if _warmup_on_start() and _runtime_started and _startup_error is None:
         _warmup_task = asyncio.create_task(_warm_client_background())
@@ -863,18 +968,16 @@ async def lifespan(server: FastMCP):
 
     if _idle_task is not None:
         _idle_task.cancel()
-        try:
+        # Awaiting a task we just cancelled: the cancellation is the expected outcome.
+        with suppress(asyncio.CancelledError):
             await _idle_task
-        except asyncio.CancelledError:
-            pass
         _idle_task = None
 
     if _warmup_task is not None:
         _warmup_task.cancel()
-        try:
+        # Awaiting a task we just cancelled: the cancellation is the expected outcome.
+        with suppress(asyncio.CancelledError):
             await _warmup_task
-        except asyncio.CancelledError:
-            pass
         _warmup_task = None
 
     _shutdown_warmup_executor()
@@ -884,21 +987,87 @@ async def lifespan(server: FastMCP):
     logger.info("Shutting down consolidation_memory MCP server.")
 
 
-mcp = FastMCP("consolidation_memory", lifespan=lifespan)
+# Unknown tool arguments must fail as input validation errors instead of being
+# silently dropped (pydantic's default extra="ignore"); "forbid" also publishes
+# additionalProperties: false in every input schema. Set before tools register,
+# because each tool's arg model is derived from ArgModelBase at registration
+# time. mcp_compat owns every private mcp import; see its module docstring for
+# the surfaces used and why a minor mcp bump can break them.
+#
+# This is the MCP fast path, not a second contract: the SDK validates arguments
+# from the handler signature before any body runs, so a rejected key never
+# reaches tool_dispatch.reject_unknown_arguments. "Which arguments are allowed"
+# therefore has two implementations that must agree — the signature-derived arg
+# model below and the published contract the shared helper reads. Startup
+# enforces that agreement in _verify_published_argument_contract(), which asks
+# the shared helper about every registered tool and fails on any divergence.
+mcp_compat.ArgModelBase.model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+mcp = MCPServer("consolidation_memory", lifespan=lifespan)
 
 
-def _tracked_tool() -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
+@functools.lru_cache(maxsize=1)
+def _published_tool_descriptions() -> dict[str, str]:
+    """Tool descriptions as published to OpenAI-compatible callers.
+
+    ``schemas.openai_tools`` is the single source for what each tool says it
+    does. The MCP surface would otherwise publish the handler docstring, which
+    is a one-line summary: the decision guidance a host needs to pick between
+    ``memory_search`` and ``memory_recall``, or the fact that
+    ``memory_scope_list`` is a deployment-wide listing outside the read filter,
+    never reaches an MCP host. Sharing the string removes the second copy
+    instead of maintaining two.
+    """
+    from consolidation_memory.schemas import openai_tools
+
+    return {
+        str(tool["function"]["name"]): str(tool["function"]["description"])
+        for tool in openai_tools
+    }
+
+
+def _verify_tool_descriptions() -> None:
+    """Fail at import when a tool's docstring contradicts its published text.
+
+    The description is load-bearing: it is what a host reads to decide whether
+    and how to call a tool, and it is the only place a caller learns that
+    ``memory_scope_list`` and ``memory_policy_list`` are not read-visibility
+    filtered. Drift between the two must not reach a client.
+    """
+    published = _published_tool_descriptions()
+    for name, description in sorted(published.items()):
+        handler = globals().get(name)
+        if handler is None:
+            raise mcp_compat.MCPCompatError(
+                f"Tool {name} is published in schemas.openai_tools but no handler is "
+                "defined in server.py, so the two surfaces cannot agree on it."
+            )
+        docstring = inspect.getdoc(handler)
+        if not docstring:
+            raise mcp_compat.MCPCompatError(
+                f"Tool {name} has no docstring; the MCP surface would publish no "
+                "description at all while the OpenAI surface publishes one."
+            )
+        if " ".join(docstring.split()) != " ".join(description.split()):
+            raise mcp_compat.MCPCompatError(
+                f"Tool {name} docstring diverges from its published description.\n"
+                f"  docstring:  {' '.join(docstring.split())[:200]}\n"
+                f"  published:  {' '.join(description.split())[:200]}\n"
+                "Both surfaces must publish the same text; fix the docstring or the "
+                "schemas.openai_tools entry."
+            )
+
+
+def _tracked_tool() -> Callable[[Callable[..., Awaitable[_T]]], Callable[..., Awaitable[_T]]]:
     """Wrap MCP tools with lightweight activity accounting for idle shutdown."""
 
-    def _decorator(
-        func: Callable[..., Awaitable[str]],
-    ) -> Callable[..., Awaitable[str]]:
+    def _decorator(func: Callable[..., Awaitable[_T]]) -> Callable[..., Awaitable[_T]]:
         if not _mcp_tool_allowed(func.__name__):
             return func
 
-        @mcp.tool()
+        @mcp.tool(description=_published_tool_descriptions().get(func.__name__))
         @functools.wraps(func)
-        async def _wrapped(*args: object, **kwargs: object) -> str:
+        async def _wrapped(*args: object, **kwargs: object) -> _T:
             _begin_tool_call()
             try:
                 return await func(*args, **kwargs)
@@ -912,14 +1081,33 @@ def _tracked_tool() -> Callable[[Callable[..., Awaitable[str]]], Callable[..., A
 
 @_tracked_tool()
 async def memory_store(
-    content: str,
-    content_type: str = "exchange",
-    tags: list[str] | None = None,
-    surprise: float = 0.5,
-    scope: ScopeInput = None,
-) -> str:
-    """Store a memory episode in the episodic buffer."""
-    return await _call_tool_json(
+    content: Annotated[
+        str,
+        Field(description="The text content to store. Include relevant context."),
+    ],
+    content_type: Annotated[
+        str,
+        Field(description="Category of the memory. 'exchange' for conversation, 'fact' for learned info, 'solution' for problem+fix (use Problem:/Fix: lines, structured JSON type=solution, or path anchors — see docs/FAST_PATH_EPISODES.md), 'preference' for user preference, 'procedure' for repeatable workflows (see docs/FAST_PATH_EPISODES.md). Post-consolidation 'strategy' records use structured JSON with any ingest content_type."),
+    ] = "exchange",
+    tags: Annotated[
+        list[str] | None,
+        Field(description="Optional topic tags for organization (e.g., ['python', 'debugging'])."),
+    ] = None,
+    surprise: Annotated[
+        float,
+        Field(description="How novel this is, 0.0 (routine) to 1.0 (very surprising)."),
+    ] = 0.5,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> StoreOutput:
+    """Store a memory episode in the episodic buffer. Always store memories when you learn
+   something new about the user, solve a problem, discover a preference, or encounter something
+   surprising. Write content as a self-contained note that future-you can understand without
+   context. Include both the problem AND solution for solution-type memories. Do NOT store
+   trivial exchanges like greetings."""
+    return await _call_tool_result(
         "memory_store",
         {
             "content": content,
@@ -933,20 +1121,53 @@ async def memory_store(
 
 @_tracked_tool()
 async def memory_recall(
-    query: str,
-    n_results: int = 10,
-    include_knowledge: bool = True,
-    content_types: list[str] | None = None,
-    tags: list[str] | None = None,
-    after: str | None = None,
-    before: str | None = None,
-    include_expired: bool = False,
-    as_of: str | None = None,
-    entity: str | None = None,
-    hypothesis_competition: bool = False,
-    scope: ScopeInput = None,
-) -> str:
-    """Retrieve relevant memories by semantic similarity."""
+    query: Annotated[str, Field(description="Natural language description of what to recall.")],
+    n_results: Annotated[int, Field(description="Maximum number of episode results.")] = 10,
+    include_knowledge: Annotated[
+        bool,
+        Field(description="Whether to include consolidated knowledge documents."),
+    ] = True,
+    content_types: Annotated[
+        list[str] | None,
+        Field(description="Filter to specific content types (e.g. ['solution', 'fact'])."),
+    ] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(description="Filter to episodes with at least one matching tag."),
+    ] = None,
+    after: Annotated[
+        str | None,
+        Field(description="Only episodes created after this ISO date (e.g. '2025-01-01')."),
+    ] = None,
+    before: Annotated[
+        str | None,
+        Field(description="Only episodes created before this ISO date."),
+    ] = None,
+    include_expired: Annotated[
+        bool,
+        Field(description="Include temporally expired knowledge records. Default False."),
+    ] = False,
+    as_of: Annotated[
+        str | None,
+        Field(description="ISO datetime for temporal belief queries. Returns knowledge state at that point in time, including records that have since been superseded (e.g. '2025-06-15T00:00:00+00:00')."),
+    ] = None,
+    entity: Annotated[
+        str | None,
+        Field(description="Optional file path, module, or subject token to boost entity-linked memories (e.g. 'context_assembler.py' or 'memory_status')."),
+    ] = None,
+    hypothesis_competition: Annotated[
+        bool,
+        Field(description="When true, include expired or challenged contradicting partner claims as competing hypotheses with lowered ranking."),
+    ] = False,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> RecallOutput:
+    """Retrieve relevant memories by semantic similarity. Returns episodes, knowledge documents,
+   and individual knowledge records (facts, solutions, preferences, procedures, strategies).
+   Call this at the start of every new conversation and when context about the user's setup or
+   preferences would improve your response. This is your persistent memory."""
     try:
         await _await_warmup_ready()
         client = await _get_client_with_timeout()
@@ -966,7 +1187,6 @@ async def memory_recall(
             "hypothesis_competition": hypothesis_competition,
             "scope": scope,
         }
-        inject_recall_deadline(arguments, timeout_seconds=recall_timeout)
 
         try:
             result = await _run_blocking(
@@ -975,6 +1195,7 @@ async def memory_recall(
                 arguments,
                 client=client,
                 timeout=recall_timeout,
+                recall_deadline_monotonic=resolve_recall_deadline(recall_timeout),
             )
         except (TimeoutError, asyncio.TimeoutError):
             fallback_timeout = _recall_fallback_timeout_seconds()
@@ -998,21 +1219,21 @@ async def memory_recall(
                     "CONSOLIDATION_MEMORY_RECALL_TIMEOUT_SECONDS higher."
                 )
                 logger.error(message)
-                return json.dumps({"error": message})
+                return _tool_error_result(message)
             except Exception as fallback_error:
                 message = (
                     f"memory_recall timed out after {recall_timeout:g}s and keyword fallback "
                     f"failed: {fallback_error}"
                 )
                 logger.error(message)
-                return json.dumps({"error": message})
+                return _tool_error_result(message)
 
             payload = build_recall_timeout_fallback_result(
                 keyword_result,
                 recall_timeout_seconds=recall_timeout,
                 include_knowledge=include_knowledge,
             )
-            return json.dumps(payload, default=str)
+            return _json_payload(payload)
 
         result_warnings_raw = result.get("warnings")
         result_warnings: list[str] = (
@@ -1023,21 +1244,32 @@ async def memory_recall(
         if recall_result_needs_background_warm(result_warnings):
             _schedule_deferred_cache_warm(client)
 
-        return json.dumps(result, default=str)
+        return _json_payload(result)
     except Exception as exc:
         logger.exception("memory_recall failed")
-        return json.dumps({"error": str(exc)})
+        return _tool_error_result(str(exc))
 
 
 @_tracked_tool()
 async def memory_remember(
-    content: str,
-    kind: str = "note",
-    tags: list[str] | None = None,
-    scope: ScopeInput = None,
-) -> str:
-    """Save memory using plain language (note, fix, fact, preference)."""
-    return await _call_tool_json(
+    content: Annotated[
+        str,
+        Field(description="What to remember — include problem and fix for kind=fix."),
+    ],
+    kind: Annotated[
+        str,
+        Field(description="note=general, fix=solution, fact=fact, preference=user preference."),
+    ] = "note",
+    tags: Annotated[list[str] | None, Field(description="Optional topic tags.")] = None,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> StoreOutput:
+    """Save something to memory using plain language. Prefer this over memory_store when the simple
+   kind vocabulary is enough; memory_store is the one that takes an explicit content_type. Use
+   kind=fix for debugging solutions (problem + what worked)."""
+    return await _call_tool_result(
         "memory_remember",
         {
             "content": content,
@@ -1050,11 +1282,19 @@ async def memory_remember(
 
 @_tracked_tool()
 async def memory_ask(
-    query: str,
-    n_results: int = 8,
-    scope: ScopeInput = None,
-) -> str:
-    """Search memory with a plain-language question; returns compact results."""
+    query: Annotated[
+        str,
+        Field(description="Natural-language question about prior work or fixes."),
+    ],
+    n_results: Annotated[int, Field(description="Maximum matches per section (default 8).")] = 8,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> AskOutput:
+    """Search memory with a plain-language question. Returns a compact summary of matching
+   episodes, records, claims, and topics. Call at conversation start (or use memory_recall when
+   hooks require it). Prefer this over memory_recall for everyday retrieval."""
     try:
         await _await_warmup_ready()
         recall_timeout = _recall_timeout_seconds()
@@ -1064,24 +1304,28 @@ async def memory_ask(
             "n_results": bounded_n_results,
             "scope": scope,
         }
-        inject_recall_deadline(arguments, timeout_seconds=recall_timeout)
-        return await _call_tool_json(
+        return await _call_tool_result(
             "memory_ask",
             arguments,
             timeout=recall_timeout,
+            recall_deadline_monotonic=resolve_recall_deadline(recall_timeout),
         )
     except Exception as exc:
         logger.exception("memory_ask failed")
-        return json.dumps({"error": str(exc)})
+        return _tool_error_result(str(exc))
 
 
 @_tracked_tool()
 async def memory_store_batch(
-    episodes: list[dict],
-    scope: ScopeInput = None,
-) -> str:
-    """Store multiple memory episodes in a single operation."""
-    return await _call_tool_json(
+    episodes: Annotated[list[dict], Field(description="List of episode objects to store.")],
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> BatchStoreOutput:
+    """Store multiple memory episodes in a single operation. More efficient than calling
+   memory_store repeatedly."""
+    return await _call_tool_result(
         "memory_store_batch",
         {"episodes": episodes, "scope": scope},
     )
@@ -1089,16 +1333,36 @@ async def memory_store_batch(
 
 @_tracked_tool()
 async def memory_search(
-    query: str | None = None,
-    content_types: list[str] | None = None,
-    tags: list[str] | None = None,
-    after: str | None = None,
-    before: str | None = None,
-    limit: int = 20,
-    scope: ScopeInput = None,
-) -> str:
-    """Keyword/metadata search over episodes."""
-    return await _call_tool_json(
+    query: Annotated[
+        str | None,
+        Field(description="Text substring to search for in episode content (case-insensitive)."),
+    ] = None,
+    content_types: Annotated[
+        list[str] | None,
+        Field(description="Filter to specific content types."),
+    ] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(description="Filter to episodes with at least one matching tag."),
+    ] = None,
+    after: Annotated[
+        str | None,
+        Field(description="Only episodes created after this ISO date (e.g. '2025-01-01')."),
+    ] = None,
+    before: Annotated[
+        str | None,
+        Field(description="Only episodes created before this ISO date."),
+    ] = None,
+    limit: Annotated[int, Field(description="Maximum results to return.")] = 20,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> SearchOutput:
+    """Keyword/metadata search over episodes. Works without embedding backend. Unlike memory_recall
+   (semantic similarity), this does plain text matching. Use when the embedding backend is
+   down, or for exact substring searches."""
+    return await _call_tool_result(
         "memory_search",
         {
             "query": query,
@@ -1114,13 +1378,23 @@ async def memory_search(
 
 @_tracked_tool()
 async def memory_claim_browse(
-    claim_type: str | None = None,
-    as_of: str | None = None,
-    limit: int = 50,
-    scope: ScopeInput = None,
-) -> str:
-    """Browse claims from the claim graph."""
-    return await _call_tool_json(
+    claim_type: Annotated[
+        str | None,
+        Field(description="Optional claim type filter (e.g. 'fact', 'solution', 'strategy')."),
+    ] = None,
+    as_of: Annotated[
+        str | None,
+        Field(description="Optional ISO datetime for temporal claim queries. When set, returns claims valid at that point in time."),
+    ] = None,
+    limit: Annotated[int, Field(description="Maximum claims to return.")] = 50,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> ClaimBrowseOutput:
+    """Browse claims from the claim graph. Supports optional type filtering and temporal snapshot
+   queries via as_of."""
+    return await _call_tool_result(
         "memory_claim_browse",
         {
             "claim_type": claim_type,
@@ -1133,14 +1407,27 @@ async def memory_claim_browse(
 
 @_tracked_tool()
 async def memory_claim_search(
-    query: str,
-    claim_type: str | None = None,
-    as_of: str | None = None,
-    limit: int = 50,
-    scope: ScopeInput = None,
-) -> str:
-    """Search claims by text with optional temporal snapshot filtering."""
-    return await _call_tool_json(
+    query: Annotated[
+        str,
+        Field(description="Search text to match against claim canonical text and payload."),
+    ],
+    claim_type: Annotated[
+        str | None,
+        Field(description="Optional claim type filter (e.g. 'fact', 'solution', 'strategy')."),
+    ] = None,
+    as_of: Annotated[
+        str | None,
+        Field(description="Optional ISO datetime for temporal claim queries. When set, searches claims valid at that point in time."),
+    ] = None,
+    limit: Annotated[int, Field(description="Maximum matched claims to return.")] = 50,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> ClaimSearchOutput:
+    """Search claims using deterministic phrase and keyword matching. Supports optional claim type
+   filtering and temporal as_of queries."""
+    return await _call_tool_result(
         "memory_claim_search",
         {
             "query": query,
@@ -1154,24 +1441,65 @@ async def memory_claim_search(
 
 @_tracked_tool()
 async def memory_outcome_record(
-    action_summary: str,
-    outcome_type: str,
-    source_claim_ids: list[str] | None = None,
-    source_record_ids: list[str] | None = None,
-    source_episode_ids: list[str] | None = None,
-    code_anchors: list[dict[str, str]] | None = None,
-    issue_ids: list[str] | None = None,
-    pr_ids: list[str] | None = None,
-    action_key: str | None = None,
-    summary: str | None = None,
-    details: dict[str, Any] | str | None = None,
-    confidence: float = 0.8,
-    provenance: dict[str, Any] | str | None = None,
-    observed_at: str | None = None,
-    scope: ScopeInput = None,
-) -> str:
-    """Record an action outcome observation with provenance links."""
-    return await _call_tool_json(
+    action_summary: Annotated[
+        str,
+        Field(description="Concise description of the attempted strategy or action."),
+    ],
+    outcome_type: Annotated[str, Field(description="Outcome classification for this observation.")],
+    source_claim_ids: Annotated[
+        list[str] | None,
+        Field(description="Claim IDs this outcome is linked to."),
+    ] = None,
+    source_record_ids: Annotated[
+        list[str] | None,
+        Field(description="Knowledge record IDs this outcome is linked to."),
+    ] = None,
+    source_episode_ids: Annotated[
+        list[str] | None,
+        Field(description="Episode IDs this outcome is linked to."),
+    ] = None,
+    code_anchors: Annotated[
+        list[dict[str, str]] | None,
+        Field(description="Optional code anchors associated with the outcome."),
+    ] = None,
+    issue_ids: Annotated[
+        list[str] | None,
+        Field(description="Optional issue identifiers associated with the outcome."),
+    ] = None,
+    pr_ids: Annotated[
+        list[str] | None,
+        Field(description="Optional pull request identifiers associated with the outcome."),
+    ] = None,
+    action_key: Annotated[
+        str | None,
+        Field(description="Optional stable strategy key. Auto-derived when omitted."),
+    ] = None,
+    summary: Annotated[
+        str | None,
+        Field(description="Optional short human summary of the observed outcome."),
+    ] = None,
+    details: Annotated[
+        dict[str, Any] | str | None,
+        Field(description="Optional structured details payload for this outcome."),
+    ] = None,
+    confidence: Annotated[float, Field(description="Confidence in this observation.")] = 0.8,
+    provenance: Annotated[
+        dict[str, Any] | str | None,
+        Field(description="Optional provenance metadata (agent/tool/run identifiers, etc.)."),
+    ] = None,
+    observed_at: Annotated[
+        str | None,
+        Field(description="Optional ISO datetime when the outcome was observed."),
+    ] = None,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> OutcomeRecordOutput:
+    """Record whether a strategy/action worked. Outcome observations are durable evidence for trust
+   scoring and can be linked to claim/record/episode provenance, code anchors, and issue/PR
+   identifiers."""
+    return await _call_tool_result(
         "memory_outcome_record",
         {
             "action_summary": action_summary,
@@ -1195,17 +1523,35 @@ async def memory_outcome_record(
 
 @_tracked_tool()
 async def memory_outcome_browse(
-    outcome_type: str | None = None,
-    action_key: str | None = None,
-    source_claim_id: str | None = None,
-    source_record_id: str | None = None,
-    source_episode_id: str | None = None,
-    as_of: str | None = None,
-    limit: int = 50,
-    scope: ScopeInput = None,
-) -> str:
-    """Browse recorded action outcomes with optional filters."""
-    return await _call_tool_json(
+    outcome_type: Annotated[str | None, Field(description="Optional outcome type filter.")] = None,
+    action_key: Annotated[
+        str | None,
+        Field(description="Optional action/strategy key filter."),
+    ] = None,
+    source_claim_id: Annotated[
+        str | None,
+        Field(description="Optional claim source filter."),
+    ] = None,
+    source_record_id: Annotated[
+        str | None,
+        Field(description="Optional record source filter."),
+    ] = None,
+    source_episode_id: Annotated[
+        str | None,
+        Field(description="Optional episode source filter."),
+    ] = None,
+    as_of: Annotated[
+        str | None,
+        Field(description="Optional ISO datetime upper bound for observed outcomes."),
+    ] = None,
+    limit: Annotated[int, Field(description="Maximum outcomes to return.")] = 50,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> OutcomeBrowseOutput:
+    """Browse recorded outcome observations over time with optional source and temporal filters."""
+    return await _call_tool_result(
         "memory_outcome_browse",
         {
             "outcome_type": outcome_type,
@@ -1222,10 +1568,17 @@ async def memory_outcome_browse(
 
 @_tracked_tool()
 async def memory_detect_drift(
-    base_ref: str | None = None,
-    repo_path: str | None = None,
-) -> str:
-    """Detect code drift and challenge impacted claims."""
+    base_ref: Annotated[
+        str | None,
+        Field(description="Optional git base ref for comparison (e.g. 'origin/main')."),
+    ] = None,
+    repo_path: Annotated[
+        str | None,
+        Field(description="Optional repository path (defaults to current working directory)."),
+    ] = None,
+) -> DriftScanOutput:
+    """Detect code drift by checking changed files and challenge impacted claims. Use after
+   substantial file edits."""
     timeout_seconds = _drift_timeout_seconds()
     try:
         result = await run_detect_drift_subprocess(
@@ -1233,7 +1586,7 @@ async def memory_detect_drift(
             repo_path=repo_path,
             timeout_seconds=timeout_seconds,
         )
-        return json.dumps(result, default=str)
+        return _json_payload(result)
     except (TimeoutError, asyncio.TimeoutError):
         fallback_timeout = max(5.0, min(20.0, timeout_seconds * 0.2))
         if base_ref:
@@ -1253,7 +1606,7 @@ async def memory_detect_drift(
                     f"memory_detect_drift timed out after {timeout_seconds:g}s using base_ref={base_ref!r}; "
                     "returned fallback scan without base_ref."
                 )
-                return json.dumps(payload, default=str)
+                return _json_payload(payload)
             except (TimeoutError, asyncio.TimeoutError):
                 logger.error(
                     "memory_detect_drift fallback without base_ref timed out after %.2fs",
@@ -1264,22 +1617,34 @@ async def memory_detect_drift(
 
         message = (
             f"memory_detect_drift timed out after {timeout_seconds:g}s. "
-            "Returned a degraded empty result instead of failing."
+            "Returned a degraded empty result; structuredContent carries the "
+            "DriftScanOutput shape with empty lists plus an `error` key."
         )
         logger.error(message)
-        return json.dumps(_degraded_drift_output(message=message), default=str)
+        return _tool_error_result(message, structured=_degraded_drift_output(message=message))
     except Exception as exc:
         logger.exception("memory_detect_drift failed")
-        return json.dumps({"error": str(exc)})
+        return _tool_error_result(str(exc))
 
 
 @_tracked_tool()
 async def memory_status(
-    lightweight: bool | None = None,
-    scope: ScopeInput = None,
-    global_scope: bool = False,
-) -> str:
-    """Show memory system statistics, including fast-path consolidation metrics."""
+    lightweight: Annotated[
+        bool | None,
+        Field(description="When true, skip markdown consistency scans and return a cached snapshot when available (faster for routine checks)."),
+    ] = None,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+    global_scope: Annotated[
+        bool,
+        Field(description="When true, return corpus-wide audit stats ignoring resolved default scope. Default false — audit reads use the same resolved scope as recall/browse."),
+    ] = False,
+) -> StatusOutput:
+    """Show memory system statistics, including trust posture, claim coverage, provenance coverage,
+   drift-watch pressure, episode counts, backend info, and fast-path consolidation metrics
+   (fast_path_hits / llm_fallbacks from the last run)."""
     payload: dict[str, object] = {}
     if lightweight is not None:
         payload["lightweight"] = lightweight
@@ -1289,7 +1654,7 @@ async def memory_status(
         payload["scope"] = scope
     if global_scope:
         payload["global_scope"] = True
-    return await _call_tool_json(
+    return await _call_tool_result(
         "memory_status",
         payload,
         timeout=_tool_timeout_seconds("memory_status"),
@@ -1298,41 +1663,61 @@ async def memory_status(
 
 @_tracked_tool()
 async def memory_forget(
-    episode_id: str,
-    scope: ScopeInput = None,
-) -> str:
-    """Mark an episode for removal from the memory system."""
-    return await _call_tool_json("memory_forget", {"episode_id": episode_id, "scope": scope})
+    episode_id: Annotated[str, Field(description="The UUID of the episode to forget.")],
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> ForgetOutput:
+    """Mark an episode for removal from the memory system. Use to forget specific memories that are
+   incorrect, outdated, or that the user wants removed."""
+    return await _call_tool_result("memory_forget", {"episode_id": episode_id, "scope": scope})
 
 
 @_tracked_tool()
-async def memory_export(scope: ScopeInput = None) -> str:
-    """Export all episodes and knowledge to a JSON snapshot."""
-    return await _call_tool_json("memory_export", {"scope": scope})
+async def memory_export(scope: Annotated[
+    ScopeInput,
+    Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+] = None) -> ExportOutput:
+    """Export all episodes and knowledge to a JSON snapshot. Creates a timestamped backup file and
+   returns the file path."""
+    return await _call_tool_result("memory_export", {"scope": scope})
 
 
 @_tracked_tool()
 async def memory_correct(
-    topic_filename: str,
-    correction: str,
-    scope: ScopeInput = None,
-) -> str:
-    """Correct a knowledge document with new information."""
-    return await _call_tool_json(
+    topic_filename: Annotated[
+        str,
+        Field(description="The filename of the knowledge topic (e.g., 'vr_setup.md')."),
+    ],
+    correction: Annotated[
+        str,
+        Field(description="Description of what needs to be corrected and the correct information."),
+    ],
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> CorrectOutput:
+    """Correct a knowledge document with new information. Use when you discover that a knowledge
+   document contains outdated or incorrect information and needs to be updated."""
+    return await _call_tool_result(
         "memory_correct",
         {"topic_filename": topic_filename, "correction": correction, "scope": scope},
     )
 
 
 @_tracked_tool()
-async def memory_compact() -> str:
-    """Compact the FAISS index by removing tombstoned vectors."""
-    return await _call_tool_json("memory_compact", {})
+async def memory_compact() -> CompactOutput:
+    """Compact the FAISS index by removing tombstoned vectors. Call when memory_status shows high
+   tombstone count or ratio."""
+    return await _call_tool_result("memory_compact", {})
 
 
 @_tracked_tool()
-async def memory_consolidate() -> str:
-    """Manually trigger a consolidation run."""
+async def memory_consolidate() -> ConsolidationOutput:
+    """Manually trigger a consolidation run. Clusters unconsolidated episodes, synthesizes
+   knowledge, prunes old episodes, and compacts FAISS. Can take several minutes."""
     try:
         # Import SciPy on the asyncio main thread before worker execution.
         _ensure_scipy_for_consolidate()
@@ -1343,7 +1728,7 @@ async def memory_consolidate() -> str:
         )
         if result.get("status") == "already_running":
             result.setdefault("message", "A consolidation run is already in progress")
-        return json.dumps(result, default=str)
+        return _json_payload(result)
     except (TimeoutError, asyncio.TimeoutError):
         budget = _tool_timeout_seconds("memory_consolidate")
         message = (
@@ -1351,98 +1736,165 @@ async def memory_consolidate() -> str:
             "Raise CONSOLIDATION_MEMORY_TIMEOUT_MEMORY_CONSOLIDATE."
         )
         logger.error(message)
-        return json.dumps({"error": message})
+        return _tool_error_result(message)
     except Exception as exc:
         logger.exception("memory_consolidate failed")
-        return json.dumps({"error": str(exc)})
+        return _tool_error_result(str(exc))
 
 
 @_tracked_tool()
 async def memory_consolidation_log(
-    last_n: int = 5,
-    scope: ScopeInput = None,
-    global_scope: bool = False,
-) -> str:
-    """Show recent consolidation activity as a human-readable changelog."""
+    last_n: Annotated[
+        int,
+        Field(description="Number of recent runs to show (1-20, default 5)."),
+    ] = 5,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+    global_scope: Annotated[
+        bool,
+        Field(description="When true, return corpus-wide audit stats ignoring resolved default scope. Default false — audit reads use the same resolved scope as recall/browse."),
+    ] = False,
+) -> ConsolidationLogOutput:
+    """Show recent consolidation activity as a human-readable changelog. Returns summaries of
+   recent runs: topics created/updated, contradictions detected, episodes pruned."""
     payload: dict[str, object] = {"last_n": last_n, "scope": scope}
     if global_scope:
         payload["global_scope"] = True
-    return await _call_tool_json("memory_consolidation_log", payload)
+    return await _call_tool_result("memory_consolidation_log", payload)
 
 
 @_tracked_tool()
 async def memory_decay_report(
-    scope: ScopeInput = None,
-    global_scope: bool = False,
-) -> str:
-    """Show what would be forgotten if pruning ran right now."""
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+    global_scope: Annotated[
+        bool,
+        Field(description="When true, return corpus-wide audit stats ignoring resolved default scope. Default false — audit reads use the same resolved scope as recall/browse."),
+    ] = False,
+) -> DecayReportOutput:
+    """Show what would be forgotten if pruning ran right now. Reports prunable episodes,
+   low-confidence records, and protected episode counts. Does NOT actually delete anything."""
     payload: dict[str, object] = {"scope": scope}
     if global_scope:
         payload["global_scope"] = True
-    return await _call_tool_json("memory_decay_report", payload)
+    return await _call_tool_result("memory_decay_report", payload)
 
 
 @_tracked_tool()
 async def memory_protect(
-    episode_id: str | None = None,
-    tag: str | None = None,
-    scope: ScopeInput = None,
-) -> str:
-    """Mark episodes as immune to pruning."""
-    return await _call_tool_json(
+    episode_id: Annotated[
+        str | None,
+        Field(description="Protect a specific episode by its UUID."),
+    ] = None,
+    tag: Annotated[str | None, Field(description="Protect all episodes with this tag.")] = None,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> ProtectOutput:
+    """Mark episodes as immune to pruning. Protect specific episodes or all episodes with a given
+   tag from being pruned during consolidation."""
+    return await _call_tool_result(
         "memory_protect",
         {"episode_id": episode_id, "tag": tag, "scope": scope},
     )
 
 
 @_tracked_tool()
-async def memory_timeline(topic: str, scope: ScopeInput = None) -> str:
-    """Show how understanding of a topic has changed over time."""
-    return await _call_tool_json("memory_timeline", {"topic": topic, "scope": scope})
+async def memory_timeline(topic: Annotated[
+    str,
+    Field(description="Natural language topic to query (e.g., 'frontend framework preference')."),
+], scope: Annotated[
+    ScopeInput,
+    Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+] = None) -> TimelineOutput:
+    """Show how understanding of a topic has changed over time. Returns all knowledge records
+   matching the topic sorted chronologically, including expired/superseded records."""
+    return await _call_tool_result("memory_timeline", {"topic": topic, "scope": scope})
 
 
 @_tracked_tool()
 async def memory_contradictions(
-    topic: str | None = None,
-    scope: ScopeInput = None,
-    global_scope: bool = False,
-) -> str:
-    """List detected contradictions from the audit log."""
+    topic: Annotated[
+        str | None,
+        Field(description="Optional topic filename or title to filter results."),
+    ] = None,
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+    global_scope: Annotated[
+        bool,
+        Field(description="When true, return corpus-wide audit stats ignoring resolved default scope. Default false — audit reads use the same resolved scope as recall/browse."),
+    ] = False,
+) -> ContradictionOutput:
+    """List detected contradictions from the audit log. Shows cases where knowledge records
+   contradicted each other during consolidation, including both the old and new content and how
+   it was resolved."""
     payload: dict[str, object] = {"topic": topic, "scope": scope}
     if global_scope:
         payload["global_scope"] = True
-    return await _call_tool_json("memory_contradictions", payload)
+    return await _call_tool_result("memory_contradictions", payload)
 
 
 @_tracked_tool()
-async def memory_browse(scope: ScopeInput = None) -> str:
-    """Browse all knowledge topics with summaries and metadata."""
-    return await _call_tool_json("memory_browse", {"scope": scope})
+async def memory_browse(scope: Annotated[
+    ScopeInput,
+    Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+] = None) -> BrowseOutput:
+    """Browse all knowledge topics with summaries and metadata. Returns titles, summaries, record
+   counts by type, confidence scores, and file paths."""
+    return await _call_tool_result("memory_browse", {"scope": scope})
 
 
 @_tracked_tool()
 async def memory_read_topic(
-    filename: str,
-    scope: ScopeInput = None,
-) -> str:
-    """Read the full markdown content of a knowledge topic."""
-    return await _call_tool_json("memory_read_topic", {"filename": filename, "scope": scope})
+    filename: Annotated[
+        str,
+        Field(description="The filename of the knowledge topic (e.g., 'python_setup.md')."),
+    ],
+    scope: Annotated[
+        ScopeInput,
+        Field(description="Optional scope input. Use a canonical scope object, or pass a string shorthand that auto-maps to project scope (path-like values -> project.root_uri, otherwise -> project.slug)."),
+    ] = None,
+) -> TopicDetailOutput:
+    """Read the full markdown content of a knowledge topic. Use memory_browse first to see
+   available topics."""
+    return await _call_tool_result("memory_read_topic", {"filename": filename, "scope": scope})
 
 
 @_tracked_tool()
-async def memory_hygiene_scan() -> str:
-    """Scan the corpus for noisy episodes and orphaned active claims."""
-    return await _call_tool_json("memory_hygiene_scan", {})
+async def memory_hygiene_scan() -> HygieneScanOutput:
+    """Read-only corpus hygiene report: noisy episode candidates, orphaned active claims, and stale
+   episode sources. Use before batch cleanup."""
+    return await _call_tool_result("memory_hygiene_scan", {})
 
 
 @_tracked_tool()
 async def memory_hygiene_apply(
-    episode_ids: list[str] | None = None,
-    use_recommended: bool = False,
-    expire_orphans: bool = False,
-    dry_run: bool = False,
-) -> str:
-    """Apply corpus hygiene cleanup (forget episodes, optionally expire orphans)."""
+    episode_ids: Annotated[
+        list[str] | None,
+        Field(description="Explicit episode UUIDs to forget."),
+    ] = None,
+    use_recommended: Annotated[
+        bool,
+        Field(description="Forget all episodes flagged by the latest hygiene scan (temp/test, exchange, noise journal)."),
+    ] = False,
+    expire_orphans: Annotated[
+        bool,
+        Field(description="Expire active claims that lost all provenance."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        Field(description="Preview actions without mutating the corpus."),
+    ] = False,
+) -> HygieneApplyOutput:
+    """Apply corpus hygiene: forget selected or recommended noisy episodes and optionally expire
+   orphaned claims. Irreversible unless dry_run=true."""
     payload: dict[str, object] = {
         "use_recommended": use_recommended,
         "expire_orphans": expire_orphans,
@@ -1450,25 +1902,56 @@ async def memory_hygiene_apply(
     }
     if episode_ids is not None:
         payload["episode_ids"] = episode_ids
-    return await _call_tool_json("memory_hygiene_apply", payload)
+    return await _call_tool_result("memory_hygiene_apply", payload)
 
 
 @_tracked_tool()
-async def memory_policy_list() -> str:
-    """List persisted access policies and ACL bindings."""
-    return await _call_tool_json("memory_policy_list", {})
+async def memory_policy_list() -> PolicyListOutput:
+    """List persisted namespace/project access policies and ACL bindings. Use to inspect who can read or write memory in self-hosted deployments. Like scope discovery, this listing is deployment-wide: it is NOT filtered by read_visibility or the caller's scope, so it names every persisted binding, including principals the caller cannot read into."""
+    return await _call_tool_result("memory_policy_list", {})
+
+
+@_tracked_tool()
+async def memory_scope_list(
+    limit: Annotated[
+        int,
+        Field(description="Maximum number of scopes to return (1-1000)."),
+    ] = 100,
+    offset: Annotated[
+        int,
+        Field(description="0-based offset into the ordered scope list for page iteration; combine with limit."),
+    ] = 0,
+) -> ScopeListOutput:
+    """Discover which scopes exist: lists every scope that has stored data, with per-table usage counts and a canonical scope envelope you can pass back as the scope argument of other tools. Counts cover live rows only. This listing is deployment-wide: it is a topology audit, intentionally NOT filtered by read_visibility, policy or the caller's scope, so it names every scope that holds data. No content is read through it. Keep the MCP subprocess off untrusted multi-tenant deployments without OS-level isolation."""
+    return await _call_tool_result("memory_scope_list", {"limit": limit, "offset": offset})
 
 
 @_tracked_tool()
 async def memory_policy_grant(
-    principal_type: str,
-    principal_key: str,
-    namespace: str | None = None,
-    project: str | None = None,
-    write_mode: str | None = None,
-    read_visibility: str | None = None,
-) -> str:
-    """Create or update a persisted policy ACL binding."""
+    principal_type: Annotated[
+        str,
+        Field(description="Principal type (e.g. app_client, agent_name)."),
+    ],
+    principal_key: Annotated[
+        str,
+        Field(description="Principal key (e.g. python_sdk:legacy_client)."),
+    ],
+    namespace: Annotated[
+        str | None,
+        Field(description="Namespace slug selector (wildcard when omitted)."),
+    ] = None,
+    project: Annotated[
+        str | None,
+        Field(description="Project slug selector (wildcard when omitted)."),
+    ] = None,
+    write_mode: Annotated[str | None, Field(description="Write policy for the principal.")] = None,
+    read_visibility: Annotated[
+        str | None,
+        Field(description="Read visibility policy for the principal."),
+    ] = None,
+) -> PolicyGrantOutput:
+    """Create or update a persisted ACL binding for a principal. Omitted namespace or project
+   selectors act as wildcards. Provide at least one of write_mode or read_visibility."""
     payload: dict[str, object] = {
         "principal_type": principal_type,
         "principal_key": principal_key,
@@ -1481,7 +1964,188 @@ async def memory_policy_grant(
         payload["write_mode"] = write_mode
     if read_visibility is not None:
         payload["read_visibility"] = read_visibility
-    return await _call_tool_json("memory_policy_grant", payload)
+    return await _call_tool_result("memory_policy_grant", payload)
+
+
+_ERROR_OUTPUT_ARM: dict[str, Any] = {
+    "type": "object",
+    "title": "ToolErrorPayload",
+    "description": "Tool execution error payload published alongside isError=true results.",
+    "properties": {"error": {"type": "string", "description": "Actionable error message."}},
+    "required": ["error"],
+    "additionalProperties": True,
+}
+
+# Tool name -> the exact dict object published for it. Identity is the cache key:
+# a re-registered tool gets a fresh schema object, so it is republished instead of
+# being skipped as "already done".
+_PUBLISHED_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {}
+
+
+def _publish_output_schemas() -> list[str]:
+    """Publish each tool's output schema as anyOf[success contract, error payload].
+
+    Success payloads are validated against the contract model itself; error
+    results skip output validation and carry ``{"error": ...}`` instead, so the
+    published schema has to accept both shapes (MCP spec: clients validate
+    structured results against outputSchema).
+
+    Idempotent and self-healing: called at import, on every tool listing, and at
+    lifespan startup. A tool registered after import (plugins, a future dynamic
+    tool) is published on the next listing instead of serving a success-only
+    schema forever. The cache check is the published ``anyOf`` marker itself, so
+    repeat calls rebuild nothing and can never re-wrap an already-wrapped arm.
+    Returns the problems found (a tool with no output schema at all) for the
+    caller to report.
+    """
+    problems: list[str] = []
+    for name, tool in mcp_compat.registered_tools(mcp).items():
+        schema = mcp_compat.output_schema_dict(tool)
+        if schema is None:
+            problems.append(f"{name}: handler has no annotated return contract, so no outputSchema")
+            continue
+        if _PUBLISHED_OUTPUT_SCHEMAS.get(name) is schema:
+            continue
+        if "anyOf" in schema:
+            # Already carries the two-arm contract (published here or by a
+            # caller that owns it); adopt it instead of nesting a second pair.
+            _PUBLISHED_OUTPUT_SCHEMAS[name] = schema
+            continue
+        success = dict(schema)
+        defs = success.pop("$defs", None)
+        # Root "type" keeps pre-2026 protocol validators (which require it) happy;
+        # both anyOf arms are objects, so the conjunction stays accurate.
+        published: dict[str, Any] = {"type": "object", "anyOf": [success, _ERROR_OUTPUT_ARM]}
+        if defs is not None:
+            published["$defs"] = defs
+        mcp_compat.set_output_schema(tool, published)
+        _PUBLISHED_OUTPUT_SCHEMAS[name] = published
+    return problems
+
+
+def _verify_published_output_schemas(unrepairable: Sequence[str] = ()) -> None:
+    """Fail startup unless every registered tool publishes the two-arm contract.
+
+    This is the guard the previous one-shot import-time publication lacked: a
+    private-SDK rename used to strip ``outputSchema`` from every tool (or leave
+    a success-only one) with no error anywhere. A client that trusted the
+    contract would then reject every ``{"error": ...}`` failure payload. Raise
+    at startup instead of degrading silently.
+
+    Pure verification — it never repairs, so it can actually fail. Callers run
+    :func:`_publish_output_schemas` first and pass the problems it could not fix
+    (a tool with no annotated return contract) in as ``unrepairable``.
+    """
+    problems = list(unrepairable)
+    for name, tool in mcp_compat.registered_tools(mcp).items():
+        schema = mcp_compat.output_schema_dict(tool) or {}
+        arms = schema.get("anyOf")
+        if not isinstance(arms, list) or len(arms) != 2:
+            problems.append(f"{name}: published outputSchema is not anyOf[success, error]")
+            continue
+        if arms[1].get("title") != "ToolErrorPayload" or arms[1].get("required") != ["error"]:
+            problems.append(f"{name}: published outputSchema is missing the ToolErrorPayload arm")
+    if not problems:
+        return
+    raise mcp_compat.MCPCompatError(
+        "MCP outputSchema contract is incomplete at startup: "
+        + "; ".join(problems)
+        + f". Installed mcp: {mcp_compat.installed_mcp_version()}; supported range: "
+        f"mcp {mcp_compat.MCP_COMPAT_REQUIREMENT}. See consolidation_memory/mcp_compat.py for the "
+        "private SDK surfaces this depends on."
+    )
+
+
+def _publish_and_verify_output_schemas() -> None:
+    """Repair what can be repaired, then fail on whatever is still broken."""
+    _verify_published_output_schemas(_publish_output_schemas())
+
+
+# Sentinel argument name probed against the shared contract. It is not a
+# published key of any tool, so accepting it is a contract failure.
+_ARGUMENT_DRIFT_PROBE = "undeclared_contract_probe"
+
+
+def _verify_published_argument_contract() -> None:
+    """Fail startup unless the SDK's enforced arguments are the dispatch contract.
+
+    The two surfaces cannot share one code path: the MCP SDK validates a request
+    against the per-tool arg model derived from the handler signature *before*
+    any body runs, so ``reject_unknown_arguments`` is unreachable for MCP calls
+    and the SDK check stays as the fast path. What this guard adds is the
+    delegation that is possible — every registered tool is looked up in
+    :func:`tool_dispatch.accepted_argument_names` (the published contract, read
+    from ``schemas.openai_tools``) and compared with the argument set the SDK
+    actually enforces, in both directions: the shared helper must accept every
+    name the SDK accepts, and must refuse an undeclared key.
+
+    A silent divergence here is the exact failure this PR exists to prevent: MCP
+    would reject a key the other three surfaces run happily, or accept one they
+    refuse. Raise at startup instead.
+    """
+    problems: list[str] = []
+    for name, tool in mcp_compat.registered_tools(mcp).items():
+        enforced = frozenset((getattr(tool, "parameters", None) or {}).get("properties") or {})
+        shared = accepted_argument_names(name)
+        if shared is None:
+            problems.append(
+                f"{name}: registered on MCP but absent from schemas.openai_tools, so the "
+                "dispatch seam enforces no contract for it"
+            )
+            continue
+        if enforced != shared:
+            problems.append(
+                f"{name}: MCP accepts {sorted(enforced) or '[]'} but the published inputSchema "
+                f"declares {sorted(shared) or '[]'}"
+            )
+            continue
+        parameters = getattr(tool, "parameters", None) or {}
+        if parameters.get("additionalProperties") is not False:
+            problems.append(
+                f"{name}: MCP inputSchema does not publish additionalProperties: false, so "
+                "the SDK lost its strict extra-key check"
+            )
+        try:
+            reject_unknown_arguments(name, {key: None for key in enforced})
+        except ToolContractError as exc:
+            problems.append(f"{name}: the SDK accepts arguments the shared contract refuses ({exc})")
+        try:
+            reject_unknown_arguments(name, {_ARGUMENT_DRIFT_PROBE: None})
+        except ToolContractError:
+            continue
+        problems.append(
+            f"{name}: the shared contract accepts {_ARGUMENT_DRIFT_PROBE!r}, which MCP rejects"
+        )
+    if not problems:
+        return
+    raise mcp_compat.MCPCompatError(
+        "MCP tool-argument contract has drifted from the published inputSchema: "
+        + "; ".join(problems)
+        + ". Keep the handler signature and the published schema in sync; both surfaces enforce "
+        "the published inputSchema and must accept exactly the same argument names."
+    )
+
+
+_publish_and_verify_output_schemas()
+_verify_published_argument_contract()
+_verify_tool_descriptions()
+
+
+def _verify_every_contract() -> None:
+    """Repair and verify all three contracts on a tool listing.
+
+    The heal wrapper used to call ``_publish_output_schemas`` alone, so a tool
+    registered at runtime was repaired but never checked: its argument set and its
+    description were never compared against the published contract. Point the
+    wrapper at the same three checks the import-time path runs, so late
+    registration is as strictly served as import-time registration.
+    """
+    _publish_and_verify_output_schemas()
+    _verify_published_argument_contract()
+    _verify_tool_descriptions()
+
+
+mcp_compat.install_list_tools_heal(mcp, _verify_every_contract)
 
 
 def run_server() -> None:

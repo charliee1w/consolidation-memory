@@ -48,9 +48,11 @@ class TestRecallBudget:
         )
 
         deadline = time.monotonic() + 0.01
-        with recall_budget.recall_deadline(deadline):
-            with pytest.raises(recall_budget.RecallBudgetExceeded):
-                encode_documents(["one", "two", "three"])
+        with (
+            recall_budget.recall_deadline(deadline),
+            pytest.raises(recall_budget.RecallBudgetExceeded),
+        ):
+            encode_documents(["one", "two", "three"])
 
     def test_embed_items_incremental_returns_none_when_budget_exhausted(self, monkeypatch, tmp_path):
         monkeypatch.setenv("CONSOLIDATION_MEMORY_EMBEDDING_DISK_CACHE_ENABLED", "0")

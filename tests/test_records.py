@@ -16,7 +16,6 @@ from consolidation_memory.database import (
 from consolidation_memory.types import RecordType
 from tests.helpers import mock_embed_items_incremental
 
-
 # ── Database CRUD ────────────────────────────────────────────────────────────
 
 class TestRecordCRUD:
@@ -196,7 +195,7 @@ class TestExtractionValidation:
             "title": "T", "summary": "S",
             "records": [{"type": "fact", "subject": ""}],
         }
-        valid, failures = _validate_extraction_output(data, [])
+        valid, _failures = _validate_extraction_output(data, [])
         assert not valid
 
     def test_vague_summary(self):

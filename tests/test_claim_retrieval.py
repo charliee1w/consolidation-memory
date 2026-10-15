@@ -17,6 +17,7 @@ from tests.helpers import mock_encode
 
 try:
     from fastapi.testclient import TestClient
+
     from consolidation_memory.rest import create_app
 
     HAS_FASTAPI = True

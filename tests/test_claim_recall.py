@@ -9,9 +9,9 @@ from consolidation_memory.context_assembler import _search_claims, recall
 from consolidation_memory.database import (
     ensure_schema,
     insert_claim_event,
-    record_action_outcome,
-    insert_episode,
     insert_claim_sources,
+    insert_episode,
+    record_action_outcome,
     upsert_claim,
 )
 from consolidation_memory.vector_store import VectorStore

@@ -24,7 +24,6 @@ from datetime import datetime, timezone
 import numpy as np
 
 from consolidation_memory.database import get_all_active_records
-from consolidation_memory.embedding_disk_cache import clear_namespace as _clear_disk_namespace
 from consolidation_memory.embedding_disk_cache import embed_items_incremental
 from consolidation_memory.utils import parse_datetime
 
@@ -49,12 +48,15 @@ _scoped_cache: "OrderedDict[tuple[bool, tuple[tuple[str, str], ...]], dict]" = O
 
 
 def invalidate() -> None:
-    """Force re-embedding on next get_record_vecs() call."""
+    """Rebuild the matrix on the next get_record_vecs() call.
+
+    The on-disk vectors stay: they are keyed by id and content hash, so only
+    items whose text changed are embedded again.
+    """
     global _version
     with _lock:
         _version += 1
         _scoped_cache.clear()
-    _clear_disk_namespace("records")
 
 
 def _scope_cache_key(scope: dict[str, str | None]) -> tuple[tuple[str, str], ...]:
@@ -89,10 +91,7 @@ def _is_record_current(record: dict, reference_time: datetime | None = None) -> 
         return False
 
     valid_until = _normalize_datetime(record.get("valid_until"))
-    if valid_until and valid_until <= now:
-        return False
-
-    return True
+    return not (valid_until and valid_until <= now)
 
 
 def _filter_unexpired(

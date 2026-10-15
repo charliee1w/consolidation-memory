@@ -152,6 +152,11 @@ jobs:
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
         run: python scripts/smoke_builder_base.py
 
+      - name: MCP stdio wire smoke
+        if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
+        timeout-minutes: 10
+        run: python scripts/smoke_mcp_stdio.py
+
       - name: ResourceWarning gate
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
         run: python -m pytest tests/ -q -W error::ResourceWarning
@@ -194,4 +199,5 @@ jobs:
           tests/test_temporal_belief_queries.py
           tests/test_dashboard.py
           tests/test_dashboard_data.py
+          tests/test_desktop_app.py
           -q

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import importlib
 import logging
-import sys
 import threading
 from typing import Any
 
@@ -210,11 +209,7 @@ class PluginManager:
         from importlib.metadata import entry_points
 
         eps: Any
-        if sys.version_info >= (3, 10):
-            eps = entry_points(group=_EP_GROUP)
-        else:
-            all_eps = entry_points()
-            eps = all_eps.get(_EP_GROUP, [])  # type: ignore[union-attr]
+        eps = entry_points(group=_EP_GROUP)  # type: ignore[union-attr]
 
         for ep in eps:
             try:

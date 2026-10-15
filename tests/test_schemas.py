@@ -5,22 +5,29 @@ Run with: python -m pytest tests/test_schemas.py -v
 
 from unittest.mock import MagicMock
 
-from consolidation_memory.schemas import openai_tools, dispatch_tool_call
+import pytest
+
+from consolidation_memory.schemas import dispatch_tool_call, openai_tools
+from consolidation_memory.tool_dispatch import (
+    ToolContractError,
+    accepted_argument_names,
+    execute_tool_call,
+)
 from consolidation_memory.types import (
-    BrowseResult,
-    StoreResult,
     BatchStoreResult,
-    CorrectResult,
-    ExportResult,
-    RecallResult,
-    SearchResult,
+    BrowseResult,
     ClaimBrowseResult,
     ClaimSearchResult,
+    CorrectResult,
+    ExportResult,
+    ForgetResult,
     OutcomeBrowseResult,
     OutcomeRecordResult,
-    ForgetResult,
     ProtectResult,
+    RecallResult,
+    SearchResult,
     StatusResult,
+    StoreResult,
     TimelineResult,
     TopicDetailResult,
 )
@@ -55,6 +62,7 @@ class TestSchemaStructure:
             "memory_decay_report",
             "memory_consolidation_log",
             "memory_policy_list",
+            "memory_scope_list",
             "memory_policy_grant",
             "memory_hygiene_scan",
             "memory_hygiene_apply",
@@ -829,3 +837,99 @@ class TestDispatch:
             "error": "content_types[1] must be one of: exchange, fact, preference, procedure, solution"
         }
         client.query_search.assert_not_called()
+
+
+class TestDispatchArgumentContract:
+    """The published ``additionalProperties: false`` is applied, not just declared."""
+
+    def test_unknown_arguments_raise_instead_of_being_dropped(self):
+        client = MagicMock()
+
+        with pytest.raises(ToolContractError) as excinfo:
+            dispatch_tool_call(client, "memory_policy_list", {"junk": 1, "dry_run": True})
+
+        message = str(excinfo.value)
+        assert "memory_policy_list" in message
+        assert "junk" in message
+        assert "dry_run" in message
+        assert "Extra inputs are not permitted" in message
+        assert "inputSchema" in message
+
+    def test_unknown_arguments_never_come_back_as_a_soft_error_payload(self):
+        """A rejection must not look like a tool result the caller can feed back."""
+        client = MagicMock()
+
+        with pytest.raises(ToolContractError):
+            dispatch_tool_call(client, "memory_policy_list", {"junk": 1, "dry_run": True})
+
+    def test_declared_arguments_still_dispatch(self):
+        client = MagicMock()
+
+        result = dispatch_tool_call(client, "memory_policy_list", {})
+
+        assert "error" not in result
+        assert result["status"] == "ok"
+
+    def test_a_key_is_accepted_only_where_the_schema_declares_it(self):
+        client = MagicMock()
+
+        assert dispatch_tool_call(client, "memory_hygiene_apply", {"dry_run": True})["status"] == "dry_run"
+
+        with pytest.raises(ToolContractError, match="dry_run"):
+            dispatch_tool_call(client, "memory_policy_list", {"dry_run": True})
+
+    def test_nested_scope_objects_are_not_flagged(self):
+        client = MagicMock()
+        client.store_with_scope.return_value = StoreResult(status="stored", id="scoped")
+
+        dispatch_tool_call(
+            client,
+            "memory_store",
+            {
+                "content": "test",
+                "scope": {
+                    "namespace": {"slug": "team-a"},
+                    "policy": {"write_mode": "deny"},
+                },
+            },
+        )
+
+        client.store_with_scope.assert_called_once()
+
+    def test_recall_deadline_is_a_keyword_not_an_argument(self):
+        """Dispatch accepts a caller-set deadline without declaring it.
+
+        The deadline arrives as its own keyword, so it never appears in the
+        published argument set and no key has to be exempted from the contract.
+        """
+        client = MagicMock()
+        client.query_recall.return_value = RecallResult(episodes=[], knowledge=[])
+
+        dispatch_tool_call(
+            client,
+            "memory_recall",
+            {"query": "test"},
+            recall_deadline_monotonic=123.5,
+        )
+
+        assert "_recall_deadline_monotonic" not in accepted_argument_names("memory_recall")
+        assert client.query_recall.call_args.kwargs["recall_deadline_monotonic"] == 123.5
+
+    def test_the_old_deadline_argument_key_is_rejected_for_any_tool(self):
+        client = MagicMock()
+        client.query_recall.return_value = RecallResult(episodes=[], knowledge=[])
+
+        with pytest.raises(ToolContractError, match="_recall_deadline_monotonic"):
+            dispatch_tool_call(
+                client,
+                "memory_recall",
+                {"query": "test", "_recall_deadline_monotonic": 123.5},
+            )
+
+    def test_dispatch_seam_rejects_unknown_arguments_for_the_rest_path_too(self):
+        """rest.py hands execute_tool_call straight to the tool, so both reject."""
+        with pytest.raises(ToolContractError):
+            execute_tool_call("memory_policy_list", {"junk": 1, "dry_run": True})
+
+    def test_contract_error_is_a_value_error_so_rest_maps_it_to_422(self):
+        assert issubclass(ToolContractError, ValueError)

@@ -70,55 +70,55 @@ def run_smoke() -> None:
         with (
             patch("consolidation_memory.backends.encode_documents", side_effect=_encode_documents),
             patch("consolidation_memory.backends.encode_query", side_effect=_encode_query),
+            MemoryClient(auto_consolidate=False) as client,
         ):
-            with MemoryClient(auto_consolidate=False) as client:
-                s1 = client.store(
-                    "Builder smoke: plugin hook review workflow",
-                    content_type="fact",
-                    tags=["smoke", "builder"],
-                )
-                _assert(s1.status == "stored", "store() did not return status=stored")
+            s1 = client.store(
+                "Builder smoke: plugin hook review workflow",
+                content_type="fact",
+                tags=["smoke", "builder"],
+            )
+            _assert(s1.status == "stored", "store() did not return status=stored")
 
-                s2 = client.store(
-                    "Builder smoke: run pytest and mypy before release",
-                    content_type="solution",
-                    tags=["smoke", "ci"],
-                )
-                _assert(s2.status == "stored", "second store() did not return status=stored")
+            s2 = client.store(
+                "Builder smoke: run pytest and mypy before release",
+                content_type="solution",
+                tags=["smoke", "ci"],
+            )
+            _assert(s2.status == "stored", "second store() did not return status=stored")
 
-                recall_result = client.recall(
-                    "Builder smoke: plugin hook review workflow",
-                    n_results=5,
-                    include_knowledge=False,
-                )
-                _assert(recall_result.total_episodes >= 1, "recall() returned no episodes")
+            recall_result = client.recall(
+                "Builder smoke: plugin hook review workflow",
+                n_results=5,
+                include_knowledge=False,
+            )
+            _assert(recall_result.total_episodes >= 1, "recall() returned no episodes")
 
-                search_result = client.search("run pytest and mypy", limit=5)
-                _assert(search_result.total_matches >= 1, "search() returned no matches")
+            search_result = client.search("run pytest and mypy", limit=5)
+            _assert(search_result.total_matches >= 1, "search() returned no matches")
 
-                status_result = client.status()
-                _assert(
-                    status_result.episodic_buffer["total"] >= 2,
-                    "status() episodic buffer count is unexpectedly low",
-                )
+            status_result = client.status()
+            _assert(
+                status_result.episodic_buffer["total"] >= 2,
+                "status() episodic buffer count is unexpectedly low",
+            )
 
-                _assert(len(openai_tools) >= 10, "openai_tools list is unexpectedly short")
-                tool_result = dispatch_tool_call(
-                    client,
-                    "memory_recall",
-                    {
-                        "query": "plugin hook review workflow",
-                        "n_results": 3,
-                        "include_knowledge": False,
-                    },
-                )
-                episodes = tool_result.get("episodes", [])
-                _assert(bool(episodes), "dispatch_tool_call(memory_recall) returned no episodes")
+            _assert(len(openai_tools) >= 10, "openai_tools list is unexpectedly short")
+            tool_result = dispatch_tool_call(
+                client,
+                "memory_recall",
+                {
+                    "query": "plugin hook review workflow",
+                    "n_results": 3,
+                    "include_knowledge": False,
+                },
+            )
+            episodes = tool_result.get("episodes", [])
+            _assert(bool(episodes), "dispatch_tool_call(memory_recall) returned no episodes")
 
-                exported = client.export()
-                _assert(exported.path is not None, "export() did not return a path")
-                export_path = Path(str(exported.path))
-                _assert(export_path.exists(), "export() path does not exist on disk")
+            exported = client.export()
+            _assert(exported.path is not None, "export() did not return a path")
+            export_path = Path(str(exported.path))
+            _assert(export_path.exists(), "export() path does not exist on disk")
 
         close_all_connections()
 

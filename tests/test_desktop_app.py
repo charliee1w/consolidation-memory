@@ -92,7 +92,7 @@ class TestDesktopBackend:
 
 class TestDesktopImportGuards:
     def test_run_desktop_app_raises_without_pyside6(self):
-        import consolidation_memory.desktop_app as desktop_app
+        from consolidation_memory import desktop_app
 
         original = desktop_app._PYSIDE_AVAILABLE
         desktop_app._PYSIDE_AVAILABLE = False

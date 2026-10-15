@@ -77,9 +77,9 @@ def solution_store_shape_warnings(content: str) -> list[str]:
         return []
 
     return [
-        "Solution episode lacks Problem:/JSON problem+fix/path anchor; "
+        ("Solution episode lacks Problem:/JSON problem+fix/path anchor; "
         "recall may rank poorly. Prefer: Problem: <symptom>\\nFix: <how>\\n"
-        "Context: path:src/... or structured JSON with type=solution."
+        "Context: path:src/... or structured JSON with type=solution.")
     ]
 
 

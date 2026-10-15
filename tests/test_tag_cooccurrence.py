@@ -10,9 +10,7 @@ from consolidation_memory.database import (
     get_tag_pairs_in_set,
     update_tag_cooccurrence,
 )
-
 from tests.helpers import make_normalized_vec as _make_normalized_vec
-
 
 # ── Schema migration ──────────────────────────────────────────────────────────
 

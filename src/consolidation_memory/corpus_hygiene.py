@@ -15,6 +15,7 @@ from consolidation_memory.database import (
     soft_delete_episode,
 )
 from consolidation_memory.episode_embedding import solution_store_shape_warnings
+from consolidation_memory.types import HygieneApplyResult
 from consolidation_memory.vector_store import VectorStore
 
 _TEMP_PATTERNS = (
@@ -312,7 +313,12 @@ def apply_corpus_hygiene(
     expire_orphans: bool = False,
     dry_run: bool = False,
 ) -> dict[str, object]:
-    """Forget selected episodes and optionally repair orphaned claims."""
+    """Forget selected episodes and optionally repair orphaned claims.
+
+    Returns the ``HygieneApplyResult`` payload: identical keys in both modes,
+    with ``status`` ``dry_run`` for the preview and ``applied`` once the
+    cleanup is committed (``forgotten``/``not_found`` stay 0 for a dry run).
+    """
     ensure_schema()
     scan = scan_corpus_hygiene()
     recommended = list(scan["episodes"]["recommended_cleanup_ids"])  # type: ignore[index]
@@ -328,13 +334,13 @@ def apply_corpus_hygiene(
     if dry_run:
         if expire_orphans:
             orphan_report = repair_orphaned_claims(dry_run=True)
-        return {
-            "status": "dry_run",
-            "episode_targets": len(targets),
-            "episode_ids": targets,
-            "expire_orphans": expire_orphans,
-            "orphan_repair": orphan_report,
-        }
+        return HygieneApplyResult(
+            status="dry_run",
+            episode_targets=len(targets),
+            episode_ids=targets,
+            expire_orphans=expire_orphans,
+            orphan_repair=orphan_report,
+        ).as_payload()
 
     vector_store = VectorStore()
     forgotten = 0
@@ -365,11 +371,12 @@ def apply_corpus_hygiene(
     if expire_orphans:
         orphan_report = repair_orphaned_claims(dry_run=False)
 
-    return {
-        "status": "ok",
-        "forgotten": forgotten,
-        "not_found": not_found,
-        "episode_targets": len(targets),
-        "expire_orphans": expire_orphans,
-        "orphan_repair": orphan_report,
-    }
+    return HygieneApplyResult(
+        status="applied",
+        forgotten=forgotten,
+        not_found=not_found,
+        episode_targets=len(targets),
+        episode_ids=targets,
+        expire_orphans=expire_orphans,
+        orphan_repair=orphan_report,
+    ).as_payload()

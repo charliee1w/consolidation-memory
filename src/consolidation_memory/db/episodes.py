@@ -8,8 +8,9 @@ import re
 import sqlite3
 import threading
 import uuid
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from consolidation_memory.db._helpers import _normalize_id_tokens, _now
 from consolidation_memory.db.connection import get_connection
@@ -260,7 +261,7 @@ def increment_access(episode_ids: list[str]) -> None:
             updated_at = ? WHERE id IN ({placeholders})"""
         conn.execute(
             query,
-            [_now()] + episode_ids,
+            [_now(), *episode_ids],
         )
 
 
@@ -275,7 +276,7 @@ def mark_consolidated(episode_ids: list[str], topic_filename: str) -> None:
             WHERE id IN ({placeholders})"""
         conn.execute(
             query,
-            [now, topic_filename, now] + episode_ids,
+            [now, topic_filename, now, *episode_ids],
         )
 
 
@@ -289,7 +290,7 @@ def mark_pruned(episode_ids: list[str]) -> None:
             WHERE id IN ({placeholders}) AND consolidated = 1"""
         conn.execute(
             query,
-            [now] + episode_ids,
+            [now, *episode_ids],
         )
 
 

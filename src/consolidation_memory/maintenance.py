@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -104,10 +105,9 @@ def reindex_all_episodes() -> dict[str, Any]:
         with os.fdopen(map_fd, "w", encoding="utf-8") as handle:
             json.dump(all_ids, handle)
             handle.flush()
-            try:
+            # Best-effort durability: fsync is unsupported on some filesystems.
+            with contextlib.suppress(OSError):
                 os.fsync(handle.fileno())
-            except OSError:
-                pass
     except Exception as exc:
         os.unlink(idx_tmp)
         os.unlink(map_tmp)
@@ -118,10 +118,9 @@ def reindex_all_episodes() -> dict[str, Any]:
         with os.fdopen(tomb_fd, "w", encoding="utf-8") as handle:
             json.dump([], handle)
             handle.flush()
-            try:
+            # Best-effort durability: fsync is unsupported on some filesystems.
+            with contextlib.suppress(OSError):
                 os.fsync(handle.fileno())
-            except OSError:
-                pass
     except Exception as exc:
         os.unlink(idx_tmp)
         os.unlink(map_tmp)

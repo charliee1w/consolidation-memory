@@ -6,7 +6,9 @@ Fast-path consolidation extracts structured knowledge **without calling the LLM*
 
 1. Unconsolidated episodes are clustered (embedding similarity + scope isolation).
 2. For each cluster, `try_fast_path_extraction()` runs **before** LLM extraction.
-3. **Every episode in the cluster** must parse successfully. If any episode is ambiguous, the cluster falls back to the LLM (or fails when the LLM backend is disabled).
+3. **Every episode in the cluster** must parse successfully. If any episode is
+   ambiguous, the cluster falls back to the LLM (or fails when the LLM backend
+   is disabled).
 4. Successful fast-path merges use deterministic merge logic only — no LLM merge prompts.
 
 Inspect results via `memory_status` / `MemoryClient.status()`:
@@ -21,6 +23,12 @@ Inspect results via `memory_status` / `MemoryClient.status()`:
 | `CONSOLIDATION_FAST_PATH_ENABLED` | `true` | Master switch for deterministic extraction |
 | `CONSOLIDATION_MIN_CLUSTER_SIZE` | `2` | Set to `1` to consolidate singleton structured episodes in tests or small corpora |
 | `llm.backend` | `lmstudio` | Set to `disabled` for LLM-free consolidation of eligible episodes only |
+
+Every scalar `Config` field is also settable as
+`CONSOLIDATION_MEMORY_<FIELD_NAME>`, so the first two are `llm.backend =
+"disabled"`, `consolidation.min_cluster_size = 1` in TOML or
+`CONSOLIDATION_MEMORY_LLM_BACKEND=disabled`,
+`CONSOLIDATION_MEMORY_CONSOLIDATION_MIN_CLUSTER_SIZE=1` in the environment.
 
 TOML example:
 
@@ -41,7 +49,19 @@ min_cluster_size = 1
 
 ## Structured JSON (all record types)
 
-Store JSON with a `type` field and required keys. Optional fields are kept when present.
+Content must start with `{` and parse as an object. Required and optional keys:
+
+| `type` | Required | Optional |
+| --- | --- | --- |
+| `fact` | `subject`, `info` | — |
+| `solution` | `problem`, `fix` | `context` |
+| `preference` | `key`, `value` | `context` |
+| `procedure` | `trigger`, `steps` | `context` |
+| `strategy` | `problem_pattern`, `strategy` | `preconditions`, `expected_signals`, `failure_modes`, `context` |
+
+Non-string values are coerced to text; a list becomes its items joined with
+`" | "`. Missing required fields or an unknown `type` does **not** fast-path —
+the cluster falls back to the LLM.
 
 ### Fact
 
@@ -88,6 +108,9 @@ mem.store(
 
 ### Strategy
 
+`strategy` is a consolidation-only record type: store the JSON with any ingest
+`content_type` (see [CONTRIBUTING.md](../CONTRIBUTING.md#episode-content_type-vs-record-type)).
+
 ```json
 {
   "type": "strategy",
@@ -97,8 +120,6 @@ mem.store(
 }
 ```
 
-Incomplete JSON (missing required fields) does **not** fast-path — the cluster falls back to the LLM.
-
 ## Preference text (`content_type="preference"`)
 
 **User prefers …**
@@ -107,7 +128,9 @@ Incomplete JSON (missing required fields) does **not** fast-path — the cluster
 User prefers short PR summaries with concrete file paths.
 ```
 
-Key defaults to episode tags (first tag, or joined tags) when no `for …` clause is present.
+The key is the `for …` clause when present; otherwise it comes from the episode
+tags (the single tag, or the first three joined with `, `), falling back to
+`general` when there are no tags.
 
 **With explicit key**
 
@@ -165,7 +188,11 @@ Re-embed existing episodes after upgrading: `consolidation-memory reindex`.
 
 ## Path-anchored solution (`content_type="solution"` or `"fact"`)
 
-The solution parser requires at least one **file path** in the episode content (detected by the anchor extractor). Without a path, the episode is not fast-path eligible via this parser (use structured JSON instead).
+The solution parser requires at least one **file path** in the episode content
+(detected by the anchor extractor). Without a path, the episode is not
+fast-path eligible via this parser (use structured JSON instead). It recognizes
+`problem:` / `issue:` / `error:` and `fix:` / `solution:` / `resolution:` line
+labels, in any case.
 
 **Problem + Fix lines**
 
@@ -187,7 +214,10 @@ Tests fail in tests/test_auth.py when JWT secret is missing.
 Set AUTH_JWT_SECRET in .env and run pytest tests/test_auth.py
 ```
 
-The first sentence becomes `problem`; a line containing the path becomes `fix`. Detected paths are stored in `context`.
+Resolution order: an explicit `problem:` line, else the inline-fix prefix, else
+the first sentence. The fix is an explicit `fix:` line, else the inline
+sentence after `Fix:`, else the first line containing a detected path, else the
+whole content. Detected paths (up to five) are stored in `context`.
 
 ## What does not fast-path
 

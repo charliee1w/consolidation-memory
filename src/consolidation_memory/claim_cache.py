@@ -12,7 +12,6 @@ import threading
 
 import numpy as np
 
-from consolidation_memory.embedding_disk_cache import clear_namespace as _clear_disk_namespace
 from consolidation_memory.embedding_disk_cache import embed_items_incremental
 from consolidation_memory.query_semantics import parse_claim_payload
 
@@ -28,13 +27,16 @@ _cache: dict[str, object] = {
 
 
 def invalidate() -> None:
-    """Force re-embedding on next get_claim_vecs() call."""
+    """Rebuild the matrix on the next get_claim_vecs() call.
+
+    The on-disk vectors stay: they are keyed by id and content hash, so only
+    items whose text changed are embedded again.
+    """
     global _version
     with _lock:
         _version += 1
         _cache["signature"] = None
         _cache["vecs"] = None
-    _clear_disk_namespace("claims")
 
 
 def build_claim_texts(claims: list[dict]) -> tuple[list[dict[str, object]], list[str]]:

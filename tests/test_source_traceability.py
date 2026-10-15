@@ -10,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from consolidation_memory.context_assembler import (
-    _format_source_dates,
     _enrich_source_traceability,
+    _format_source_dates,
 )
 
 FIXED_NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)

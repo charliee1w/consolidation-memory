@@ -70,7 +70,7 @@ class FastEmbedEmbeddingBackend:
             raise ImportError(
                 "fastembed is required for the fastembed backend. "
                 "Install it with: pip install consolidation-memory[fastembed]"
-            )
+            ) from None
 
         resolved_cache_dir = _prepare_fastembed_cache_dir(cache_dir)
         logger.info(

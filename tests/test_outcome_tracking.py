@@ -9,8 +9,8 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from consolidation_memory.client import MemoryClient
 from consolidation_memory.cli import cmd_import
+from consolidation_memory.client import MemoryClient
 from consolidation_memory.config import get_config
 from consolidation_memory.database import (
     close_all_connections,
@@ -229,7 +229,8 @@ def test_outcome_export_import_round_trip(tmp_data_dir):
     finally:
         client.close()
 
-    exported = json.loads(open(export_result.path, encoding="utf-8").read())
+    with open(export_result.path, encoding="utf-8") as exported_file:
+        exported = json.loads(exported_file.read())
     assert len(exported["action_outcomes"]) == 1
     assert len(exported["action_outcome_sources"]) >= 1
     assert len(exported["action_outcome_refs"]) == 1

@@ -3,11 +3,11 @@
 Run with: python -m pytest tests/test_utils.py -v
 """
 
-import pytest
 from datetime import datetime, timezone
 
-from consolidation_memory.utils import parse_json_list, parse_datetime
+import pytest
 
+from consolidation_memory.utils import parse_datetime, parse_json_list
 
 # ── parse_json_list ──────────────────────────────────────────────────────────
 

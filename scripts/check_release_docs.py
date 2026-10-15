@@ -20,6 +20,7 @@ RELEASE_AUTOMATION_PATHS = {
     "scripts/release_criteria.py",
     "scripts/update_changelog.py",
     "scripts/changelog_builder.py",
+    "scripts/generate_tool_reference.py",
 }
 RELEASE_DOC_PATHS = {
     "docs/RELEASE_AUTOMATION.md",
@@ -33,6 +34,7 @@ REQUIRED_RELEASE_DOC_MARKERS = (
     "[release major|minor|patch]",
     "update_changelog.py",
     "changelog-on-main.yml",
+    "generate_tool_reference.py",
 )
 
 

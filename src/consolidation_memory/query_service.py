@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from os import PathLike
-from typing import Mapping
 
 from consolidation_memory import backends, claim_cache
 from consolidation_memory.config import get_config

@@ -9,7 +9,7 @@ class _FakeFuture:
     def __init__(self, value: dict[str, object]) -> None:
         self._value = value
 
-    def result(self, timeout: float | None = None):  # noqa: ANN001
+    def result(self, timeout: float | None = None):
         del timeout
         return self._value
 
@@ -19,7 +19,7 @@ class _FakePool:
         self.submissions: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
         self._result = result or {"status": "completed"}
 
-    def submit(self, fn, *args, **kwargs):  # noqa: ANN001
+    def submit(self, fn, *args, **kwargs):
         self.submissions.append((fn, args, kwargs))
         return _FakeFuture(self._result)
 
@@ -205,8 +205,8 @@ class TestStatusSchedulerState:
         from consolidation_memory.database import (
             ensure_schema,
             get_consolidation_scheduler_state,
-            mark_consolidation_scheduler_started,
             mark_consolidation_scheduler_finished,
+            mark_consolidation_scheduler_started,
         )
 
         ensure_schema()

@@ -20,7 +20,7 @@ import os
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any
 
 import faiss
@@ -55,7 +55,7 @@ class VectorStore:
         if cfg.FAISS_INDEX_PATH.exists() and cfg.FAISS_ID_MAP_PATH.exists():
             logger.info("Loading FAISS index from %s", cfg.FAISS_INDEX_PATH)
             self._index = faiss.read_index(str(cfg.FAISS_INDEX_PATH))
-            with open(cfg.FAISS_ID_MAP_PATH, "r") as f:
+            with open(cfg.FAISS_ID_MAP_PATH) as f:
                 self._id_map = json.load(f)
             self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
 
@@ -120,7 +120,7 @@ class VectorStore:
 
         if cfg.FAISS_TOMBSTONE_PATH.exists():
             try:
-                with open(cfg.FAISS_TOMBSTONE_PATH, "r") as f:
+                with open(cfg.FAISS_TOMBSTONE_PATH) as f:
                     self._tombstones = set(json.load(f))
                 if self._tombstones:
                     logger.info("Loaded %d tombstones", len(self._tombstones))
@@ -186,10 +186,9 @@ class VectorStore:
                 with os.fdopen(map_fd, "w") as f:
                     json.dump(self._id_map, f)
                     f.flush()
-                    try:
+                    # Best-effort durability: fsync is unsupported on some filesystems.
+                    with suppress(OSError):
                         os.fsync(f.fileno())
-                    except OSError:
-                        pass
             except Exception:
                 os.unlink(idx_tmp)
                 os.unlink(map_tmp)
@@ -211,10 +210,9 @@ class VectorStore:
                 with os.fdopen(fd, "w") as f:
                     json.dump(list(self._tombstones), f)
                     f.flush()
-                    try:
+                    # Best-effort durability: fsync is unsupported on some filesystems.
+                    with suppress(OSError):
                         os.fsync(f.fileno())
-                    except OSError:
-                        pass
             except Exception:
                 os.unlink(tmp)
                 raise
@@ -389,53 +387,51 @@ class VectorStore:
 
     def add(self, episode_id: str, embedding: np.ndarray) -> None:
         """Add a single vector with its episode UUID. Persists to disk immediately."""
-        with self._lock:
-            with self._mutation_lease():
-                was_empty = self._index.ntotal == 0
-                self._validate_new_episode_ids([episode_id], operation="VectorStore.add")
-                vec = self._validate_mutation_embeddings(
-                    embedding,
-                    expected_rows=1,
-                    operation="VectorStore.add",
-                )
-                try:
-                    self._index.add(vec)
-                    self._id_map.append(episode_id)
-                    self._uuid_to_pos[episode_id] = len(self._id_map) - 1
-                    self._save()
-                except Exception:
-                    self._reload_persisted_state()
-                    raise
-                if was_empty:
-                    self._save_embedding_metadata()
-                self._maybe_upgrade_index()
+        with self._lock, self._mutation_lease():
+            was_empty = self._index.ntotal == 0
+            self._validate_new_episode_ids([episode_id], operation="VectorStore.add")
+            vec = self._validate_mutation_embeddings(
+                embedding,
+                expected_rows=1,
+                operation="VectorStore.add",
+            )
+            try:
+                self._index.add(vec)
+                self._id_map.append(episode_id)
+                self._uuid_to_pos[episode_id] = len(self._id_map) - 1
+                self._save()
+            except Exception:
+                self._reload_persisted_state()
+                raise
+            if was_empty:
+                self._save_embedding_metadata()
+            self._maybe_upgrade_index()
 
     def add_batch(self, episode_ids: list[str], embeddings: np.ndarray) -> None:
         """Add multiple vectors with UUIDs. More efficient than repeated add() calls."""
-        with self._lock:
-            with self._mutation_lease():
-                self._validate_new_episode_ids(episode_ids, operation="VectorStore.add_batch")
-                was_empty = self._index.ntotal == 0
-                vecs = self._validate_mutation_embeddings(
-                    embeddings,
-                    expected_rows=len(episode_ids),
-                    operation="VectorStore.add_batch",
-                )
-                if vecs.shape[0] == 0:
-                    return
-                try:
-                    self._index.add(vecs)
-                    start = len(self._id_map)
-                    self._id_map.extend(episode_ids)
-                    for i, uid in enumerate(episode_ids):
-                        self._uuid_to_pos[uid] = start + i
-                    self._save()
-                except Exception:
-                    self._reload_persisted_state()
-                    raise
-                if was_empty:
-                    self._save_embedding_metadata()
-                self._maybe_upgrade_index()
+        with self._lock, self._mutation_lease():
+            self._validate_new_episode_ids(episode_ids, operation="VectorStore.add_batch")
+            was_empty = self._index.ntotal == 0
+            vecs = self._validate_mutation_embeddings(
+                embeddings,
+                expected_rows=len(episode_ids),
+                operation="VectorStore.add_batch",
+            )
+            if vecs.shape[0] == 0:
+                return
+            try:
+                self._index.add(vecs)
+                start = len(self._id_map)
+                self._id_map.extend(episode_ids)
+                for i, uid in enumerate(episode_ids):
+                    self._uuid_to_pos[uid] = start + i
+                self._save()
+            except Exception:
+                self._reload_persisted_state()
+                raise
+            if was_empty:
+                self._save_embedding_metadata()
+            self._maybe_upgrade_index()
 
     # ── Search ───────────────────────────────────────────────────────────────
 
@@ -493,94 +489,91 @@ class VectorStore:
 
     def remove(self, episode_id: str) -> bool:
         """Tombstone a vector by UUID. O(1), does not rebuild index."""
-        with self._lock:
-            with self._mutation_lease():
-                if episode_id not in self._uuid_to_pos:
-                    return False
-                try:
-                    self._tombstones.add(episode_id)
-                    self._save_tombstones()
-                except Exception:
-                    self._reload_persisted_state()
-                    raise
-                return True
+        with self._lock, self._mutation_lease():
+            if episode_id not in self._uuid_to_pos:
+                return False
+            try:
+                self._tombstones.add(episode_id)
+                self._save_tombstones()
+            except Exception:
+                self._reload_persisted_state()
+                raise
+            return True
 
     def remove_batch(self, episode_ids: list[str]) -> int:
         """Tombstone multiple vectors by UUID. Returns count actually tombstoned."""
-        with self._lock:
-            with self._mutation_lease():
-                count = 0
-                try:
-                    for uid in episode_ids:
-                        if uid in self._uuid_to_pos and uid not in self._tombstones:
-                            self._tombstones.add(uid)
-                            count += 1
-                    if count > 0:
-                        self._save_tombstones()
-                except Exception:
-                    self._reload_persisted_state()
-                    raise
-                return count
+        with self._lock, self._mutation_lease():
+            count = 0
+            try:
+                for uid in episode_ids:
+                    if uid in self._uuid_to_pos and uid not in self._tombstones:
+                        self._tombstones.add(uid)
+                        count += 1
+                if count > 0:
+                    self._save_tombstones()
+            except Exception:
+                self._reload_persisted_state()
+                raise
+            return count
 
     # ── Compaction ───────────────────────────────────────────────────────────
 
     def compact(self) -> int:
         """Rebuild FAISS index without tombstoned vectors. Returns count of tombstones removed."""
-        with self._lock:
-            with self._mutation_lease():
-                if not self._tombstones:
-                    return 0
-                removed = len(self._tombstones)
-                cfg = get_config()
-                # Remember if the index was IVF before compaction so we can restore it
-                was_ivf = not isinstance(self._index, faiss.IndexFlatIP)
-                try:
-                    keep_positions = [
-                        i for i, uid in enumerate(self._id_map)
-                        if uid not in self._tombstones
-                    ]
+        with self._lock, self._mutation_lease():
+            if not self._tombstones:
+                return 0
+            removed = len(self._tombstones)
+            cfg = get_config()
+            # Remember if the index was IVF before compaction so we can restore it
+            was_ivf = not isinstance(self._index, faiss.IndexFlatIP)
+            try:
+                keep_positions = [
+                    i for i, uid in enumerate(self._id_map)
+                    if uid not in self._tombstones
+                ]
 
-                    if not keep_positions:
-                        self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
-                        self._id_map = []
-                        self._uuid_to_pos = {}
-                        self._tombstones = set()
-                        self._save()
-                        self._save_tombstones()
-                        return removed
-
-                    if isinstance(self._index, faiss.IndexFlatIP):
-                        # Bulk extract from flat index, then select kept positions
-                        n = self._index.ntotal
-                        dim = self._index.d
-                        all_vectors = faiss.rev_swig_ptr(self._index.get_xb(), n * dim).reshape(n, dim)
-                        kept_vectors = all_vectors[keep_positions].copy()
-                    else:
-                        # IVF index: reconstruct individually (no get_xb)
-                        kept_vectors = np.zeros(
-                            (len(keep_positions), cfg.EMBEDDING_DIMENSION), dtype=np.float32
-                        )
-                        for new_i, old_i in enumerate(keep_positions):
-                            kept_vectors[new_i] = self._index.reconstruct(old_i)
-
-                    new_id_map = [self._id_map[i] for i in keep_positions]
+                if not keep_positions:
                     self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
-                    self._index.add(kept_vectors)
-                    self._id_map = new_id_map
-                    self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
+                    self._id_map = []
+                    self._uuid_to_pos = {}
                     self._tombstones = set()
                     self._save()
                     self._save_tombstones()
-                except Exception:
-                    self._reload_persisted_state()
-                    raise
-                logger.info("Compacted FAISS index: removed %d tombstoned vectors", removed)
-                # If the index was IVF before, force upgrade regardless of threshold
-                if was_ivf and len(keep_positions) >= 100:
-                    self._maybe_upgrade_index(force=True)
+                    return removed
+
+                if isinstance(self._index, faiss.IndexFlatIP):
+                    # Bulk extract from flat index, then select kept positions
+                    n = self._index.ntotal
+                    dim = self._index.d
+                    all_vectors = faiss.rev_swig_ptr(self._index.get_xb(), n * dim).reshape(n, dim)
+                    kept_vectors = all_vectors[keep_positions].copy()
                 else:
-                    self._maybe_upgrade_index()
-                return removed
+                    # IVF index: reconstruct individually (no get_xb)
+                    kept_vectors = np.zeros(
+                        (len(keep_positions), cfg.EMBEDDING_DIMENSION), dtype=np.float32
+                    )
+                    for new_i, old_i in enumerate(keep_positions):
+                        kept_vectors[new_i] = self._index.reconstruct(old_i)
+
+                new_id_map = [self._id_map[i] for i in keep_positions]
+                self._index = faiss.IndexFlatIP(cfg.EMBEDDING_DIMENSION)
+                self._index.add(kept_vectors)
+                self._id_map = new_id_map
+                self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
+                self._tombstones = set()
+                self._save()
+                self._save_tombstones()
+            except Exception:
+                self._reload_persisted_state()
+                raise
+            logger.info("Compacted FAISS index: removed %d tombstoned vectors", removed)
+            # If the index was IVF before, force upgrade regardless of threshold
+            if was_ivf and len(keep_positions) >= 100:
+                self._maybe_upgrade_index(force=True)
+            else:
+                self._maybe_upgrade_index()
+            return removed
 
     @property
     def tombstone_ratio(self) -> float:
@@ -637,7 +630,7 @@ class VectorStore:
 
         if os.path.exists(meta_path):
             try:
-                with open(meta_path, "r") as f:
+                with open(meta_path) as f:
                     stored = json.load(f)
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning("Failed to read embedding metadata: %s", e)

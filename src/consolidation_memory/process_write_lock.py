@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
-from contextlib import contextmanager
+from collections.abc import Callable
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-if os.name == "nt":
+if sys.platform == "win32":
     import msvcrt
 
-    _msvcrt_locking: Callable[[int, int, int], Any] = getattr(msvcrt, "locking")
-    _msvcrt_lk_nblck = int(getattr(msvcrt, "LK_NBLCK"))
-    _msvcrt_lk_unlck = int(getattr(msvcrt, "LK_UNLCK"))
+    _msvcrt_locking: Callable[[int, int, int], Any] = msvcrt.locking
+    _msvcrt_lk_nblck = int(msvcrt.LK_NBLCK)
+    _msvcrt_lk_unlck = int(msvcrt.LK_UNLCK)
 else:  # pragma: no cover - exercised on non-Windows CI
     import fcntl
 
@@ -24,7 +26,7 @@ else:  # pragma: no cover - exercised on non-Windows CI
 def _try_lock_file(handle: Any) -> None:
     """Attempt non-blocking exclusive lock of a lockfile handle."""
     handle.seek(0)
-    if os.name == "nt":
+    if sys.platform == "win32":
         _msvcrt_locking(handle.fileno(), _msvcrt_lk_nblck, 1)
     else:  # pragma: no cover - exercised on non-Windows CI
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
@@ -33,7 +35,7 @@ def _try_lock_file(handle: Any) -> None:
 def _unlock_file(handle: Any) -> None:
     """Release exclusive lock for a lockfile handle."""
     handle.seek(0)
-    if os.name == "nt":
+    if sys.platform == "win32":
         _msvcrt_locking(handle.fileno(), _msvcrt_lk_unlck, 1)
     else:  # pragma: no cover - exercised on non-Windows CI
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
@@ -61,12 +63,12 @@ class ProcessWriteLease:
                 try:
                     _try_lock_file(handle)
                     break
-                except OSError:
+                except OSError as err:
                     if time.monotonic() >= deadline:
                         raise TimeoutError(
                             "Timed out waiting for write lease at "
                             f"{self._lock_path} after {self._timeout_seconds:.1f}s"
-                        )
+                        ) from err
                     time.sleep(0.05)
 
             waited = time.monotonic() - started
@@ -78,10 +80,9 @@ class ProcessWriteLease:
                 handle.truncate()
                 handle.write(payload.encode("utf-8"))
                 handle.flush()
-                try:
+                # Best-effort durability: fsync is unsupported on some filesystems.
+                with suppress(OSError):
                     os.fsync(handle.fileno())
-                except OSError:
-                    pass
                 yield
             finally:
                 _unlock_file(handle)

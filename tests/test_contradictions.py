@@ -1,7 +1,6 @@
 """Tests for contradiction audit log and diff-aware merge validation."""
 
 import json
-
 from unittest.mock import patch
 
 import numpy as np
@@ -12,12 +11,11 @@ from consolidation_memory.consolidation.engine import _detect_silent_drops
 from consolidation_memory.database import (
     ensure_schema,
     get_contradictions,
+    get_records_by_topic,
     insert_contradiction,
     insert_knowledge_records,
-    get_records_by_topic,
     upsert_knowledge_topic,
 )
-
 
 # ── Schema migration ──────────────────────────────────────────────────────────
 
@@ -241,7 +239,7 @@ class TestContradictionsDuringConsolidation:
         ):
             from consolidation_memory.consolidation.engine import _merge_into_existing
 
-            status, calls = _merge_into_existing(
+            status, _calls = _merge_into_existing(
                 existing=existing,
                 extraction_data=extraction_data,
                 cluster_episodes=[{"id": "ep_new", "content": "new stuff", "tags": "[]"}],

@@ -69,6 +69,58 @@ def test_add_changelog_entry_inserts_rendered_notes(tmp_path, monkeypatch):
     assert "- docs: update flow" in text
 
 
+def test_add_changelog_entry_reports_truncation(tmp_path, monkeypatch, capsys):
+    """A release entry that drops entries must say so.
+
+    `add_changelog_entry` re-caps the Unreleased bullets, which is the last
+    place a truncation can be reported. It passed `emit_warning=False`, so a
+    `--limit` below the number of entries shipped a shortened release entry with
+    no warning at all - while RELEASE_AUTOMATION.md promises truncation is never
+    silent.
+    """
+    module = _load_release_module()
+    changelog_path = tmp_path / "CHANGELOG.md"
+    changelog_path.write_text(
+        "# Changelog\n\n"
+        "## Unreleased\n\n"
+        "### Features\n\n"
+        "- feat: first user-visible change\n"
+        "- feat: second user-visible change\n"
+        "- fix: a user-visible fix\n\n"
+        "## 0.13.0 - 2026-03-07\n\n- Existing entry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "CHANGELOG", changelog_path)
+
+    module.add_changelog_entry("0.13.1", ["unused fallback notes"], limit=1)
+
+    report = capsys.readouterr()
+    assert "Truncated" in report.err or "truncated" in report.err, (
+        f"no truncation report on stderr: {report.err!r}"
+    )
+    assert "user-visible" in report.err
+
+
+def test_add_changelog_entry_is_quiet_when_nothing_is_dropped(tmp_path, monkeypatch, capsys):
+    """Reporting must not add noise on the normal path."""
+    module = _load_release_module()
+    changelog_path = tmp_path / "CHANGELOG.md"
+    changelog_path.write_text(
+        "# Changelog\n\n"
+        "## Unreleased\n\n"
+        "### Features\n\n"
+        "- feat: only change\n\n"
+        "## 0.13.0 - 2026-03-07\n\n- Existing entry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "CHANGELOG", changelog_path)
+
+    module.add_changelog_entry("0.13.1", ["unused fallback notes"])
+
+    report = capsys.readouterr()
+    assert "runcated" not in report.err
+
+
 def test_add_changelog_entry_noop_if_version_exists(tmp_path, monkeypatch):
     module = _load_release_module()
     changelog_path = tmp_path / "CHANGELOG.md"

@@ -24,26 +24,43 @@ def map_simple_kind(kind: str) -> str:
 
 
 def build_remember_store_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Translate memory_remember arguments into memory_store arguments."""
+    """Translate memory_remember arguments into memory_store arguments.
+
+    The keys read here are exactly the ones ``memory_remember`` publishes
+    (content, kind, tags, scope): dispatch rejects anything else before this
+    runs, so a translation branch for an unpublished argument is unreachable.
+    ``surprise`` is a ``memory_store`` parameter and stays on the full surface —
+    the simple vocabulary deliberately has no novelty dial.
+    """
     content = arguments["content"]
     kind = arguments.get("kind", "note")
     if not isinstance(kind, str):
-        raise ValueError("kind must be a string")
+        # TypeError, not ValueError: ``kind`` is published as a string, so a
+        # non-string is a type error. Both are input errors on every surface
+        # (REST maps either to 422, dispatch collapses either to {"error": ...},
+        # MCP reports either as isError), and the ValueError raised below for an
+        # unknown kind string stays the value error.
+        raise TypeError(f"kind must be a string, got {type(kind).__name__}")
     store_args: dict[str, Any] = {
         "content": content,
         "content_type": map_simple_kind(kind),
     }
     if "tags" in arguments and arguments["tags"] is not None:
         store_args["tags"] = arguments["tags"]
-    if "surprise" in arguments and arguments["surprise"] is not None:
-        store_args["surprise"] = arguments["surprise"]
     if "scope" in arguments and arguments["scope"] is not None:
         store_args["scope"] = arguments["scope"]
     return store_args
 
 
 def build_ask_recall_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Translate memory_ask arguments into memory_recall arguments."""
+    """Translate memory_ask arguments into memory_recall arguments.
+
+    ``include_knowledge`` is not read from the caller: ``memory_ask`` does not
+    publish it, and the simple surface always wants consolidated knowledge, so
+    it is set here. A caller that translated its own arguments before calling
+    this function (the browser UI used to) therefore changed nothing — which is
+    why the published-argument pass-through is the correct shape for the hop.
+    """
     recall_args: dict[str, Any] = {
         "query": arguments["query"],
         "n_results": arguments.get("n_results", 8),
@@ -51,9 +68,6 @@ def build_ask_recall_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     }
     if "scope" in arguments and arguments["scope"] is not None:
         recall_args["scope"] = arguments["scope"]
-    deadline = arguments.get("_recall_deadline_monotonic")
-    if deadline is not None:
-        recall_args["_recall_deadline_monotonic"] = deadline
     return recall_args
 
 

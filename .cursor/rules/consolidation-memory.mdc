@@ -13,24 +13,28 @@ You are working on **consolidation-memory**: a local-first, trust-calibrated bel
 as your **first** tool — before shell, reads, edits, searches, or subagents.
 
 1. `memory_recall` with a query from the user's goal (`include_knowledge=true`).
-2. `python scripts/sync_working_copy.py` when the git tree is clean (keeps `main` on `origin/main`).
+2. `python scripts/sync_working_copy.py` when the git tree is clean: it fetches and rebases the
+   **current branch** onto its upstream (`origin/<branch>`), and refuses to run on a dirty tree
+   unless you pass `--stash`.
 3. Then proceed with other work.
-3. `memory_store` after meaningful progress; `memory_detect_drift` after substantial edits.
-4. Final `memory_recall` before closing the turn.
+4. `memory_store` after meaningful progress; `memory_detect_drift` after substantial edits.
+5. Final `memory_recall` before closing the turn.
 
 If memory tools are unavailable, say so once and continue without fabricating results.
 
 ## Before coding
 
-1. Read [CONTRIBUTING.md](CONTRIBUTING.md) — trust invariants and verification commands.
-2. Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) when touching persistence, recall, or consolidation.
+1. Read [CONTRIBUTING.md](../../CONTRIBUTING.md) — trust invariants and verification commands.
+2. Read [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) when touching persistence, recall, or consolidation.
+3. Read the **Debt ledger** in [CLAUDE.md](../../CLAUDE.md) before large refactors.
 
 ## Non-negotiable
 
 - Preserve temporal correctness, provenance, contradiction visibility, drift auditability, scope isolation, surface parity.
 - Prefer deterministic consolidation (`consolidation/fast_path.py`) over new LLM prompts for core behavior.
-- Add tests; run targeted `pytest` + `ruff check src tests` before claiming done.
-- Ship schema changes only with `CURRENT_SCHEMA_VERSION` migrations and `ensure_schema()` tests.
+- Add tests; run targeted `pytest` + `ruff check src tests/ scripts/` before claiming done.
+- Ship schema changes only as additive migrations in `db/migrations.py` with a bumped
+  `CURRENT_SCHEMA_VERSION` and `ensure_schema()` tests.
 
 ## Do not
 

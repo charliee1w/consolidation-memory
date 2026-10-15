@@ -8,11 +8,10 @@ from pathlib import Path
 from typing import Any, cast
 
 from consolidation_memory import __version__
-from consolidation_memory.desktop_backend import build_health_snapshot
 from consolidation_memory.dashboard_data import DashboardData
+from consolidation_memory.desktop_backend import build_health_snapshot
 from consolidation_memory.setup_service import assess_setup_status
 from consolidation_memory.types import EpisodicBufferStats, HealthStatus
-
 
 _METRIC_SECTION_ORDER = (
     "live_solution_recall_at_5",

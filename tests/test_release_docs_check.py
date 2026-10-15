@@ -19,17 +19,33 @@ def _load_release_docs_check_module():
     return module
 
 
+# A hand-written sample, not the marker tuple joined together. Building the
+# fixture from the list the guard checks made the "document satisfies the guard"
+# case unfalsifiable: adding a marker to REQUIRED_RELEASE_DOC_MARKERS without
+# documenting it left this test green while the CI guard went red.
+_SAMPLE_RELEASE_DOC = """\
+# Release Automation
+
+Release automation runs from GitHub Actions. Configure the
+`RELEASE_AUTOMATION_PAT` repository secret before the first run.
+
+## Trigger
+
+`.github/workflows/release-on-main.yml` starts via `workflow_dispatch`.
+A commit whose message carries `[skip release]` is ignored; a subject carrying
+`[release major|minor|patch]` forces that bump instead.
+
+## Changelog
+
+`.github/workflows/changelog-on-main.yml` runs `python scripts/update_changelog.py`
+to rewrite `## Unreleased`, then `python scripts/generate_tool_reference.py` to
+refresh `docs/TOOLS.md`.
+"""
+
+
 def _release_doc_text(module) -> str:
-    return "\n".join(
-        [
-            "RELEASE_AUTOMATION_PAT",
-            "workflow_dispatch",
-            "[skip release]",
-            "[release major|minor|patch]",
-            "update_changelog.py",
-            "changelog-on-main.yml",
-        ]
-    )
+    del module
+    return _SAMPLE_RELEASE_DOC
 
 
 def test_evaluate_guard_noops_when_release_files_not_changed():
@@ -70,6 +86,32 @@ def test_evaluate_guard_requires_release_doc_markers():
         readme_text=f"See {module.RELEASE_AUTOMATION_LINK}",
     )
     assert any("missing required markers" in error for error in errors)
+
+
+def test_real_release_doc_satisfies_every_marker():
+    """The document CI actually checks, not the sample above.
+
+    The other cases prove the guard's logic; this proves the repository passes
+    it, which the sample fixture cannot do.
+    """
+    module = _load_release_docs_check_module()
+    real_doc = (
+        Path(__file__).resolve().parents[1] / "docs" / "RELEASE_AUTOMATION.md"
+    ).read_text(encoding="utf-8")
+
+    missing = [
+        marker
+        for marker in module.REQUIRED_RELEASE_DOC_MARKERS
+        if marker not in real_doc
+    ]
+    assert not missing, f"docs/RELEASE_AUTOMATION.md is missing markers: {missing}"
+
+
+def test_real_readme_carries_the_release_docs_link():
+    module = _load_release_docs_check_module()
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+
+    assert module.RELEASE_AUTOMATION_LINK in readme
 
 
 def test_evaluate_guard_requires_readme_link():

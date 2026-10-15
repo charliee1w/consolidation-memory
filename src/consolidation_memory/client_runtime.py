@@ -5,15 +5,17 @@ Keeps scheduling/health orchestration isolated from CRUD-facing client logic.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Mapping
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from consolidation_memory.types import (
     RUN_STATUS_COMPLETED,
@@ -144,12 +146,15 @@ def compute_health(
     if knowledge_consistency:
         ratio_val = knowledge_consistency.get("consistency_ratio")
         threshold_val = knowledge_consistency.get("threshold")
-        if isinstance(ratio_val, (int, float)) and isinstance(threshold_val, (int, float)):
-            if float(ratio_val) < float(threshold_val):
-                issues.append(
-                    "Knowledge markdown/record consistency below target "
-                    f"({float(ratio_val):.1%} < {float(threshold_val):.1%})"
-                )
+        if (
+            isinstance(ratio_val, (int, float))
+            and isinstance(threshold_val, (int, float))
+            and float(ratio_val) < float(threshold_val)
+        ):
+            issues.append(
+                "Knowledge markdown/record consistency below target "
+                f"({float(ratio_val):.1%} < {float(threshold_val):.1%})"
+            )
 
     if last_run:
         if last_run.get("status") == RUN_STATUS_FAILED:
@@ -184,9 +189,10 @@ def compute_health(
 
 def probe_backend(client: RuntimeClient) -> bool:
     """Quick check if embedding backend is reachable. Cached for 30s."""
-    from consolidation_memory.config import get_config
     from urllib.error import URLError
     from urllib.request import Request, urlopen
+
+    from consolidation_memory.config import get_config
 
     cfg = get_config()
     if cfg.EMBEDDING_BACKEND == "fastembed":
@@ -216,9 +222,10 @@ def probe_backend(client: RuntimeClient) -> bool:
 
 def check_embedding_backend(client: RuntimeClient) -> None:
     """Verify the embedding backend is reachable."""
-    from consolidation_memory.config import get_config
     from urllib.error import URLError
     from urllib.request import Request, urlopen
+
+    from consolidation_memory.config import get_config
 
     cfg = get_config()
     if cfg.EMBEDDING_BACKEND == "fastembed":
@@ -237,7 +244,9 @@ def check_embedding_backend(client: RuntimeClient) -> None:
             body_raw = resp.read()
         body = json.loads(body_raw)
         if not isinstance(body, Mapping):
-            raise ValueError("response body must be a JSON object")
+            raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+                "response body must be a JSON object"
+            )
 
         if cfg.EMBEDDING_BACKEND == "ollama":
             models = body.get("models", [])
@@ -324,7 +333,9 @@ def compute_consolidation_utility(
 ) -> dict[str, object]:
     """Compute current utility score and signal breakdown."""
     from consolidation_memory.config import get_config
-    from consolidation_memory.consolidation.utility_scheduler import compute_utility_score
+    from consolidation_memory.consolidation.utility_scheduler import (
+        compute_utility_score,
+    )
     from consolidation_memory.database import (
         count_active_challenged_claims,
         count_contradictions_since,
@@ -633,10 +644,9 @@ def submit_auto_consolidation(
                 except Exception:
                     logger.exception("Failed to release scheduler lease after submit failure")
             if client._consolidation_lock.locked():
-                try:
+                # Guarded by locked(); a racing release already dropped the lock.
+                with contextlib.suppress(RuntimeError):
                     client._consolidation_lock.release()
-                except RuntimeError:
-                    pass
 
 
 def finalize_auto_consolidation(
@@ -691,10 +701,9 @@ def finalize_auto_consolidation(
                 logger.exception("Failed to release scheduler lease after completion failure")
         client._consolidation_future = None
         if client._consolidation_lock.locked():
-            try:
+            # Guarded by locked(); a racing release already dropped the lock.
+            with contextlib.suppress(RuntimeError):
                 client._consolidation_lock.release()
-            except RuntimeError:
-                pass
 
 
 def start_consolidation_thread(client: RuntimeClient) -> None:

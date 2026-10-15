@@ -7,7 +7,9 @@ or poisoned in-process state after prior timeouts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -15,20 +17,63 @@ from pathlib import Path
 from consolidation_memory.types import DriftOutput
 
 
+def _absolute_without_resolving(path: str) -> Path:
+    """Make ``path`` absolute while keeping symlinks intact.
+
+    ``Path.resolve()`` must not be used here: a virtualenv layout
+    (``.venv/bin/python -> python3.14 -> /usr/bin/python3.14``) resolves straight
+    through the environment to the base interpreter, which has a different
+    ``site-packages`` and usually no distribution metadata.
+    """
+    return Path(path).expanduser().absolute()
+
+
+def _package_root() -> str:
+    """Directory that must be importable for the child to find the package."""
+    return str(_absolute_without_resolving(__file__).parent.parent)
+
+
 def _resolve_python_executable() -> str:
+    """Return the interpreter the server itself runs on.
+
+    The drift worker must use the same environment as the server, otherwise it
+    can import a different dependency set. Resolving symlinks would collapse a
+    virtualenv down to its base interpreter, so the path is only made absolute.
+    """
     executable = (sys.executable or "").strip()
     if executable:
-        resolved = Path(executable).expanduser().resolve()
-        if resolved.exists():
-            return str(resolved)
+        candidate = _absolute_without_resolving(executable)
+        if candidate.exists():
+            return str(candidate)
 
     discovered = shutil.which("python")
     if discovered:
-        return str(Path(discovered).expanduser().resolve())
+        return str(_absolute_without_resolving(discovered))
 
     raise RuntimeError(
         "Unable to locate a Python executable for isolated drift detection."
     )
+
+
+def _build_child_env() -> dict[str, str]:
+    """Environment for the worker: parent environment plus a usable import path.
+
+    The parent environment is inherited unchanged, as before; only ``PYTHONPATH``
+    gains the directory that makes ``consolidation_memory`` importable, so the
+    child can import the same sources the server is running.
+    """
+    env = dict(os.environ)
+    inherited = env.get("PYTHONPATH", "").strip()
+    candidates = [_package_root(), *inherited.split(os.pathsep)]
+
+    deduped: list[str] = []
+    for entry in candidates:
+        entry = entry.strip()
+        if entry and entry not in deduped:
+            deduped.append(entry)
+
+    env["PYTHONPATH"] = os.pathsep.join(deduped)
+    return env
 
 
 def _build_drift_command(*, base_ref: str | None, repo_path: str | None) -> list[str]:
@@ -74,13 +119,18 @@ async def run_detect_drift_subprocess(
     timeout_seconds: float,
 ) -> DriftOutput:
     cmd = _build_drift_command(base_ref=base_ref, repo_path=repo_path)
-    cwd = str(Path(repo_path).expanduser().resolve()) if repo_path else None
+    # No cwd: `python -m` puts the current directory at sys.path[0], ahead of
+    # PYTHONPATH and the stdlib, so running inside the analysed repository let a
+    # `consolidation_memory/` or `json.py` sitting in that repo shadow the real
+    # module - the worker would then execute the analysed repository's code. The
+    # repository is passed as `--repo-path` and resolved by the worker itself, so
+    # the child needs nothing from the working directory.
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
+        env=_build_child_env(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -88,10 +138,9 @@ async def run_detect_drift_subprocess(
             timeout=max(0.001, float(timeout_seconds)),
         )
     except asyncio.TimeoutError:
-        try:
+        # The process already exited; killing it is a no-op.
+        with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        except ProcessLookupError:
-            pass
         await proc.wait()
         raise
 
@@ -119,7 +168,9 @@ async def run_detect_drift_subprocess(
         ) from exc
 
     if not isinstance(payload, dict):
-        raise RuntimeError("Isolated drift detection output must be a JSON object.")
+        raise RuntimeError(  # noqa: TRY004 - payload shape assertion, not an argument validator
+            "Isolated drift detection output must be a JSON object."
+        )
 
     return payload  # type: ignore[return-value]
 

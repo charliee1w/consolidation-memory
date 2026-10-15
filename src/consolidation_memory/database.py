@@ -8,11 +8,6 @@ Includes schema versioning with automatic migration.
 import uuid
 
 from consolidation_memory.db import connection as _connection_mod
-from consolidation_memory.db.anchors import (
-    get_claim_ids_by_subject_token,
-    get_episode_ids_by_entity_anchors,
-    get_record_ids_by_subject_token,
-)
 from consolidation_memory.db._helpers import (
     OUTCOME_TYPES,
     _derive_action_key,
@@ -20,6 +15,11 @@ from consolidation_memory.db._helpers import (
     _normalize_outcome_type,
     _normalize_utc_timestamp,
     _now,
+)
+from consolidation_memory.db.anchors import (
+    get_claim_ids_by_subject_token,
+    get_episode_ids_by_entity_anchors,
+    get_record_ids_by_subject_token,
 )
 from consolidation_memory.db.claims import (
     _DEFAULT_CLAIM_PRECISION,
@@ -139,9 +139,10 @@ from consolidation_memory.db.outcomes import (
 )
 from consolidation_memory.db.records import (
     count_contradictions_since,
+    expire_record,
     get_all_active_records,
-    get_cooccurring_tags,
     get_contradictions,
+    get_cooccurring_tags,
     get_failure_linked_episode_ids_since,
     get_outcome_failure_rate_since,
     get_recently_contradicted_topic_ids,
@@ -152,7 +153,6 @@ from consolidation_memory.db.records import (
     increment_record_access,
     insert_contradiction,
     insert_knowledge_records,
-    expire_record,
     soft_delete_records_by_ids,
     soft_delete_records_by_topic,
     update_tag_cooccurrence,
@@ -190,10 +190,6 @@ _all_connections = _connection_mod._all_connections
 _conn_list_lock = _connection_mod._conn_list_lock
 
 __all__ = [
-    "uuid",
-    "_all_connections",
-    "_conn_list_lock",
-    "_local",
     "CURRENT_SCHEMA_VERSION",
     "MIGRATIONS",
     "OUTCOME_TYPES",
@@ -201,15 +197,18 @@ __all__ = [
     "_EXACT_SCOPE_MATCH_KEYS",
     "_FTS5_OPERATORS",
     "_POLICY_SELECTOR_KEYS",
+    "_all_connections",
     "_apply_exact_scope_filters",
     "_apply_scope_filters",
     "_bound_claim_precision",
     "_coerce_scope_row",
+    "_conn_list_lock",
     "_default_project_slug",
     "_default_stale_consolidation_timeout_seconds",
     "_derive_action_key",
     "_deserialize_trigger_breakdown",
     "_empty_claim_trust_stats",
+    "_local",
     "_normalize_id_tokens",
     "_normalize_outcome_type",
     "_normalize_principal_token",
@@ -257,22 +256,22 @@ __all__ = [
     "get_all_episode_anchors",
     "get_all_episodes",
     "get_all_knowledge_topics",
+    "get_claim_ids_by_subject_token",
     "get_claim_outcome_evidence",
     "get_claim_source_scope_rows",
     "get_claim_trust_stats",
     "get_claims_as_of",
-    "get_claim_ids_by_subject_token",
     "get_claims_by_anchor",
     "get_claims_by_anchor_values",
     "get_claims_by_ids",
-    "get_contradicting_partner_claim_ids",
-    "get_episode_ids_by_entity_anchors",
     "get_connection",
     "get_consolidation_metrics",
     "get_consolidation_scheduler_state",
+    "get_contradicting_partner_claim_ids",
     "get_contradictions",
     "get_cooccurring_tags",
     "get_episode",
+    "get_episode_ids_by_entity_anchors",
     "get_episodes_batch",
     "get_existing_claim_ids",
     "get_existing_episode_ids",
@@ -283,7 +282,6 @@ __all__ = [
     "get_last_consolidation_run",
     "get_low_confidence_records",
     "get_matching_policy_acl_entries",
-    "list_policy_admin_rows",
     "get_median_access_count",
     "get_outcome_failure_rate_since",
     "get_prunable_episodes",
@@ -313,6 +311,7 @@ __all__ = [
     "insert_episode",
     "insert_episode_anchors",
     "insert_knowledge_records",
+    "list_policy_admin_rows",
     "mark_claims_challenged_by_anchors",
     "mark_claims_challenged_by_ids",
     "mark_consolidated",
@@ -345,4 +344,5 @@ __all__ = [
     "upsert_knowledge_topic",
     "upsert_policy_acl_entry",
     "upsert_policy_principal",
+    "uuid",
 ]

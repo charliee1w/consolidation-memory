@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
@@ -18,6 +17,7 @@ from consolidation_memory.schemas import dispatch_tool_call
 
 try:
     from fastapi.testclient import TestClient
+
     from consolidation_memory.rest import create_app
 
     HAS_FASTAPI = True
@@ -85,23 +85,22 @@ class TestScopePolicyCrossSurfaceParity:
         from consolidation_memory.server import memory_store, memory_store_batch
 
         ensure_schema()
-        with MemoryClient(auto_consolidate=False) as client:
-            with pytest.MonkeyPatch.context() as mp:
-                async def _get_client():
-                    return client
+        with (
+            MemoryClient(auto_consolidate=False) as client,
+            pytest.MonkeyPatch.context() as mp,
+        ):
 
-                mp.setattr("consolidation_memory.server._get_client_with_timeout", _get_client)
-                store_output = json.loads(
-                    asyncio.run(memory_store(content="blocked write", scope=_DENY_SCOPE))
+            async def _get_client():
+                return client
+
+            mp.setattr("consolidation_memory.server._get_client_with_timeout", _get_client)
+            store_output = asyncio.run(memory_store(content="blocked write", scope=_DENY_SCOPE))
+            batch_output = asyncio.run(
+                memory_store_batch(
+                    episodes=[{"content": "blocked write"}],
+                    scope=_DENY_SCOPE,
                 )
-                batch_output = json.loads(
-                    asyncio.run(
-                        memory_store_batch(
-                            episodes=[{"content": "blocked write"}],
-                            scope=_DENY_SCOPE,
-                        )
-                    )
-                )
+            )
 
         assert store_output["status"] == "write_denied"
         assert batch_output["status"] == "write_denied"
@@ -158,14 +157,10 @@ class TestScopePolicyCrossSurfaceParity:
                     return client
 
                 mp.setattr("consolidation_memory.server._get_client_with_timeout", _get_client)
-                mcp_store = json.loads(
-                    asyncio.run(memory_store(content="blocked by persisted acl"))
-                )
-                mcp_batch = json.loads(
-                    asyncio.run(
-                        memory_store_batch(
-                            episodes=[{"content": "blocked by persisted acl"}],
-                        )
+                mcp_store = asyncio.run(memory_store(content="blocked by persisted acl"))
+                mcp_batch = asyncio.run(
+                    memory_store_batch(
+                        episodes=[{"content": "blocked by persisted acl"}],
                     )
                 )
 
@@ -235,12 +230,10 @@ class TestScopePolicyCrossSurfaceParity:
                     return client
 
                 mp.setattr("consolidation_memory.server._get_client_with_timeout", _get_client)
-                mcp_result = json.loads(
-                    asyncio.run(
-                        memory_search(
-                            query="cross-surface persisted read token",
-                            scope=_NAMESPACE_SCOPE,
-                        )
+                mcp_result = asyncio.run(
+                    memory_search(
+                        query="cross-surface persisted read token",
+                        scope=_NAMESPACE_SCOPE,
                     )
                 )
             mcp_ids = {ep.get("id") for ep in mcp_result["episodes"]}
@@ -266,7 +259,11 @@ class TestScopePolicyCrossSurfaceParity:
     def test_forget_protect_and_correct_respect_write_deny_policy_across_surfaces(self, tmp_data_dir):
         from consolidation_memory.client import MemoryClient
         from consolidation_memory.config import get_config
-        from consolidation_memory.database import ensure_schema, insert_episode, upsert_knowledge_topic
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_episode,
+            upsert_knowledge_topic,
+        )
         from consolidation_memory.server import memory_correct, memory_forget, memory_protect
 
         ensure_schema()
@@ -318,19 +315,13 @@ class TestScopePolicyCrossSurfaceParity:
                     return client
 
                 mp.setattr("consolidation_memory.server._get_client_with_timeout", _get_client)
-                mcp_forget = json.loads(
-                    asyncio.run(memory_forget(episode_id=episode_id, scope=_DENY_SCOPE))
-                )
-                mcp_protect = json.loads(
-                    asyncio.run(memory_protect(episode_id=episode_id, scope=_DENY_SCOPE))
-                )
-                mcp_correct = json.loads(
-                    asyncio.run(
-                        memory_correct(
-                            topic_filename=filename,
-                            correction="blocked",
-                            scope=_DENY_SCOPE,
-                        )
+                mcp_forget = asyncio.run(memory_forget(episode_id=episode_id, scope=_DENY_SCOPE))
+                mcp_protect = asyncio.run(memory_protect(episode_id=episode_id, scope=_DENY_SCOPE))
+                mcp_correct = asyncio.run(
+                    memory_correct(
+                        topic_filename=filename,
+                        correction="blocked",
+                        scope=_DENY_SCOPE,
                     )
                 )
 

@@ -7,8 +7,9 @@ import json
 import re
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any, Mapping
+from typing import Any
 
 from consolidation_memory.db._helpers import _now
 from consolidation_memory.db.connection import get_connection
@@ -322,7 +323,7 @@ def increment_topic_access_by_ids(topic_ids: list[str]) -> None:
             updated_at = ? WHERE id IN ({placeholders})"""
         conn.execute(
             query,
-            [_now()] + topic_ids,
+            [_now(), *topic_ids],
         )
 
 

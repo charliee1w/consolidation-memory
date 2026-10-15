@@ -1,8 +1,8 @@
 """Tests for claim emission during consolidation create/merge flows."""
 
 import json
-from unittest.mock import patch
 from typing import Any, cast
+from unittest.mock import patch
 
 import numpy as np
 

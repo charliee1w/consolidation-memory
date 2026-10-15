@@ -11,11 +11,11 @@ class TestFailureLinkedEpisodeIds:
         from consolidation_memory.database import (
             ensure_schema,
             get_failure_linked_episode_ids_since,
+            insert_claim_sources,
             insert_episode,
             record_action_outcome,
             upsert_claim,
         )
-        from consolidation_memory.database import insert_claim_sources
 
         ensure_schema()
         episode_direct = insert_episode(
@@ -64,7 +64,11 @@ class TestFailureLinkedEpisodeIds:
 
 class TestUnconsolidatedEpisodePriority:
     def test_priority_episodes_surface_first(self, tmp_data_dir):
-        from consolidation_memory.database import ensure_schema, get_unconsolidated_episodes, insert_episode
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_unconsolidated_episodes,
+            insert_episode,
+        )
 
         ensure_schema()
         insert_episode(
@@ -109,8 +113,8 @@ class TestClusterPrioritization:
         assert list(ordered.keys()) == [20, 30, 10]
 
     def test_run_cluster_processing_loop_honors_priority_order(self):
-        from consolidation_memory.consolidation.engine import _run_cluster_processing_loop
         from consolidation_memory.config import get_config
+        from consolidation_memory.consolidation.engine import _run_cluster_processing_loop
 
         processed: list[int] = []
 
@@ -143,8 +147,8 @@ class TestClusterPrioritization:
 class TestRunConsolidationFailurePriority:
     def test_report_includes_failure_priority_metrics(self, tmp_data_dir):
         from consolidation_memory.client import MemoryClient
-        from consolidation_memory.consolidation.engine import run_consolidation
         from consolidation_memory.config import override_config
+        from consolidation_memory.consolidation.engine import run_consolidation
         from consolidation_memory.database import ensure_schema, record_action_outcome
         from tests.helpers import mock_encode as _mock_encode
 

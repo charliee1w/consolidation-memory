@@ -6,7 +6,6 @@ from unittest.mock import patch
 import numpy as np
 
 from consolidation_memory.config import override_config
-
 from consolidation_memory.database import (
     ensure_schema,
     expire_record,
@@ -120,32 +119,32 @@ class TestTemporalFiltering:
 
     def test_get_all_active_records_excludes_expired(self, tmp_data_dir):
         ensure_schema()
-        tid, ids = self._setup_topic_with_records()
+        _tid, _ids = self._setup_topic_with_records()
         records = get_all_active_records(include_expired=False)
         assert len(records) == 1
         assert records[0]["embedding_text"] == "Python: 3.12"
 
     def test_get_all_active_records_includes_expired(self, tmp_data_dir):
         ensure_schema()
-        tid, ids = self._setup_topic_with_records()
+        _tid, _ids = self._setup_topic_with_records()
         records = get_all_active_records(include_expired=True)
         assert len(records) == 2
 
     def test_get_records_by_topic_excludes_expired(self, tmp_data_dir):
         ensure_schema()
-        tid, ids = self._setup_topic_with_records()
+        tid, _ids = self._setup_topic_with_records()
         records = get_records_by_topic(tid, include_expired=False)
         assert len(records) == 1
 
     def test_get_records_by_topic_includes_expired(self, tmp_data_dir):
         ensure_schema()
-        tid, ids = self._setup_topic_with_records()
+        tid, _ids = self._setup_topic_with_records()
         records = get_records_by_topic(tid, include_expired=True)
         assert len(records) == 2
 
     def test_get_record_count_excludes_expired(self, tmp_data_dir):
         ensure_schema()
-        tid, ids = self._setup_topic_with_records()
+        _tid, _ids = self._setup_topic_with_records()
         assert get_record_count(include_expired=False) == 1
         assert get_record_count(include_expired=True) == 2
 

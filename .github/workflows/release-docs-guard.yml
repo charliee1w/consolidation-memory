@@ -10,6 +10,7 @@ on:
       - scripts/release_criteria.py
       - scripts/update_changelog.py
       - scripts/changelog_builder.py
+      - scripts/generate_tool_reference.py
       - scripts/check_release_docs.py
       - docs/RELEASE_AUTOMATION.md
       - README.md
@@ -22,6 +23,7 @@ on:
       - scripts/release_criteria.py
       - scripts/update_changelog.py
       - scripts/changelog_builder.py
+      - scripts/generate_tool_reference.py
       - scripts/check_release_docs.py
       - docs/RELEASE_AUTOMATION.md
       - README.md

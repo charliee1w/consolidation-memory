@@ -5,8 +5,6 @@ Run with: python -m pytest tests/test_plugins.py -v
 
 from unittest.mock import patch
 
-from tests.helpers import make_normalized_vec
-
 from consolidation_memory.plugins import (
     PluginBase,
     PluginManager,
@@ -14,7 +12,7 @@ from consolidation_memory.plugins import (
     get_plugin_manager,
     reset_plugin_manager,
 )
-
+from tests.helpers import make_normalized_vec
 
 # ── Test fixtures (inline plugin subclasses) ─────────────────────────────────
 
@@ -264,8 +262,8 @@ class TestConfigLoading:
 class TestClientHooks:
     @patch("consolidation_memory.backends.encode_documents")
     def test_store_fires_on_store(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
 
@@ -298,8 +296,8 @@ class TestClientHooks:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_store_duplicate_does_not_fire(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
 
@@ -326,8 +324,8 @@ class TestClientHooks:
     @patch("consolidation_memory.backends.encode_documents")
     @patch("consolidation_memory.backends.encode_query")
     def test_recall_fires_on_recall(self, mock_query, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
 
@@ -353,8 +351,8 @@ class TestClientHooks:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_forget_fires_on_forget(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
 
@@ -379,8 +377,8 @@ class TestClientHooks:
 
     @patch("consolidation_memory.backends.encode_documents")
     def test_forget_not_found_does_not_fire(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
 
@@ -401,8 +399,8 @@ class TestClientHooks:
         client.close()
 
     def test_close_fires_on_shutdown(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
 
@@ -417,8 +415,8 @@ class TestClientHooks:
         assert len(shutdown_calls) == 1
 
     def test_multiple_clients_share_single_startup_and_shutdown_cycle(self):
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
 
@@ -442,8 +440,8 @@ class TestClientHooks:
     @patch("consolidation_memory.backends.encode_documents")
     def test_exploding_plugin_doesnt_crash_store(self, mock_embed):
         """An exception in a plugin hook must not break the host operation."""
-        from consolidation_memory.database import ensure_schema
         from consolidation_memory.client import MemoryClient
+        from consolidation_memory.database import ensure_schema
 
         ensure_schema()
 

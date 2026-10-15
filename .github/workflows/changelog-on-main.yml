@@ -46,7 +46,13 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          token: ${{ secrets.RELEASE_AUTOMATION_PAT }}
+          # The PAT is not handed to checkout: checkout persists whatever token
+          # it is given into .git/config, where every later step can read it -
+          # and the later steps run `pip install` and import the package, both of
+          # which execute code fetched from PyPI. Credentials are re-injected in
+          # the two push steps below, for the seconds a push actually takes.
+          token: ${{ github.token }}
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -57,6 +63,11 @@ jobs:
         run: |
           git config user.name "consolidation-memory-release-bot"
           git config user.email "consolidation-memory-release-bot@users.noreply.github.com"
+
+      - name: Install package for schema generation
+        # The generator imports the server, so the runtime SDK is needed; this
+        # step runs without any credentials in the environment or .git/config.
+        run: python -m pip install --quiet -e .
 
       - name: Refresh Unreleased changelog section
         id: update
@@ -72,8 +83,40 @@ jobs:
 
       - name: Commit changelog update
         if: steps.update.outputs.changed == 'true'
+        env:
+          RELEASE_AUTOMATION_PAT: ${{ secrets.RELEASE_AUTOMATION_PAT }}
         run: |
           set -euo pipefail
           git add CHANGELOG.md
           git commit -m "chore(changelog): update Unreleased section [skip release]"
-          git push origin main
+          # Credentials exist only for this step, via the environment rather than
+          # .git/config, and only the git process reads them.
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$RELEASE_AUTOMATION_PAT" | base64 -w0)" \
+            git push origin main
+
+      - name: Refresh generated tool reference
+        id: tools
+        run: |
+          set -euo pipefail
+          python scripts/generate_tool_reference.py
+          if git diff --quiet -- docs/TOOLS.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Tool reference is up to date."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit tool reference update
+        if: steps.tools.outputs.changed == 'true'
+        env:
+          RELEASE_AUTOMATION_PAT: ${{ secrets.RELEASE_AUTOMATION_PAT }}
+        run: |
+          set -euo pipefail
+          git add docs/TOOLS.md
+          git commit -m "chore(docs): refresh generated tool reference [skip release]"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$RELEASE_AUTOMATION_PAT" | base64 -w0)" \
+            git push origin main

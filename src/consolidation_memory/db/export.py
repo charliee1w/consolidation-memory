@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from consolidation_memory.db._helpers import OUTCOME_TYPES, _derive_action_key, _now
 from consolidation_memory.db.connection import get_connection
 from consolidation_memory.db.scope import _apply_scope_filters, _coerce_scope_row
+
 
 def get_all_episodes(
     include_deleted: bool = False,
@@ -44,11 +46,11 @@ def get_all_claims(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT id, claim_type, canonical_text, payload, status, confidence,
+            f"""SELECT id, claim_type, canonical_text, payload, status, confidence,
                       valid_from, valid_until, created_at, updated_at
                FROM claims
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
+               ORDER BY created_at ASC, id ASC""",
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -71,10 +73,10 @@ def get_all_claim_edges(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT id, from_claim_id, to_claim_id, edge_type, confidence, details, created_at
+            f"""SELECT id, from_claim_id, to_claim_id, edge_type, confidence, details, created_at
                FROM claim_edges
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
+               ORDER BY created_at ASC, id ASC""",
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -95,10 +97,10 @@ def get_all_claim_sources(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT id, claim_id, source_episode_id, source_topic_id, source_record_id, created_at
+            f"""SELECT id, claim_id, source_episode_id, source_topic_id, source_record_id, created_at
                FROM claim_sources
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
+               ORDER BY created_at ASC, id ASC""",
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -119,10 +121,10 @@ def get_all_claim_events(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT id, claim_id, event_type, details, created_at
+            f"""SELECT id, claim_id, event_type, details, created_at
                FROM claim_events
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
+               ORDER BY created_at ASC, id ASC""",
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -143,10 +145,10 @@ def get_all_episode_anchors(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT id, episode_id, anchor_type, anchor_value, created_at
+            f"""SELECT id, episode_id, anchor_type, anchor_value, created_at
                FROM episode_anchors
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
+               ORDER BY created_at ASC, id ASC""",
             params,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -169,7 +171,7 @@ def get_all_action_outcomes(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT id, action_key, action_summary, outcome_type, summary, details,
+            f"""SELECT id, action_key, action_summary, outcome_type, summary, details,
                       confidence, provenance, observed_at, created_at, updated_at,
                       namespace_slug, namespace_sharing_mode,
                       app_client_name, app_client_type, app_client_provider, app_client_external_key,
@@ -179,7 +181,7 @@ def get_all_action_outcomes(
                       project_repo_remote, project_default_branch
                FROM action_outcomes
                {where_clause}
-               ORDER BY observed_at ASC, id ASC""".format(where_clause=where_clause),
+               ORDER BY observed_at ASC, id ASC""",
             params,
         ).fetchall()
     return [dict(row) for row in rows]
@@ -200,10 +202,10 @@ def get_all_action_outcome_sources(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT id, outcome_id, source_claim_id, source_record_id, source_episode_id, created_at
+            f"""SELECT id, outcome_id, source_claim_id, source_record_id, source_episode_id, created_at
                FROM action_outcome_sources
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
+               ORDER BY created_at ASC, id ASC""",
             params,
         ).fetchall()
     return [dict(row) for row in rows]
@@ -224,10 +226,10 @@ def get_all_action_outcome_refs(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT id, outcome_id, ref_type, ref_key, ref_value, created_at
+            f"""SELECT id, outcome_id, ref_type, ref_key, ref_value, created_at
                FROM action_outcome_refs
                {where_clause}
-               ORDER BY created_at ASC, id ASC""".format(where_clause=where_clause),
+               ORDER BY created_at ASC, id ASC""",
             params,
         ).fetchall()
     return [dict(row) for row in rows]

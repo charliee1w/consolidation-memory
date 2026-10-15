@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Mapping, TypedDict
+from collections.abc import Mapping
+from typing import TypedDict
 
 UTILITY_WEIGHT_KEYS = (
     "unconsolidated_backlog",

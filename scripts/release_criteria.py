@@ -205,8 +205,7 @@ def _write_github_output(path: str, payload: dict[str, object]) -> None:
         f"commits_scanned={payload.get('commits_scanned')}",
     ]
     with open(path, "a", encoding="utf-8") as handle:
-        for line in lines:
-            handle.write(f"{line}\n")
+        handle.writelines(f"{line}\n" for line in lines)
 
 
 def main() -> None:

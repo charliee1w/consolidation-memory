@@ -12,11 +12,9 @@ from tests.helpers import make_normalized_vec as _make_normalized_vec
 
 
 def _reset_test_data_dir(base_dir):
-    from consolidation_memory.config import reset_config
-
-    import consolidation_memory.database as database
-    from consolidation_memory import claim_cache, record_cache, topic_cache
+    from consolidation_memory import claim_cache, database, record_cache, topic_cache
     from consolidation_memory.backends import reset_backends
+    from consolidation_memory.config import reset_config
 
     data_root = base_dir / "data"
     project_dir = data_root / "projects" / "default"
@@ -472,9 +470,8 @@ class TestDetectDriftCommand:
         with patch(
             "consolidation_memory.drift_worker.run_detect_drift_worker",
             side_effect=RuntimeError("git diff failed"),
-        ):
-            with pytest.raises(SystemExit) as exc_info:
-                cmd_detect_drift()
+        ), pytest.raises(SystemExit) as exc_info:
+            cmd_detect_drift()
 
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
@@ -584,7 +581,11 @@ class TestExportImportHardening:
     def test_export_import_round_trips_distinct_scoped_topic_files(self, tmp_data_dir):
         from consolidation_memory.cli import cmd_export, cmd_import
         from consolidation_memory.config import get_config
-        from consolidation_memory.database import ensure_schema, get_knowledge_topic, upsert_knowledge_topic
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_knowledge_topic,
+            upsert_knowledge_topic,
+        )
         from consolidation_memory.knowledge_paths import resolve_topic_path
 
         cfg = get_config()

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Literal, Mapping, Protocol, TypedDict
-
+from typing import Any, Literal, Protocol, TypedDict
 
 # ── Consolidation run status values ─────────────────────────────────────────
 # These match the strings stored in the consolidation_runs.status DB column.
@@ -34,7 +34,9 @@ VALID_EPISODE_CONTENT_TYPES: frozenset[str] = frozenset(
 def validate_episode_content_type(value: object, *, field_name: str = "content_type") -> str:
     """Validate episode content_type consistently across all surfaces."""
     if not isinstance(value, str):
-        raise ValueError(f"{field_name} must be a string")
+        raise ValueError(  # noqa: TRY004 - validators raise ValueError by seam convention
+            f"{field_name} must be a string"
+        )
     if value not in VALID_EPISODE_CONTENT_TYPES:
         allowed = ", ".join(sorted(VALID_EPISODE_CONTENT_TYPES))
         raise ValueError(f"{field_name} must be one of: {allowed}")
@@ -1117,3 +1119,32 @@ class ConsolidationLogResult:
     entries: list[dict[str, Any]] = field(default_factory=list)
     total: int = 0
     message: str = ""
+
+
+@dataclass
+class HygieneApplyResult:
+    """Result of a corpus hygiene cleanup.
+
+    The dry-run preview and the applied run share one shape: only ``status``
+    and the ``forgotten``/``not_found`` counters differ, so callers and the
+    published MCP contract (``tool_contracts.HygieneApplyOutput``) see the same
+    keys in both modes.
+    """
+
+    status: Literal["dry_run", "applied"]
+    episode_targets: int = 0
+    episode_ids: list[str] = field(default_factory=list)
+    forgotten: int = 0
+    not_found: int = 0
+    expire_orphans: bool = False
+    orphan_repair: dict[str, Any] | None = None
+
+    def as_payload(self) -> dict[str, Any]:
+        """Serialize every field into the wire payload for MCP, REST and OpenAI.
+
+        ``asdict`` emits all fields, so a contract mirroring this dataclass
+        cannot be missing a key the producer always sends. That is what keeps
+        output validation from failing after a cleanup already mutated the
+        corpus.
+        """
+        return asdict(self)

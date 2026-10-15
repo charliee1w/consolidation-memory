@@ -77,7 +77,7 @@ def parse_markdown_records(body: str) -> list[dict[str, str]]:
             strategy_fields: dict[str, str] = {}
             while j < len(lines):
                 nxt = lines[j].strip()
-                if nxt.startswith("## ") or nxt.startswith("### "):
+                if nxt.startswith(("## ", "### ")):
                     break
                 context_match = _MD_CONTEXT_RE.match(nxt)
                 if context_match:

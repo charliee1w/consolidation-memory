@@ -14,9 +14,6 @@ import threading
 import numpy as np
 
 from consolidation_memory.database import get_all_knowledge_topics
-from consolidation_memory.embedding_disk_cache import (
-    clear_namespace as _clear_disk_namespace,
-)
 from consolidation_memory.embedding_disk_cache import embed_items_incremental
 
 logger = logging.getLogger(__name__)
@@ -32,11 +29,14 @@ _cache: dict = {
 
 
 def invalidate() -> None:
-    """Force re-embedding on next get_topic_vecs() call."""
+    """Rebuild the matrix on the next get_topic_vecs() call.
+
+    The on-disk vectors stay: they are keyed by id and content hash, so only
+    items whose text changed are embedded again.
+    """
     global _version
     with _lock:
         _version += 1
-    _clear_disk_namespace("topics")
 
 
 def get_topic_vecs() -> tuple[list[dict], np.ndarray | None]:

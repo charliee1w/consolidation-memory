@@ -79,6 +79,28 @@ def test_clear_namespace_forces_reembed(disk_cache_dir):
         assert mock_encode.call_count == 2
 
 
+@pytest.mark.parametrize(
+    ("cache_module", "namespace"),
+    [("topic_cache", "topics"), ("record_cache", "records"), ("claim_cache", "claims")],
+)
+def test_cache_invalidate_keeps_unchanged_vectors(disk_cache_dir, cache_module, namespace):
+    # Consolidation invalidates the caches after every cluster; dropping the
+    # vectors there re-embedded the whole corpus each time.
+    import importlib
+
+    module = importlib.import_module(f"consolidation_memory.{cache_module}")
+    vectors = np.random.randn(1, 384).astype(np.float32)
+    items = [("a", "alpha")]
+
+    with patch("consolidation_memory.backends.encode_documents", return_value=vectors) as mock_encode:
+        embed_items_incremental(items, namespace=namespace)
+        module.invalidate()
+        embed_items_incremental(items, namespace=namespace)
+        assert mock_encode.call_count == 1
+
+    clear_namespace(namespace)
+
+
 def test_disk_save_acquires_cross_process_write_lease(disk_cache_dir):
     vectors = np.random.randn(1, 384).astype(np.float32)
     items = [("a", "alpha")]
